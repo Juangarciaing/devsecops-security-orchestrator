@@ -1,0 +1,84 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  backend:
+    name: Backend (lint, type-check, test)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync --locked --all-groups
+
+      - name: Lint (ruff check)
+        run: uv run ruff check .
+
+      - name: Format check (ruff format)
+        run: uv run ruff format --check .
+
+      - name: Type-check (mypy)
+        run: uv run mypy src
+
+      - name: Test (pytest)
+        run: uv run pytest -v
+
+  frontend:
+    name: Frontend (lint, type-check, test)
+    runs-on: ubuntu-latest
+    # Dormant until PR3 adds frontend/package.json — this job then activates
+    # automatically with no further changes to this workflow. See
+    # sdd/module-1-skeleton-ci/apply-progress for the ordering decision.
+    if: ${{ hashFiles('frontend/package.json') != '' }}
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint (eslint)
+        run: npm run lint
+
+      - name: Format check (prettier)
+        run: npm run format:check
+
+      - name: Type-check (tsc)
+        run: npm run typecheck
+
+      - name: Test (vitest)
+        run: npm run test
+
+  compose-validate:
+    name: Docker Compose config validation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Create local .env for interpolation
+        run: cp .env.example .env
+
+      - name: Validate compose config
+        run: docker compose config -q
