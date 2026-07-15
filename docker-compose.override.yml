@@ -18,6 +18,9 @@ services:
         "--reload",
       ]
 
-  # frontend dev conveniences (Vite HMR, source bind mount, exposed dev port)
-  # are added by PR3 alongside the frontend service itself — see the note in
-  # docker-compose.yml.
+  # frontend dev conveniences: source bind mount for Vite HMR. The `dev`
+  # target's CMD already runs `vite --host 0.0.0.0`, so no command override
+  # is needed here (unlike backend, whose runtime CMD has no --reload).
+  frontend:
+    volumes:
+      - ./frontend/src:/app/src

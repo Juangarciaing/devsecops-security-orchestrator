@@ -19,6 +19,7 @@ uv.lock.tmp
 node_modules/
 dist/
 .vite/
+coverage/
 
 # Editors / OS
 .vscode/

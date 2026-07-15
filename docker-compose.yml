@@ -54,14 +54,33 @@ services:
       retries: 5
       start_period: 10s
 
-  # frontend:
-  #   Deferred to PR3 (module-1 task 3.7). `frontend/` and
-  #   `docker/frontend.Dockerfile` do not exist yet — this PR (PR2, infra/CI)
-  #   intentionally ships postgres/redis/backend only, all independently
-  #   verifiable today. PR3 adds this service block (build context
-  #   `./frontend`, `depends_on: backend: condition: service_started`, a Vite
-  #   dev-server healthcheck) once the frontend app code lands. See
-  #   sdd/module-1-skeleton-ci/apply-progress for the full ordering decision.
+  frontend:
+    build:
+      context: .
+      dockerfile: docker/frontend.Dockerfile
+      target: dev
+    restart: unless-stopped
+    env_file:
+      - .env
+    ports:
+      - "${FRONTEND_PORT:-5173}:5173"
+    depends_on:
+      backend:
+        condition: service_started
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "wget",
+          "--no-verbose",
+          "--tries=1",
+          "--spider",
+          "http://127.0.0.1:5173",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
 
 volumes:
   pgdata:
