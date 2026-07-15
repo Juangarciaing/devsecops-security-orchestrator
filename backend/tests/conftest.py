@@ -20,6 +20,8 @@ def _clear_settings_cache() -> Iterator[None]:
 @pytest.fixture
 def valid_env(monkeypatch: pytest.MonkeyPatch) -> None:
     """Populate every required Settings env var with a valid placeholder value."""
-    monkeypatch.setenv("DATABASE_URL", "postgresql://orchestrator:changeme@localhost:5432/orchestrator")
+    monkeypatch.setenv(
+        "DATABASE_URL", "postgresql://orchestrator:changeme@localhost:5432/orchestrator"
+    )
     monkeypatch.setenv("REDIS_URL", "redis://localhost:6379/0")
     monkeypatch.setenv("SECRET_KEY", "test-secret-key")
