@@ -13,15 +13,14 @@ RUN npm ci
 # mounted over /app/src, Vite's dev server serves with HMR.
 FROM node:20-alpine AS dev
 
-RUN addgroup --gid 1000 appuser \
-    && adduser --uid 1000 --ingroup appuser --shell /bin/sh --disabled-password appuser
-
+# node:20-alpine already ships a non-root "node" user at uid/gid 1000 —
+# reuse it instead of creating a second one (which collides on that gid).
 WORKDIR /app
 
-COPY --from=deps --chown=appuser:appuser /app/node_modules ./node_modules
-COPY --chown=appuser:appuser frontend/ .
+COPY --from=deps --chown=node:node /app/node_modules ./node_modules
+COPY --chown=node:node frontend/ .
 
-USER appuser
+USER node
 
 EXPOSE 5173
 
