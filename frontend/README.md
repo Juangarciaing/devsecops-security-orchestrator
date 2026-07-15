@@ -20,11 +20,11 @@ npm run dev
 
 ## Scripts
 
-| Command | Purpose |
-|---|---|
-| `npm run dev` | Vite dev server with HMR |
-| `npm run build` | Type-check + production build |
-| `npm run lint` | ESLint |
+| Command                | Purpose                            |
+| ---------------------- | ---------------------------------- |
+| `npm run dev`          | Vite dev server with HMR           |
+| `npm run build`        | Type-check + production build      |
+| `npm run lint`         | ESLint                             |
 | `npm run format:check` | Prettier check (`format` to write) |
-| `npm run typecheck` | `tsc -b --noEmit` |
-| `npm run test` | Vitest (single run) |
+| `npm run typecheck`    | `tsc -b --noEmit`                  |
+| `npm run test`         | Vitest (single run)                |
