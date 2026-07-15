@@ -1,0 +1,48 @@
+# Mirrors .github/workflows/ci.yml exactly: same commands, same tool
+# invocations, so a local hook failure and a CI failure happen on the same
+# input (spec: "Pre-commit Hooks Mirror CI").
+#
+# Local hooks (language: system) call the project's own toolchain (uv, npm)
+# instead of pre-commit's isolated per-hook environments, so there is only
+# one source of truth for tool versions (backend/pyproject.toml,
+# frontend/package.json) rather than a second set of pinned mirror versions.
+#
+# The frontend hooks are dormant until `frontend/` exists (PR3): their
+# `files:` patterns won't match anything yet, so they never run today.
+repos:
+  - repo: local
+    hooks:
+      - id: backend-ruff-check
+        name: ruff check (backend)
+        entry: bash -c 'cd backend && uv run ruff check .'
+        language: system
+        files: ^backend/
+        pass_filenames: false
+
+      - id: backend-ruff-format
+        name: ruff format --check (backend)
+        entry: bash -c 'cd backend && uv run ruff format --check .'
+        language: system
+        files: ^backend/
+        pass_filenames: false
+
+      - id: backend-mypy
+        name: mypy (backend)
+        entry: bash -c 'cd backend && uv run mypy src'
+        language: system
+        files: ^backend/
+        pass_filenames: false
+
+      - id: frontend-eslint
+        name: eslint (frontend)
+        entry: bash -c 'cd frontend && npm run lint'
+        language: system
+        files: ^frontend/.*\.(ts|tsx|js|jsx|mjs|cjs)$
+        pass_filenames: false
+
+      - id: frontend-prettier
+        name: prettier --check (frontend)
+        entry: bash -c 'cd frontend && npm run format:check'
+        language: system
+        files: ^frontend/
+        pass_filenames: false
