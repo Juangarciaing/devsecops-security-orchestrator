@@ -1,6 +1,10 @@
 # Auto-loaded by `docker compose` alongside docker-compose.yml for local dev.
 # Keeps the base file prod-like; this file only adds hot-reload conveniences.
 services:
+  postgres:
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+
   backend:
     volumes:
       - ./backend/src:/app/src

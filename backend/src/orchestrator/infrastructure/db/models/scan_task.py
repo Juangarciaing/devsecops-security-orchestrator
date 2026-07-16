@@ -35,7 +35,7 @@ class ScanTaskModel(Base):
         SAEnum(ScanTaskStatus, name="scan_task_status", native_enum=True),
         nullable=False,
         default=ScanTaskStatus.PENDING,
-        server_default=ScanTaskStatus.PENDING.value,
+        server_default=ScanTaskStatus.PENDING.name,
     )
     started_at: Mapped[datetime | None] = mapped_column(nullable=True)
     completed_at: Mapped[datetime | None] = mapped_column(nullable=True)

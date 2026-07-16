@@ -40,7 +40,7 @@ class FindingModel(Base):
         SAEnum(FindingStatus, name="finding_status", native_enum=True),
         nullable=False,
         default=FindingStatus.OPEN,
-        server_default=FindingStatus.OPEN.value,
+        server_default=FindingStatus.OPEN.name,
         index=True,
     )
     rule_id: Mapped[str] = mapped_column(String, nullable=False)
