@@ -1,0 +1,130 @@
+"""Unique-constraint violations raise `IntegrityError` on real insert against
+a live Postgres (spec scenarios).
+
+DDL-level uniqueness was already verified against SQLite metadata in PR3's
+`test_models_metadata.py`; these tests prove the constraints are actually
+enforced at insert time.
+"""
+
+from __future__ import annotations
+
+import asyncio
+
+import pytest
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
+from orchestrator.domain.value_objects.enums import FindingSeverity, RepositoryProvider, ScannerType
+from orchestrator.infrastructure.db.engine import resolve_database_url
+from orchestrator.infrastructure.db.models import (
+    CodeRepositoryModel,
+    FindingModel,
+    ScanRunModel,
+    ScanTaskModel,
+)
+
+pytestmark = pytest.mark.integration
+
+
+async def _duplicate_scan_task_scanner_type() -> None:
+    engine = create_async_engine(resolve_database_url())
+    sessionmaker = async_sessionmaker(engine, expire_on_commit=False)
+    try:
+        async with sessionmaker() as session:
+            repository = CodeRepositoryModel(
+                provider=RepositoryProvider.GITHUB,
+                owner="acme",
+                name="widgets",
+                clone_url="https://github.com/acme/widgets.git",
+                default_branch="main",
+            )
+            session.add(repository)
+            await session.flush()
+
+            scan_run = ScanRunModel(
+                repository_id=repository.id,
+                trigger="push",
+                commit_sha="abc123",
+                ref="refs/heads/main",
+            )
+            session.add(scan_run)
+            await session.flush()
+
+            session.add(ScanTaskModel(scan_run_id=scan_run.id, scanner_type=ScannerType.SAST))
+            await session.commit()
+
+            scan_run_id = scan_run.id
+
+        async with sessionmaker() as session:
+            session.add(ScanTaskModel(scan_run_id=scan_run_id, scanner_type=ScannerType.SAST))
+            with pytest.raises(IntegrityError):
+                await session.commit()
+            await session.rollback()
+    finally:
+        await engine.dispose()
+
+
+async def _duplicate_finding_fingerprint() -> None:
+    engine = create_async_engine(resolve_database_url())
+    sessionmaker = async_sessionmaker(engine, expire_on_commit=False)
+    try:
+        async with sessionmaker() as session:
+            repository = CodeRepositoryModel(
+                provider=RepositoryProvider.GITHUB,
+                owner="acme",
+                name="widgets",
+                clone_url="https://github.com/acme/widgets.git",
+                default_branch="main",
+            )
+            session.add(repository)
+            await session.flush()
+
+            scan_run = ScanRunModel(
+                repository_id=repository.id,
+                trigger="push",
+                commit_sha="abc123",
+                ref="refs/heads/main",
+            )
+            session.add(scan_run)
+            await session.flush()
+
+            scan_task = ScanTaskModel(scan_run_id=scan_run.id, scanner_type=ScannerType.SAST)
+            session.add(scan_task)
+            await session.flush()
+
+            session.add(
+                FindingModel(
+                    scan_task_id=scan_task.id,
+                    severity=FindingSeverity.HIGH,
+                    rule_id="rule-1",
+                    title="Hardcoded secret",
+                    fingerprint="fp-1",
+                )
+            )
+            await session.commit()
+
+            scan_task_id = scan_task.id
+
+        async with sessionmaker() as session:
+            session.add(
+                FindingModel(
+                    scan_task_id=scan_task_id,
+                    severity=FindingSeverity.HIGH,
+                    rule_id="rule-2",
+                    title="Duplicate fingerprint",
+                    fingerprint="fp-1",
+                )
+            )
+            with pytest.raises(IntegrityError):
+                await session.commit()
+            await session.rollback()
+    finally:
+        await engine.dispose()
+
+
+def test_duplicate_scan_run_scanner_type_raises_integrity_error(migrated_schema: None) -> None:
+    asyncio.run(_duplicate_scan_task_scanner_type())
+
+
+def test_duplicate_scan_task_fingerprint_raises_integrity_error(migrated_schema: None) -> None:
+    asyncio.run(_duplicate_finding_fingerprint())

@@ -30,7 +30,7 @@ class ScanRunModel(Base):
         SAEnum(ScanRunStatus, name="scan_run_status", native_enum=True),
         nullable=False,
         default=ScanRunStatus.PENDING,
-        server_default=ScanRunStatus.PENDING.value,
+        server_default=ScanRunStatus.PENDING.name,
         index=True,
     )
     trigger: Mapped[str] = mapped_column(String, nullable=False)
