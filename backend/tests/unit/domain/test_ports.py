@@ -8,14 +8,16 @@ import ast
 import inspect
 from pathlib import Path
 
+from orchestrator.domain.ports.api_key_port import ApiKeyPort
 from orchestrator.domain.ports.code_repository_port import CodeRepositoryPort
 from orchestrator.domain.ports.finding_port import FindingPort
 from orchestrator.domain.ports.scan_run_port import ScanRunPort
 from orchestrator.domain.ports.scan_task_port import ScanTaskPort
+from orchestrator.domain.ports.user_port import UserPort
 
 PORTS_ROOT = Path(__file__).parents[3] / "src" / "orchestrator" / "domain" / "ports"
 
-ALL_PORTS = (CodeRepositoryPort, ScanRunPort, ScanTaskPort, FindingPort)
+ALL_PORTS = (CodeRepositoryPort, ScanRunPort, ScanTaskPort, FindingPort, UserPort, ApiKeyPort)
 
 FORBIDDEN_MODULE_PREFIXES = ("sqlalchemy",)
 

@@ -17,10 +17,12 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from orchestrator.domain.value_objects.enums import FindingSeverity, RepositoryProvider, ScannerType
 from orchestrator.infrastructure.db.engine import resolve_database_url
 from orchestrator.infrastructure.db.models import (
+    ApiKeyModel,
     CodeRepositoryModel,
     FindingModel,
     ScanRunModel,
     ScanTaskModel,
+    UserModel,
 )
 
 pytestmark = pytest.mark.integration
@@ -128,3 +130,55 @@ def test_duplicate_scan_run_scanner_type_raises_integrity_error(migrated_schema:
 
 def test_duplicate_scan_task_fingerprint_raises_integrity_error(migrated_schema: None) -> None:
     asyncio.run(_duplicate_finding_fingerprint())
+
+
+async def _duplicate_user_email() -> None:
+    engine = create_async_engine(resolve_database_url())
+    sessionmaker = async_sessionmaker(engine, expire_on_commit=False)
+    try:
+        async with sessionmaker() as session:
+            session.add(UserModel(email="dup@example.com", hashed_password="hashed"))
+            await session.commit()
+
+        async with sessionmaker() as session:
+            session.add(UserModel(email="dup@example.com", hashed_password="other-hash"))
+            with pytest.raises(IntegrityError):
+                await session.commit()
+            await session.rollback()
+    finally:
+        await engine.dispose()
+
+
+async def _duplicate_api_key_prefix() -> None:
+    engine = create_async_engine(resolve_database_url())
+    sessionmaker = async_sessionmaker(engine, expire_on_commit=False)
+    try:
+        async with sessionmaker() as session:
+            user = UserModel(email="key-owner@example.com", hashed_password="hashed")
+            session.add(user)
+            await session.flush()
+
+            session.add(
+                ApiKeyModel(user_id=user.id, key_prefix="dso_dup12345", hashed_key="hash-1")
+            )
+            await session.commit()
+
+            user_id = user.id
+
+        async with sessionmaker() as session:
+            session.add(
+                ApiKeyModel(user_id=user_id, key_prefix="dso_dup12345", hashed_key="hash-2")
+            )
+            with pytest.raises(IntegrityError):
+                await session.commit()
+            await session.rollback()
+    finally:
+        await engine.dispose()
+
+
+def test_duplicate_user_email_raises_integrity_error(migrated_schema: None) -> None:
+    asyncio.run(_duplicate_user_email())
+
+
+def test_duplicate_api_key_prefix_raises_integrity_error(migrated_schema: None) -> None:
+    asyncio.run(_duplicate_api_key_prefix())

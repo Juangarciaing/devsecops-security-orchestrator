@@ -9,10 +9,12 @@ from __future__ import annotations
 import uuid
 from datetime import UTC, datetime
 
+from orchestrator.domain.entities.api_key import ApiKey
 from orchestrator.domain.entities.code_repository import CodeRepository
 from orchestrator.domain.entities.finding import Finding
 from orchestrator.domain.entities.scan_run import ScanRun
 from orchestrator.domain.entities.scan_task import ScanTask
+from orchestrator.domain.entities.user import User
 from orchestrator.domain.value_objects.enums import (
     FindingSeverity,
     FindingStatus,
@@ -20,8 +22,11 @@ from orchestrator.domain.value_objects.enums import (
     ScannerType,
     ScanRunStatus,
     ScanTaskStatus,
+    UserRole,
 )
 from orchestrator.infrastructure.db.mappers import (
+    api_key_to_entity,
+    api_key_to_model,
     code_repository_to_entity,
     code_repository_to_model,
     finding_to_entity,
@@ -30,6 +35,8 @@ from orchestrator.infrastructure.db.mappers import (
     scan_run_to_model,
     scan_task_to_entity,
     scan_task_to_model,
+    user_to_entity,
+    user_to_model,
 )
 
 _NOW = datetime(2026, 1, 1, tzinfo=UTC)
@@ -109,5 +116,39 @@ def test_finding_round_trip() -> None:
 
     model = finding_to_model(entity)
     round_tripped = finding_to_entity(model)
+
+    assert round_tripped == entity
+
+
+def test_user_round_trip() -> None:
+    entity = User(
+        id=uuid.uuid4(),
+        email="admin@example.com",
+        hashed_password="hashed",
+        role=UserRole.ADMIN,
+        is_active=True,
+        created_at=_NOW,
+        updated_at=_NOW,
+    )
+
+    model = user_to_model(entity)
+    round_tripped = user_to_entity(model)
+
+    assert round_tripped == entity
+
+
+def test_api_key_round_trip() -> None:
+    entity = ApiKey(
+        id=uuid.uuid4(),
+        user_id=uuid.uuid4(),
+        key_prefix="dso_abc12345",
+        hashed_key="hashed-secret",
+        created_at=_NOW,
+        last_used_at=_NOW,
+        revoked_at=None,
+    )
+
+    model = api_key_to_model(entity)
+    round_tripped = api_key_to_entity(model)
 
     assert round_tripped == entity

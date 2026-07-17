@@ -16,10 +16,12 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from orchestrator.domain.value_objects.enums import FindingSeverity, RepositoryProvider, ScannerType
 from orchestrator.infrastructure.db.engine import resolve_database_url
 from orchestrator.infrastructure.db.models import (
+    ApiKeyModel,
     CodeRepositoryModel,
     FindingModel,
     ScanRunModel,
     ScanTaskModel,
+    UserModel,
 )
 
 pytestmark = pytest.mark.integration
@@ -86,3 +88,37 @@ def test_deleting_code_repository_cascades_to_scan_runs_tasks_and_findings(
     migrated_schema: None,
 ) -> None:
     asyncio.run(_run())
+
+
+async def _run_user_cascade() -> None:
+    engine = create_async_engine(resolve_database_url())
+    sessionmaker = async_sessionmaker(engine, expire_on_commit=False)
+    try:
+        async with sessionmaker() as session:
+            user = UserModel(email="cascade@example.com", hashed_password="hashed")
+            session.add(user)
+            await session.flush()
+
+            api_key = ApiKeyModel(
+                user_id=user.id, key_prefix="dso_cascade1", hashed_key="hashed-secret"
+            )
+            session.add(api_key)
+            await session.commit()
+
+            user_id = user.id
+            api_key_id = api_key.id
+
+        async with sessionmaker() as session:
+            persisted_user = await session.get(UserModel, user_id)
+            assert persisted_user is not None
+            await session.delete(persisted_user)
+            await session.commit()
+
+        async with sessionmaker() as session:
+            assert await session.get(ApiKeyModel, api_key_id) is None
+    finally:
+        await engine.dispose()
+
+
+def test_deleting_user_cascades_to_api_keys(migrated_schema: None) -> None:
+    asyncio.run(_run_user_cascade())
