@@ -21,6 +21,8 @@ class Settings(BaseSettings):
     jwt_secret_key: str
     environment: str = "development"
     jwt_expiry_minutes: int = 30
+    first_admin_email: str | None = None
+    first_admin_password: str | None = None
 
 
 @lru_cache
