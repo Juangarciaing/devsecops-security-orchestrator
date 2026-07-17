@@ -21,7 +21,7 @@ from orchestrator.infrastructure.db.engine import resolve_database_url
 pytestmark = pytest.mark.integration
 
 BACKEND_DIR = Path(__file__).resolve().parents[2]
-_EXPECTED_TABLES = {"code_repositories", "scan_runs", "scan_tasks", "findings"}
+_EXPECTED_TABLES = {"code_repositories", "scan_runs", "scan_tasks", "findings", "users", "api_keys"}
 
 
 def _run_alembic(*args: str) -> None:

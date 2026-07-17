@@ -7,14 +7,18 @@ aggregate.
 
 from __future__ import annotations
 
+from orchestrator.domain.entities.api_key import ApiKey
 from orchestrator.domain.entities.code_repository import CodeRepository
 from orchestrator.domain.entities.finding import Finding
 from orchestrator.domain.entities.scan_run import ScanRun
 from orchestrator.domain.entities.scan_task import ScanTask
+from orchestrator.domain.entities.user import User
+from orchestrator.infrastructure.db.models.api_key import ApiKeyModel
 from orchestrator.infrastructure.db.models.code_repository import CodeRepositoryModel
 from orchestrator.infrastructure.db.models.finding import FindingModel
 from orchestrator.infrastructure.db.models.scan_run import ScanRunModel
 from orchestrator.infrastructure.db.models.scan_task import ScanTaskModel
+from orchestrator.infrastructure.db.models.user import UserModel
 
 
 def code_repository_to_entity(model: CodeRepositoryModel) -> CodeRepository:
@@ -138,4 +142,56 @@ def finding_to_model(entity: Finding) -> FindingModel:
         line_number=entity.line_number,
         raw_evidence=entity.raw_evidence,
         snippet=entity.snippet,
+    )
+
+
+def user_to_entity(model: UserModel) -> User:
+    """Convert a `UserModel` into a domain `User` entity."""
+    return User(
+        id=model.id,
+        email=model.email,
+        hashed_password=model.hashed_password,
+        role=model.role,
+        is_active=model.is_active,
+        created_at=model.created_at,
+        updated_at=model.updated_at,
+    )
+
+
+def user_to_model(entity: User) -> UserModel:
+    """Convert a domain `User` entity into a `UserModel`."""
+    return UserModel(
+        id=entity.id,
+        email=entity.email,
+        hashed_password=entity.hashed_password,
+        role=entity.role,
+        is_active=entity.is_active,
+        created_at=entity.created_at,
+        updated_at=entity.updated_at,
+    )
+
+
+def api_key_to_entity(model: ApiKeyModel) -> ApiKey:
+    """Convert an `ApiKeyModel` into a domain `ApiKey` entity."""
+    return ApiKey(
+        id=model.id,
+        user_id=model.user_id,
+        key_prefix=model.key_prefix,
+        hashed_key=model.hashed_key,
+        created_at=model.created_at,
+        last_used_at=model.last_used_at,
+        revoked_at=model.revoked_at,
+    )
+
+
+def api_key_to_model(entity: ApiKey) -> ApiKeyModel:
+    """Convert a domain `ApiKey` entity into an `ApiKeyModel`."""
+    return ApiKeyModel(
+        id=entity.id,
+        user_id=entity.user_id,
+        key_prefix=entity.key_prefix,
+        hashed_key=entity.hashed_key,
+        created_at=entity.created_at,
+        last_used_at=entity.last_used_at,
+        revoked_at=entity.revoked_at,
     )
