@@ -63,3 +63,10 @@ class FindingStatus(StrEnum):
     RESOLVED = "resolved"
     SUPPRESSED = "suppressed"
     FALSE_POSITIVE = "false_positive"
+
+
+class UserRole(StrEnum):
+    """RBAC role assigned to a `User`."""
+
+    ADMIN = "admin"
+    MEMBER = "member"

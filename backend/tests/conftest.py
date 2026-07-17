@@ -25,3 +25,4 @@ def valid_env(monkeypatch: pytest.MonkeyPatch) -> None:
     )
     monkeypatch.setenv("REDIS_URL", "redis://localhost:6379/0")
     monkeypatch.setenv("SECRET_KEY", "test-secret-key")
+    monkeypatch.setenv("JWT_SECRET_KEY", "test-jwt-secret-key")
