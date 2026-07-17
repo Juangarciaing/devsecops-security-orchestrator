@@ -9,6 +9,7 @@ from orchestrator.domain.value_objects.enums import (
     ScannerType,
     ScanRunStatus,
     ScanTaskStatus,
+    UserRole,
 )
 
 
@@ -67,3 +68,7 @@ def test_finding_status_members() -> None:
         "suppressed",
         "false_positive",
     }
+
+
+def test_user_role_members() -> None:
+    assert {member.value for member in UserRole} == {"admin", "member"}

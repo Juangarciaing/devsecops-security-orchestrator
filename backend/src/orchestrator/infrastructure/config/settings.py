@@ -18,7 +18,9 @@ class Settings(BaseSettings):
     database_url: str
     redis_url: str
     secret_key: str
+    jwt_secret_key: str
     environment: str = "development"
+    jwt_expiry_minutes: int = 30
 
 
 @lru_cache

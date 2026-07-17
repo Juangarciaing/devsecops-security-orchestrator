@@ -23,6 +23,7 @@ def db_env(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     monkeypatch.setenv("DATABASE_URL", _LIVE_DATABASE_URL)
     monkeypatch.setenv("REDIS_URL", "redis://localhost:6379/0")
     monkeypatch.setenv("SECRET_KEY", "test-secret-key")
+    monkeypatch.setenv("JWT_SECRET_KEY", "test-jwt-secret-key")
 
     from orchestrator.infrastructure.config.settings import get_settings
 
