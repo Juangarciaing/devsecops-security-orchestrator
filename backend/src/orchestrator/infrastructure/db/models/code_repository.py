@@ -9,8 +9,8 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
+from sqlalchemy import Boolean, String, UniqueConstraint, func, text
 from sqlalchemy import Enum as SAEnum
-from sqlalchemy import String, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from orchestrator.domain.value_objects.enums import RepositoryProvider
@@ -31,6 +31,8 @@ class CodeRepositoryModel(Base):
     name: Mapped[str] = mapped_column(String, nullable=False)
     clone_url: Mapped[str] = mapped_column(String, nullable=False)
     default_branch: Mapped[str] = mapped_column(String, nullable=False)
+    credential_ref: Mapped[str | None] = mapped_column(String, nullable=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, server_default=text("true"), nullable=False)
     created_at: Mapped[datetime] = mapped_column(server_default=func.now(), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
         server_default=func.now(), onupdate=func.now(), nullable=False

@@ -10,6 +10,7 @@ from __future__ import annotations
 from orchestrator.application.dto.code_repository import (
     CodeRepositoryCreate,
     CodeRepositoryRead,
+    CodeRepositoryUpdate,
 )
 from orchestrator.application.dto.finding import FindingCreate, FindingRead
 from orchestrator.application.dto.scan_run import ScanRunCreate, ScanRunRead
@@ -18,6 +19,7 @@ from orchestrator.application.dto.scan_task import ScanTaskCreate, ScanTaskRead
 __all__ = [
     "CodeRepositoryCreate",
     "CodeRepositoryRead",
+    "CodeRepositoryUpdate",
     "FindingCreate",
     "FindingRead",
     "ScanRunCreate",

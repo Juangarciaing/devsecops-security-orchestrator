@@ -18,6 +18,8 @@ def _make_repository(**overrides: object) -> CodeRepository:
         "name": "widgets",
         "clone_url": "https://github.com/acme/widgets.git",
         "default_branch": "main",
+        "credential_ref": None,
+        "is_active": True,
         "created_at": now,
         "updated_at": now,
     }
@@ -61,6 +63,8 @@ def test_fields_are_stored_as_provided() -> None:
         name="widgets",
         clone_url="https://gitlab.com/acme/widgets.git",
         default_branch="develop",
+        credential_ref="vault://secret/widgets",
+        is_active=True,
         created_at=now,
         updated_at=now,
     )
@@ -71,5 +75,19 @@ def test_fields_are_stored_as_provided() -> None:
     assert repo.name == "widgets"
     assert repo.clone_url == "https://gitlab.com/acme/widgets.git"
     assert repo.default_branch == "develop"
+    assert repo.credential_ref == "vault://secret/widgets"
+    assert repo.is_active is True
     assert repo.created_at == now
     assert repo.updated_at == now
+
+
+def test_credential_ref_may_be_none() -> None:
+    repo = _make_repository(credential_ref=None)
+
+    assert repo.credential_ref is None
+
+
+def test_is_active_can_be_false() -> None:
+    repo = _make_repository(is_active=False)
+
+    assert repo.is_active is False

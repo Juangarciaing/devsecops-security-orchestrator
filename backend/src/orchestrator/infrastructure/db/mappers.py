@@ -30,6 +30,8 @@ def code_repository_to_entity(model: CodeRepositoryModel) -> CodeRepository:
         name=model.name,
         clone_url=model.clone_url,
         default_branch=model.default_branch,
+        credential_ref=model.credential_ref,
+        is_active=model.is_active,
         created_at=model.created_at,
         updated_at=model.updated_at,
     )
@@ -44,6 +46,8 @@ def code_repository_to_model(entity: CodeRepository) -> CodeRepositoryModel:
         name=entity.name,
         clone_url=entity.clone_url,
         default_branch=entity.default_branch,
+        credential_ref=entity.credential_ref,
+        is_active=entity.is_active,
         created_at=entity.created_at,
         updated_at=entity.updated_at,
     )
