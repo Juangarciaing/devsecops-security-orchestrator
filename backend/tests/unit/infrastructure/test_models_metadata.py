@@ -90,6 +90,17 @@ def test_code_repositories_unique_constraint(engine: sa.Engine) -> None:
     assert ("provider", "owner", "name") in unique_column_sets
 
 
+def test_code_repositories_has_credential_ref_and_is_active_columns(engine: sa.Engine) -> None:
+    inspector = sa.inspect(engine)
+    columns = {col["name"]: col for col in inspector.get_columns("code_repositories")}
+
+    assert "credential_ref" in columns
+    assert columns["credential_ref"]["nullable"] is True
+
+    assert "is_active" in columns
+    assert columns["is_active"]["nullable"] is False
+
+
 def test_scan_tasks_unique_constraint_and_fk(engine: sa.Engine) -> None:
     inspector = sa.inspect(engine)
     unique_column_sets = {

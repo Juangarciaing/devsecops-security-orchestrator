@@ -50,6 +50,8 @@ def test_code_repository_round_trip() -> None:
         name="widgets",
         clone_url="https://github.com/acme/widgets.git",
         default_branch="main",
+        credential_ref="vault://secret/widgets",
+        is_active=True,
         created_at=_NOW,
         updated_at=_NOW,
     )
@@ -58,6 +60,28 @@ def test_code_repository_round_trip() -> None:
     round_tripped = code_repository_to_entity(model)
 
     assert round_tripped == entity
+
+
+def test_code_repository_round_trip_with_no_credential_ref_and_inactive() -> None:
+    entity = CodeRepository(
+        id=uuid.uuid4(),
+        provider=RepositoryProvider.GITLAB,
+        owner="acme",
+        name="gadgets",
+        clone_url="https://gitlab.com/acme/gadgets.git",
+        default_branch="develop",
+        credential_ref=None,
+        is_active=False,
+        created_at=_NOW,
+        updated_at=_NOW,
+    )
+
+    model = code_repository_to_model(entity)
+    round_tripped = code_repository_to_entity(model)
+
+    assert round_tripped == entity
+    assert round_tripped.credential_ref is None
+    assert round_tripped.is_active is False
 
 
 def test_scan_run_round_trip() -> None:

@@ -9,6 +9,15 @@ from __future__ import annotations
 from orchestrator.infrastructure.db.repositories.api_key_repository import (
     SqlAlchemyApiKeyRepository,
 )
+from orchestrator.infrastructure.db.repositories.code_repository_repository import (
+    CodeRepositoryNotFoundError,
+    SqlAlchemyCodeRepositoryRepository,
+)
 from orchestrator.infrastructure.db.repositories.user_repository import SqlAlchemyUserRepository
 
-__all__ = ["SqlAlchemyApiKeyRepository", "SqlAlchemyUserRepository"]
+__all__ = [
+    "CodeRepositoryNotFoundError",
+    "SqlAlchemyApiKeyRepository",
+    "SqlAlchemyCodeRepositoryRepository",
+    "SqlAlchemyUserRepository",
+]

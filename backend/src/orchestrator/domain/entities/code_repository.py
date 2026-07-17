@@ -28,6 +28,8 @@ class CodeRepository:
     name: str
     clone_url: str
     default_branch: str
+    credential_ref: str | None
+    is_active: bool
     created_at: datetime
     updated_at: datetime
 
