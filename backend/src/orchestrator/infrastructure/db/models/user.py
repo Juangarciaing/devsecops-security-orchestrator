@@ -2,6 +2,15 @@
 
 Mirrors `domain.entities.user.User`. `email` is the unique login identity.
 `role` is a native Postgres enum (`user_role`).
+
+Note: `SAEnum(UserRole, ...)` stores each member's `.name` (uppercase
+`ADMIN`/`MEMBER`) in the native Postgres enum, not its lowercase `.value`
+(`admin`/`member`), since no `values_callable` is passed. This is
+SQLAlchemy's default behavior and matches every other native enum mapping
+in this codebase (see `ScannerType`/`FindingSeverity`/etc. in
+`infrastructure/db/models/`). Harmless: the mapper round-trips
+transparently in Python, and `UserRole` is never queried by raw SQL
+expecting lowercase values.
 """
 
 from __future__ import annotations
