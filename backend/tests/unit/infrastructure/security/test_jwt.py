@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import uuid
 from datetime import UTC, datetime, timedelta
 
@@ -63,13 +64,29 @@ def test_decode_access_token_rejects_expired_token(valid_env: None) -> None:
         decode_access_token(expired_token)
 
 
+def _b64url_decode(segment: str) -> bytes:
+    padding = "=" * (-len(segment) % 4)
+    return base64.urlsafe_b64decode(segment + padding)
+
+
+def _b64url_encode(data: bytes) -> str:
+    return base64.urlsafe_b64encode(data).rstrip(b"=").decode("ascii")
+
+
 def test_decode_access_token_rejects_tampered_signature(valid_env: None) -> None:
     user = _make_user()
     token = create_access_token(user)
     header_b64, payload_b64, signature_b64 = token.split(".")
 
-    tampered_char = "B" if signature_b64[-1] != "B" else "A"
-    tampered_signature_b64 = signature_b64[:-1] + tampered_char
+    # Flip a full byte (via XOR 0xFF, which always changes any byte value) in the
+    # decoded signature itself, then re-encode. Operating on raw signature bytes
+    # (not the base64url string) guarantees a real change to the HMAC digest,
+    # sidestepping the flaky edge case where tampering only the last base64url
+    # character can land entirely on always-zero padding bits and leave the
+    # decoded signature bytes unchanged (~6% of signatures, see verify report).
+    signature_bytes = bytearray(_b64url_decode(signature_b64))
+    signature_bytes[0] ^= 0xFF
+    tampered_signature_b64 = _b64url_encode(bytes(signature_bytes))
     tampered = f"{header_b64}.{payload_b64}.{tampered_signature_b64}"
 
     with pytest.raises(ValueError, match="invalid"):
