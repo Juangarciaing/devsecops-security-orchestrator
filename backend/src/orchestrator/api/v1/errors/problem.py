@@ -15,6 +15,7 @@ from fastapi import FastAPI, Request, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 _PROBLEM_JSON = "application/problem+json"
 
@@ -67,6 +68,20 @@ async def _handle_problem_exception(_: Request, exc: Exception) -> JSONResponse:
     )
 
 
+async def _handle_http_exception(_: Request, exc: Exception) -> JSONResponse:
+    """Convert framework-level `HTTPException` (e.g. `HTTPBearer` auto-error on a
+    missing/malformed Authorization header) into the same RFC 7807 shape used
+    by application-raised `ProblemException`."""
+    assert isinstance(exc, StarletteHTTPException)  # noqa: S101 — enforced by add_exception_handler
+    return _problem_response(
+        ProblemDetail(
+            title=HTTPStatus(exc.status_code).phrase,
+            status=exc.status_code,
+            detail=str(exc.detail),
+        )
+    )
+
+
 async def _handle_validation_error(_: Request, exc: Exception) -> JSONResponse:
     assert isinstance(exc, RequestValidationError)  # noqa: S101 — enforced by add_exception_handler
     return _problem_response(
@@ -91,5 +106,6 @@ async def _handle_unhandled_exception(_: Request, exc: Exception) -> JSONRespons
 def register_exception_handlers(app: FastAPI) -> None:
     """Register the RFC 7807 problem+json handlers on `app`."""
     app.add_exception_handler(ProblemException, _handle_problem_exception)
+    app.add_exception_handler(StarletteHTTPException, _handle_http_exception)
     app.add_exception_handler(RequestValidationError, _handle_validation_error)
     app.add_exception_handler(Exception, _handle_unhandled_exception)

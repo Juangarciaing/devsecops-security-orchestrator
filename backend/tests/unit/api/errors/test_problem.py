@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from http import HTTPStatus
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 from pydantic import BaseModel
 
@@ -38,6 +38,10 @@ def _build_test_app() -> FastAPI:
     @app.get("/boom")
     def _boom() -> None:
         raise RuntimeError("some internal secret detail")
+
+    @app.get("/raises-framework-401")
+    def _raises_framework_401() -> None:
+        raise HTTPException(status_code=401, detail="Not authenticated")
 
     return app
 
@@ -79,6 +83,21 @@ def test_request_validation_error_returns_422_problem_json() -> None:
     assert body["status"] == 422
     assert body["title"] == HTTPStatus.UNPROCESSABLE_CONTENT.phrase
     assert "detail" in body
+
+
+def test_framework_http_exception_returns_problem_json_shape() -> None:
+    """A framework-raised `HTTPException` (e.g. `HTTPBearer` auto-error on a
+    missing Authorization header) MUST also be converted to problem+json,
+    not FastAPI's default `{"detail": ...}` JSON body."""
+    client = TestClient(_build_test_app(), raise_server_exceptions=False)
+
+    response = client.get("/raises-framework-401")
+
+    assert response.status_code == 401
+    assert response.headers["content-type"] == "application/problem+json"
+    body = response.json()
+    assert body["status"] == 401
+    assert body["detail"] == "Not authenticated"
 
 
 def test_unhandled_exception_returns_500_problem_json_without_leaking_internals() -> None:
