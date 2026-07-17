@@ -29,7 +29,10 @@ from orchestrator.application.use_cases.register_repository import (
     DuplicateRepositoryIdentityError,
     register_repository,
 )
-from orchestrator.application.use_cases.update_repository import update_repository
+from orchestrator.application.use_cases.update_repository import (
+    InvalidRepositoryUpdateError,
+    update_repository,
+)
 from orchestrator.domain.entities.user import User
 from orchestrator.domain.value_objects.enums import UserRole
 from orchestrator.infrastructure.db.repositories.code_repository_repository import (
@@ -103,6 +106,10 @@ async def update_repository_endpoint(
     repository_port = SqlAlchemyCodeRepositoryRepository(session)
     try:
         updated = await update_repository(repository_port, repository_id, payload)
+    except InvalidRepositoryUpdateError as exc:
+        raise ProblemException(
+            status_code=422, title="Unprocessable Content", detail=str(exc)
+        ) from exc
     except RepositoryNotFoundError as exc:
         raise _not_found() from exc
     return CodeRepositoryRead.from_entity(updated)

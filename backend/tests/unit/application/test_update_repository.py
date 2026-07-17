@@ -8,7 +8,10 @@ from datetime import UTC, datetime
 
 from orchestrator.application.dto.code_repository import CodeRepositoryUpdate
 from orchestrator.application.use_cases.get_repository import RepositoryNotFoundError
-from orchestrator.application.use_cases.update_repository import update_repository
+from orchestrator.application.use_cases.update_repository import (
+    InvalidRepositoryUpdateError,
+    update_repository,
+)
 from orchestrator.domain.entities.code_repository import CodeRepository
 from orchestrator.domain.ports.code_repository_port import CodeRepositoryPort
 from orchestrator.domain.value_objects.enums import RepositoryProvider
@@ -90,6 +93,35 @@ def test_update_repository_distinguishes_omitted_from_explicit_null() -> None:
     # Explicitly set to null -> nulled, not left unchanged.
     assert result.credential_ref is None
     assert result.clone_url == "https://github.com/acme/widgets.git"
+
+
+def test_update_repository_rejects_explicit_null_clone_url() -> None:
+    repo = _make_repository()
+    repository_port = _FakeCodeRepositoryRepository([repo])
+    update = CodeRepositoryUpdate(clone_url=None)
+
+    try:
+        asyncio.run(update_repository(repository_port, repo.id, update))
+        raise AssertionError("expected InvalidRepositoryUpdateError")
+    except InvalidRepositoryUpdateError:
+        pass
+
+    # Nothing was persisted — rejected before any mutation.
+    assert repository_port.updated == []
+
+
+def test_update_repository_rejects_explicit_null_default_branch() -> None:
+    repo = _make_repository()
+    repository_port = _FakeCodeRepositoryRepository([repo])
+    update = CodeRepositoryUpdate(default_branch=None)
+
+    try:
+        asyncio.run(update_repository(repository_port, repo.id, update))
+        raise AssertionError("expected InvalidRepositoryUpdateError")
+    except InvalidRepositoryUpdateError:
+        pass
+
+    assert repository_port.updated == []
 
 
 def test_update_repository_raises_when_missing() -> None:
