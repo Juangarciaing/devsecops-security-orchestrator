@@ -181,6 +181,51 @@ def test_scan_run_update_status_raises_not_found_for_missing_id(migrated_schema:
     asyncio.run(_scan_run_update_status_raises_not_found())
 
 
+async def _scan_run_update_status_persists_started_and_completed_at() -> None:
+    engine = create_async_engine(resolve_database_url())
+    sessionmaker = async_sessionmaker(engine, expire_on_commit=False)
+    try:
+        async with sessionmaker() as session:
+            code_repo = SqlAlchemyCodeRepositoryRepository(session)
+            repository = await code_repo.create(_make_repository())
+            await session.commit()
+            repository_id = repository.id
+
+        async with sessionmaker() as session:
+            scan_run_repo = SqlAlchemyScanRunRepository(session)
+            run = await scan_run_repo.create(_make_scan_run(repository_id))
+            await session.commit()
+            run_id = run.id
+
+        async with sessionmaker() as session:
+            scan_run_repo = SqlAlchemyScanRunRepository(session)
+            started = await scan_run_repo.update_status(
+                run_id, ScanRunStatus.RUNNING, started_at=_NOW
+            )
+            await session.commit()
+            assert started.started_at == _NOW
+            assert started.completed_at is None
+
+        async with sessionmaker() as session:
+            scan_run_repo = SqlAlchemyScanRunRepository(session)
+            completed = await scan_run_repo.update_status(
+                run_id, ScanRunStatus.COMPLETED, completed_at=_NOW
+            )
+            await session.commit()
+            # started_at set by the previous call MUST survive an update_status
+            # call that only passes completed_at (D2/D5 worker semantics).
+            assert completed.started_at == _NOW
+            assert completed.completed_at == _NOW
+    finally:
+        await engine.dispose()
+
+
+def test_scan_run_update_status_persists_started_and_completed_at(
+    migrated_schema: None,
+) -> None:
+    asyncio.run(_scan_run_update_status_persists_started_and_completed_at())
+
+
 # ---------------------------------------------------------------------------
 # SqlAlchemyScanTaskRepository
 # ---------------------------------------------------------------------------
@@ -248,6 +293,60 @@ async def _scan_task_update_status_raises_not_found() -> None:
 
 def test_scan_task_update_status_raises_not_found_for_missing_id(migrated_schema: None) -> None:
     asyncio.run(_scan_task_update_status_raises_not_found())
+
+
+async def _scan_task_update_status_persists_timestamps_and_error_message() -> None:
+    engine = create_async_engine(resolve_database_url())
+    sessionmaker = async_sessionmaker(engine, expire_on_commit=False)
+    try:
+        async with sessionmaker() as session:
+            code_repo = SqlAlchemyCodeRepositoryRepository(session)
+            repository = await code_repo.create(_make_repository())
+            await session.commit()
+            repository_id = repository.id
+
+        async with sessionmaker() as session:
+            scan_run_repo = SqlAlchemyScanRunRepository(session)
+            run = await scan_run_repo.create(_make_scan_run(repository_id))
+            await session.commit()
+            run_id = run.id
+
+        async with sessionmaker() as session:
+            scan_task_repo = SqlAlchemyScanTaskRepository(session)
+            created = await scan_task_repo.create(_make_scan_task(run_id))
+            await session.commit()
+            task_id = created.id
+
+        async with sessionmaker() as session:
+            scan_task_repo = SqlAlchemyScanTaskRepository(session)
+            started = await scan_task_repo.update_status(
+                task_id, ScanTaskStatus.RUNNING, started_at=_NOW
+            )
+            await session.commit()
+            assert started.started_at == _NOW
+
+        async with sessionmaker() as session:
+            scan_task_repo = SqlAlchemyScanTaskRepository(session)
+            failed = await scan_task_repo.update_status(
+                task_id,
+                ScanTaskStatus.FAILED,
+                completed_at=_NOW,
+                error_message="simulated transient failure",
+            )
+            await session.commit()
+            # started_at set earlier MUST survive an update_status call that
+            # only passes completed_at/error_message (D2/D5 worker semantics).
+            assert failed.started_at == _NOW
+            assert failed.completed_at == _NOW
+            assert failed.error_message == "simulated transient failure"
+    finally:
+        await engine.dispose()
+
+
+def test_scan_task_update_status_persists_timestamps_and_error_message(
+    migrated_schema: None,
+) -> None:
+    asyncio.run(_scan_task_update_status_persists_timestamps_and_error_message())
 
 
 # ---------------------------------------------------------------------------
