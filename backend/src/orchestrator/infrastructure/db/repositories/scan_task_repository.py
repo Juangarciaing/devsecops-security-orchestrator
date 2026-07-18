@@ -5,6 +5,7 @@ the pattern established by `SqlAlchemyCodeRepositoryRepository`.
 from __future__ import annotations
 
 import uuid
+from datetime import datetime
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -42,11 +43,32 @@ class SqlAlchemyScanTaskRepository(ScanTaskPort):
         await self._session.flush()
         return scan_task_to_entity(model)
 
-    async def update_status(self, scan_task_id: uuid.UUID, status: ScanTaskStatus) -> ScanTask:
+    async def update_status(
+        self,
+        scan_task_id: uuid.UUID,
+        status: ScanTaskStatus,
+        *,
+        started_at: datetime | None = None,
+        completed_at: datetime | None = None,
+        error_message: str | None = None,
+    ) -> ScanTask:
+        """Update `status` and, when explicitly given, timestamps/`error_message`.
+
+        `started_at`/`completed_at`/`error_message` default to `None`,
+        meaning "leave unchanged" — never resets an already-set value back to
+        `None`. Adapter-only extension beyond `ScanTaskPort` (worker state
+        machine, D2/D5).
+        """
         model = await self._session.get(ScanTaskModel, scan_task_id)
         if model is None:
             raise ScanTaskNotFoundError(scan_task_id)
         model.status = status
+        if started_at is not None:
+            model.started_at = started_at
+        if completed_at is not None:
+            model.completed_at = completed_at
+        if error_message is not None:
+            model.error_message = error_message
         await self._session.flush()
         return scan_task_to_entity(model)
 
