@@ -19,6 +19,21 @@ cp frontend/.env.example frontend/.env
 docker compose up -d
 ```
 
+### `worker` and the Docker socket (Module 6+)
+
+The `worker` service mounts the host's `/var/run/docker.sock` to launch
+hardened scanner containers, and runs as the image's non-root `appuser`
+(uid 1000) via `group_add`, not as root. The docker.sock's group GID is
+host-specific, so set `DOCKER_GID` in your `.env` to match your host:
+
+```bash
+stat -c '%g' /var/run/docker.sock   # Linux
+ls -la /var/run/docker.sock         # macOS — read the group column
+```
+
+Add `DOCKER_GID=<value>` to `.env` (defaults to `999` if unset, which is a
+common but not guaranteed value on many Debian/Ubuntu hosts).
+
 Verify the stack:
 
 ```bash

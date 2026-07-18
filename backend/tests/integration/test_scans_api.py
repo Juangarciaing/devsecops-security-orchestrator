@@ -15,14 +15,24 @@ from *inside* the async request handler itself: `process_scan_task` calls
 one driving the HTTP request). Running it at the test's top level (outside
 any `asyncio.run(_run_with_client(...))` scenario) sidesteps that conflict
 exactly the way a separate worker process would in production.
+
+Since Module 6, `process_scan_task` orchestrates REAL hardened containers by
+default — the full-pipeline e2e test below injects a `FakeContainerRunner` +
+`MagicMock` docker client (the same test-only injection kwargs and double
+`tests/integration/test_process_scan_task.py`/`test_git_checkout.py` already
+established) so it stays a fast, deterministic in-process test; the
+MANDATORY real-Docker/real-Gitleaks proof lives in the live e2e run
+documented in the apply-progress artifact, not here.
 """
 
 from __future__ import annotations
 
 import asyncio
+import json
 import uuid
 from collections.abc import AsyncIterator
 from datetime import datetime
+from unittest.mock import MagicMock
 
 import httpx
 import pytest
@@ -32,6 +42,7 @@ from orchestrator.api.main import create_app
 from orchestrator.api.v1.dependencies.db import get_db_session
 from orchestrator.domain.entities.code_repository import CodeRepository
 from orchestrator.domain.entities.user import User
+from orchestrator.domain.ports.container_runner_port import RunResult
 from orchestrator.domain.value_objects.enums import RepositoryProvider, UserRole
 from orchestrator.infrastructure.db.engine import resolve_database_url
 from orchestrator.infrastructure.db.repositories.code_repository_repository import (
@@ -40,6 +51,7 @@ from orchestrator.infrastructure.db.repositories.code_repository_repository impo
 from orchestrator.infrastructure.db.repositories.user_repository import SqlAlchemyUserRepository
 from orchestrator.infrastructure.security.jwt import create_access_token
 from orchestrator.infrastructure.security.password_hasher import hash_password
+from tests.fakes.fake_container_runner import FakeContainerRunner
 
 pytestmark = pytest.mark.integration
 
@@ -476,8 +488,37 @@ def test_trigger_scan_then_process_scan_task_then_get_shows_completed_with_one_f
 
     # Run the REAL task synchronously, outside any event loop (mirrors a
     # worker process picking the message off the queue) — exactly the
-    # pattern `test_process_scan_task.py` already uses.
-    result = process_scan_task.apply(args=(scan_task_id,))
+    # pattern `test_process_scan_task.py` already uses. `container_runner`/
+    # `docker_client` are test-only injection kwargs (Module 6) — a real
+    # worker never passes them, defaulting to a real `DockerContainerRunner`/
+    # `docker.from_env()` instead.
+    fake_runner = FakeContainerRunner()
+    fake_runner.script(
+        RunResult(exit_code=0, stdout="", stderr="", timed_out=False),  # clone
+        RunResult(exit_code=0, stdout="deadbeef1234\n", stderr="", timed_out=False),  # rev-parse
+        RunResult(
+            exit_code=2,
+            stdout=json.dumps(
+                [
+                    {
+                        "RuleID": "stripe-access-token",
+                        "Description": "Stripe Access Token",
+                        "File": "config.py",
+                        "StartLine": 4,
+                        "Secret": "543736274dd00e9ca09b5942773b552873862520",
+                    }
+                ]
+            ),
+            stderr="",
+            timed_out=False,
+        ),  # gitleaks: one real finding
+    )
+    docker_client = MagicMock()
+
+    result = process_scan_task.apply(
+        args=(scan_task_id,),
+        kwargs={"container_runner": fake_runner, "docker_client": docker_client},
+    )
     result.get()
 
     async def verify_scenario(
