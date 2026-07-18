@@ -68,3 +68,9 @@ def test_every_port_declares_only_async_methods() -> None:
             assert inspect.iscoroutinefunction(method), (
                 f"{port_cls.__name__}.{method.__name__} must be declared `async def`"
             )
+
+
+def test_scan_task_port_declares_find_active_task() -> None:
+    """`ScanTaskPort` gains `find_active_task` (D3) — used by `trigger_scan` for idempotency."""
+    assert "find_active_task" in ScanTaskPort.__abstractmethods__
+    assert inspect.iscoroutinefunction(ScanTaskPort.find_active_task)
