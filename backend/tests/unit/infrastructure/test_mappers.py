@@ -136,12 +136,39 @@ def test_finding_round_trip() -> None:
         line_number=42,
         raw_evidence={"match": "AKIA..."},
         snippet="API_KEY = 'AKIA...'",
+        repository_id=uuid.uuid4(),
+        first_seen_scan_run_id=uuid.uuid4(),
+        last_seen_scan_run_id=uuid.uuid4(),
     )
 
     model = finding_to_model(entity)
     round_tripped = finding_to_entity(model)
 
     assert round_tripped == entity
+
+
+def test_finding_round_trip_with_null_repository_and_scan_run_tracking() -> None:
+    """`repository_id`/`first_seen_scan_run_id`/`last_seen_scan_run_id` default
+    to `None` on the entity (Module 7 PR2: additive, non-breaking for callers —
+    e.g. `GitleaksAdapter.parse()` — that don't populate them yet)."""
+    entity = Finding(
+        id=uuid.uuid4(),
+        scan_task_id=uuid.uuid4(),
+        severity=FindingSeverity.HIGH,
+        rule_id="rule-2",
+        title="Hardcoded secret",
+        fingerprint="fp-2",
+        created_at=_NOW,
+        updated_at=_NOW,
+    )
+
+    model = finding_to_model(entity)
+    round_tripped = finding_to_entity(model)
+
+    assert round_tripped == entity
+    assert round_tripped.repository_id is None
+    assert round_tripped.first_seen_scan_run_id is None
+    assert round_tripped.last_seen_scan_run_id is None
 
 
 def test_user_round_trip() -> None:

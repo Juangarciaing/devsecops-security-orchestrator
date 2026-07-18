@@ -67,6 +67,10 @@ async def _duplicate_scan_task_scanner_type() -> None:
 
 
 async def _duplicate_finding_fingerprint() -> None:
+    """Module 7 PR2: dedup moved from `UNIQUE(scan_task_id, fingerprint)` to
+    `UNIQUE(repository_id, fingerprint)` — proves the SAME repository, a
+    DIFFERENT scan_task, and the SAME fingerprint now collide (which the old
+    per-scan-task constraint would have allowed)."""
     engine = create_async_engine(resolve_database_url())
     sessionmaker = async_sessionmaker(engine, expire_on_commit=False)
     try:
@@ -90,13 +94,14 @@ async def _duplicate_finding_fingerprint() -> None:
             session.add(scan_run)
             await session.flush()
 
-            scan_task = ScanTaskModel(scan_run_id=scan_run.id, scanner_type=ScannerType.SAST)
-            session.add(scan_task)
+            scan_task_1 = ScanTaskModel(scan_run_id=scan_run.id, scanner_type=ScannerType.SAST)
+            session.add(scan_task_1)
             await session.flush()
 
             session.add(
                 FindingModel(
-                    scan_task_id=scan_task.id,
+                    scan_task_id=scan_task_1.id,
+                    repository_id=repository.id,
                     severity=FindingSeverity.HIGH,
                     rule_id="rule-1",
                     title="Hardcoded secret",
@@ -105,12 +110,20 @@ async def _duplicate_finding_fingerprint() -> None:
             )
             await session.commit()
 
-            scan_task_id = scan_task.id
+            repository_id = repository.id
+            scan_run_id = scan_run.id
 
         async with sessionmaker() as session:
+            # A different scan_task (same scan_run, different scanner_type)
+            # belonging to the SAME repository.
+            scan_task_2 = ScanTaskModel(scan_run_id=scan_run_id, scanner_type=ScannerType.SECRETS)
+            session.add(scan_task_2)
+            await session.flush()
+
             session.add(
                 FindingModel(
-                    scan_task_id=scan_task_id,
+                    scan_task_id=scan_task_2.id,
+                    repository_id=repository_id,
                     severity=FindingSeverity.HIGH,
                     rule_id="rule-2",
                     title="Duplicate fingerprint",

@@ -126,6 +126,9 @@ def finding_to_entity(model: FindingModel) -> Finding:
         line_number=model.line_number,
         raw_evidence=model.raw_evidence,
         snippet=model.snippet,
+        repository_id=model.repository_id,
+        first_seen_scan_run_id=model.first_seen_scan_run_id,
+        last_seen_scan_run_id=model.last_seen_scan_run_id,
     )
 
 
@@ -146,6 +149,9 @@ def finding_to_model(entity: Finding) -> FindingModel:
         line_number=entity.line_number,
         raw_evidence=entity.raw_evidence,
         snippet=entity.snippet,
+        repository_id=entity.repository_id,
+        first_seen_scan_run_id=entity.first_seen_scan_run_id,
+        last_seen_scan_run_id=entity.last_seen_scan_run_id,
     )
 
 

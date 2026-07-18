@@ -120,11 +120,53 @@ def test_findings_unique_constraint_and_fk(engine: sa.Engine) -> None:
     unique_column_sets = {
         tuple(uc["column_names"]) for uc in inspector.get_unique_constraints("findings")
     }
-    assert ("scan_task_id", "fingerprint") in unique_column_sets
+    # `UNIQUE(scan_task_id, fingerprint)` was replaced by `UNIQUE(repository_id,
+    # fingerprint)` in Module 7 PR2 — dedup is now per-repository, not per-task.
+    assert ("repository_id", "fingerprint") in unique_column_sets
+    assert ("scan_task_id", "fingerprint") not in unique_column_sets
 
     fks = inspector.get_foreign_keys("findings")
     assert any(
         fk["referred_table"] == "scan_tasks" and fk["options"].get("ondelete") == "CASCADE"
+        for fk in fks
+    )
+
+
+def test_findings_has_repository_id_and_scan_run_tracking_columns(engine: sa.Engine) -> None:
+    """Module 7 PR2: `repository_id` (denormalized, CASCADE) plus
+    `first_seen_scan_run_id`/`last_seen_scan_run_id` (SET NULL). All 3 stay
+    nullable in PR2 — `repository_id` is only guaranteed non-null once the
+    write path (`bulk_upsert_findings`, PR3/PR4) populates it on every
+    insert; `first_seen`/`last_seen` are nullable by design (SET NULL)."""
+    inspector = sa.inspect(engine)
+    columns = {col["name"]: col for col in inspector.get_columns("findings")}
+
+    assert "repository_id" in columns
+    assert columns["repository_id"]["nullable"] is True
+
+    assert "first_seen_scan_run_id" in columns
+    assert columns["first_seen_scan_run_id"]["nullable"] is True
+
+    assert "last_seen_scan_run_id" in columns
+    assert columns["last_seen_scan_run_id"]["nullable"] is True
+
+    fks = inspector.get_foreign_keys("findings")
+    assert any(
+        fk["referred_table"] == "code_repositories"
+        and fk["constrained_columns"] == ["repository_id"]
+        and fk["options"].get("ondelete") == "CASCADE"
+        for fk in fks
+    )
+    assert any(
+        fk["referred_table"] == "scan_runs"
+        and fk["constrained_columns"] == ["first_seen_scan_run_id"]
+        and fk["options"].get("ondelete") == "SET NULL"
+        for fk in fks
+    )
+    assert any(
+        fk["referred_table"] == "scan_runs"
+        and fk["constrained_columns"] == ["last_seen_scan_run_id"]
+        and fk["options"].get("ondelete") == "SET NULL"
         for fk in fks
     )
 

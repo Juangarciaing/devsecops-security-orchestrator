@@ -97,10 +97,13 @@ def _make_scan_task(scan_run_id: uuid.UUID, **overrides: object) -> ScanTask:
     return ScanTask(**defaults)  # type: ignore[arg-type]
 
 
-def _make_finding(scan_task_id: uuid.UUID, **overrides: object) -> Finding:
+def _make_finding(
+    scan_task_id: uuid.UUID, repository_id: uuid.UUID, **overrides: object
+) -> Finding:
     defaults: dict[str, object] = {
         "id": uuid.uuid4(),
         "scan_task_id": scan_task_id,
+        "repository_id": repository_id,
         "severity": FindingSeverity.INFO,
         "rule_id": "placeholder",
         "title": "Placeholder finding",
@@ -639,7 +642,7 @@ async def _finding_create_count_and_list_roundtrip() -> None:
             zero_count = await finding_repo.count_by_scan_task(task_id)
             assert zero_count == 0
 
-            created = await finding_repo.create(_make_finding(task_id))
+            created = await finding_repo.create(_make_finding(task_id, repository_id))
             await session.commit()
             finding_id = created.id
 
@@ -649,6 +652,7 @@ async def _finding_create_count_and_list_roundtrip() -> None:
             by_id = await finding_repo.get_by_id(finding_id)
             assert by_id is not None
             assert by_id.scan_task_id == task_id
+            assert by_id.repository_id == repository_id
             assert by_id.rule_id == "placeholder"
 
             one_count = await finding_repo.count_by_scan_task(task_id)
