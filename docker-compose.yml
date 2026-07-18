@@ -67,13 +67,21 @@ services:
     # socket (`backend`, the API server, has no business launching
     # containers). Holding this socket is root-equivalent to the HOST
     # (design's accepted residual risk R1: durable fix = Module 13's
-    # k8s Jobs + gVisor/Kata, no socket). `user: root` here is a direct
-    # consequence of that same acceptance, not a new escalation: the host's
-    # `/var/run/docker.sock` group ownership/GID is host-specific, and a
-    # non-root container user cannot reliably access it without knowing that
-    # GID in advance — running the worker itself as root does not widen the
-    # blast radius beyond what socket access already grants.
-    user: "0:0"
+    # k8s Jobs + gVisor/Kata, no socket). R1 is scoped to socket access
+    # itself, NOT to the worker's own process UID — running the Celery
+    # process as root would needlessly widen the blast radius of any
+    # UNRELATED vulnerability in worker/dependency code. The image's
+    # non-root `appuser` (uid 1000, set via `USER appuser` in
+    # `docker/backend.Dockerfile`) is kept as-is; `group_add` grants that
+    # user supplementary access to the host's docker.sock group instead.
+    # `DOCKER_GID` is host-specific (varies by distro/CI/Docker Desktop vs
+    # Engine) — set it in `.env` to your host's actual GID, found via:
+    #   stat -c '%g' /var/run/docker.sock   (Linux)
+    #   ls -la /var/run/docker.sock         (macOS, read the group column)
+    # 999 is a common default on many Debian/Ubuntu hosts but is NOT
+    # guaranteed — always verify against your own host.
+    group_add:
+      - "${DOCKER_GID:-999}"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
     depends_on:

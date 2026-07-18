@@ -157,6 +157,101 @@ def test_checkout_raises_checkout_failed_error_on_nonzero_rev_parse_exit() -> No
         checkout.checkout(_CLONE_URL, _REF)
 
 
+def test_checkout_raises_credential_resolution_error_on_github_private_repo() -> None:
+    """Empirically confirmed live: `GIT_TERMINAL_PROMPT=0 git clone` against a
+    private (or nonexistent — GitHub intentionally returns the identical
+    message for both, for privacy) GitHub repo prints exactly this
+    server-controlled `remote:` line, unlocalized, followed by a
+    (client-locale-dependent) `fatal:` line. Spec's "Private repo" scenario
+    requires the specific literal failure reason "credential resolution not
+    yet implemented" (Module 6 non-goal: no credential resolution exists)."""
+    fake_runner = FakeContainerRunner()
+    fake_runner.script(
+        RunResult(
+            exit_code=128,
+            stdout="",
+            stderr=(
+                "remote: Repository not found.\n"
+                "fatal: repository 'https://github.com/octocat/private-repo.git/' not found\n"
+            ),
+            timed_out=False,
+        )
+    )
+    docker_client = MagicMock()
+    checkout = GitCheckout(runner=fake_runner, docker_client=docker_client, settings=_settings())
+
+    with pytest.raises(CheckoutFailedError, match="credential resolution not yet implemented"):
+        checkout.checkout("https://github.com/octocat/private-repo.git", _REF)
+
+    assert len(fake_runner.calls) == 1  # rev-parse never attempted after a failed clone
+
+
+def test_checkout_raises_credential_resolution_error_on_basic_auth_prompt() -> None:
+    """Empirically confirmed live: `GIT_TERMINAL_PROMPT=0 git clone` against a
+    non-GitHub host requiring HTTP Basic auth (e.g. self-hosted Git/Bitbucket)
+    prints exactly this message when no credentials are configured."""
+    fake_runner = FakeContainerRunner()
+    fake_runner.script(
+        RunResult(
+            exit_code=128,
+            stdout="",
+            stderr="fatal: could not read Username for 'https://bitbucket.org': "
+            "terminal prompts disabled\n",
+            timed_out=False,
+        )
+    )
+    docker_client = MagicMock()
+    checkout = GitCheckout(runner=fake_runner, docker_client=docker_client, settings=_settings())
+
+    with pytest.raises(CheckoutFailedError, match="credential resolution not yet implemented"):
+        checkout.checkout("https://bitbucket.org/private/repo.git", _REF)
+
+
+def test_checkout_raises_credential_resolution_error_on_ssh_permission_denied() -> None:
+    """SSH remotes without a matching deploy key/agent key print this exact
+    combo (well-documented git/OpenSSH convention: `Permission denied
+    (publickey).` from ssh, followed by git's own access-rights hint)."""
+    fake_runner = FakeContainerRunner()
+    fake_runner.script(
+        RunResult(
+            exit_code=128,
+            stdout="",
+            stderr=(
+                "git@github.com: Permission denied (publickey).\n"
+                "fatal: Could not read from remote repository.\n\n"
+                "Please make sure you have the correct access rights\n"
+                "and the repository exists.\n"
+            ),
+            timed_out=False,
+        )
+    )
+    docker_client = MagicMock()
+    checkout = GitCheckout(runner=fake_runner, docker_client=docker_client, settings=_settings())
+
+    with pytest.raises(CheckoutFailedError, match="credential resolution not yet implemented"):
+        checkout.checkout("git@github.com:octocat/private-repo.git", _REF)
+
+
+def test_checkout_generic_bad_ref_message_unaffected_by_auth_detection() -> None:
+    """Regression guard: a plain bad-ref failure (no auth-failure markers)
+    MUST keep the existing generic "clone failed" message, not be
+    misclassified as a credential-resolution failure."""
+    fake_runner = FakeContainerRunner()
+    fake_runner.script(
+        RunResult(
+            exit_code=128,
+            stdout="",
+            stderr="fatal: Remote branch bad-ref not found",
+            timed_out=False,
+        )
+    )
+    docker_client = MagicMock()
+    checkout = GitCheckout(runner=fake_runner, docker_client=docker_client, settings=_settings())
+
+    with pytest.raises(CheckoutFailedError, match="clone"):
+        checkout.checkout(_CLONE_URL, "bad-ref")
+
+
 def test_checkout_removes_volume_when_clone_fails() -> None:
     fake_runner = FakeContainerRunner()
     fake_runner.script(

@@ -28,6 +28,37 @@ if TYPE_CHECKING:
 _WORKSPACE_MOUNT_PATH = "/workspace"
 _CHECKOUT_DIR = "/workspace/checkout"
 
+#: Module 6 is public-repos-only (non-goal: no credential resolution, spec's
+#: "Module 6 Non-Goals"). These substrings (case-insensitive) identify a
+#: clone `stderr` as an authentication-required failure rather than a
+#: generic bad-ref/network error, so the spec's "Private repo" scenario can
+#: surface its specific literal reason. Empirically confirmed via live
+#: `GIT_TERMINAL_PROMPT=0 git clone` runs (not merely inferred from docs):
+#: - GitHub returns "remote: Repository not found." (server-controlled,
+#:   unlocalized) for BOTH nonexistent AND private repos alike — GitHub
+#:   deliberately never distinguishes the two, for privacy.
+#: - Non-GitHub HTTP(S) remotes needing Basic auth (Bitbucket, self-hosted
+#:   Git/GitLab, ...) print "could not read Username for '<url>': terminal
+#:   prompts disabled" when no credentials are configured non-interactively.
+#: - SSH remotes without a matching key print OpenSSH's "Permission denied
+#:   (publickey)." followed by git's own access-rights hint — a
+#:   well-documented git/OpenSSH convention.
+_AUTH_FAILURE_MARKERS: tuple[str, ...] = (
+    "repository not found",
+    "could not read username",
+    "could not read password",
+    "authentication failed",
+    "permission denied (publickey)",
+    "please make sure you have the correct access rights",
+)
+
+_CREDENTIAL_RESOLUTION_NOT_IMPLEMENTED = "credential resolution not yet implemented"
+
+
+def _looks_like_auth_failure(stderr: str) -> bool:
+    lowered = stderr.lower()
+    return any(marker in lowered for marker in _AUTH_FAILURE_MARKERS)
+
 
 class CheckoutFailedError(Exception):
     """Deterministic checkout failure (bad ref, private repo, ...) — never retried (D5)."""
@@ -104,6 +135,8 @@ class GitCheckout:
                 timeout_seconds=self._settings.scan_timeout_seconds,
             )
             if clone_result.exit_code != 0:
+                if _looks_like_auth_failure(clone_result.stderr):
+                    raise CheckoutFailedError(_CREDENTIAL_RESOLUTION_NOT_IMPLEMENTED)
                 raise CheckoutFailedError(
                     f"git clone failed (exit {clone_result.exit_code}): {clone_result.stderr}"
                 )

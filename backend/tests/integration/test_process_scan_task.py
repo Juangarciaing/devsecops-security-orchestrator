@@ -274,6 +274,52 @@ def test_process_scan_task_marks_failed_on_checkout_failure_with_no_retry(
     assert len(fake_runner.calls) == 1
 
 
+def test_process_scan_task_marks_failed_with_credential_resolution_reason_on_private_repo(
+    migrated_schema: None,
+) -> None:
+    """Spec's "Private repo" scenario (`sdd/module-6-scanner-execution/spec`,
+    "Checkout Failure Handling"): a clone failing because the repo requires
+    auth this module doesn't support (public-repos-only, per the confirmed
+    non-goal) MUST surface the specific literal reason "credential
+    resolution not yet implemented" and land in `failed` via the SAME
+    deterministic no-retry path as any other `CheckoutFailedError` (D5) —
+    not the generic bad-ref message. `stderr` here is GitHub's real,
+    unlocalized, server-controlled message (empirically confirmed via a
+    live `GIT_TERMINAL_PROMPT=0 git clone` against a private/nonexistent
+    GitHub repo — see `test_git_checkout.py`)."""
+    from orchestrator.workers.tasks.process_scan import process_scan_task
+
+    task_id, run_id = asyncio.run(_seed_pending_task())
+
+    fake_runner = FakeContainerRunner()
+    fake_runner.script(
+        RunResult(
+            exit_code=128,
+            stdout="",
+            stderr=(
+                "remote: Repository not found.\n"
+                "fatal: repository 'https://example.com/acme-scan/widgets.git/' not found\n"
+            ),
+            timed_out=False,
+        )
+    )
+    docker_client = MagicMock()
+
+    result = process_scan_task.apply(
+        args=(str(task_id),),
+        kwargs={"container_runner": fake_runner, "docker_client": docker_client},
+    )
+    result.get()
+
+    task, run, findings = asyncio.run(_load_state(task_id, run_id))
+    assert task.status == ScanTaskStatus.FAILED
+    assert task.error_message == "credential resolution not yet implemented"
+    assert run.status == ScanRunStatus.FAILED
+    assert len(findings) == 0
+    # deterministic checkout failure (D5) -> a SINGLE attempt, never retried
+    assert len(fake_runner.calls) == 1
+
+
 def test_process_scan_task_marks_failed_on_gitleaks_genuine_error_with_no_retry(
     migrated_schema: None,
 ) -> None:
