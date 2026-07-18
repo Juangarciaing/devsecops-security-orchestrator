@@ -62,6 +62,20 @@ services:
     env_file:
       - .env
     command: ["celery", "-A", "orchestrator.workers.celery_app", "worker", "-Q", "scan", "-l", "info"]
+    # Module 6: the worker orchestrates SIBLING scanner/init containers via
+    # the `docker` Python SDK — it is the ONLY service that gets the Docker
+    # socket (`backend`, the API server, has no business launching
+    # containers). Holding this socket is root-equivalent to the HOST
+    # (design's accepted residual risk R1: durable fix = Module 13's
+    # k8s Jobs + gVisor/Kata, no socket). `user: root` here is a direct
+    # consequence of that same acceptance, not a new escalation: the host's
+    # `/var/run/docker.sock` group ownership/GID is host-specific, and a
+    # non-root container user cannot reliably access it without knowing that
+    # GID in advance — running the worker itself as root does not widen the
+    # blast radius beyond what socket access already grants.
+    user: "0:0"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
     depends_on:
       postgres:
         condition: service_healthy
