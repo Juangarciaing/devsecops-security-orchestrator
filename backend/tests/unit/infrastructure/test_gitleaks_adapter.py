@@ -1,10 +1,11 @@
 """`GitleaksAdapter` — argv builder + JSON-to-`Finding` parser (Module 6 PR2,
-tasks 2.1-2.3).
+tasks 2.1-2.3; retrofitted to `ScannerAdapterPort` in Module 7 PR1, tasks
+2.1-2.2 — `parse()` moved from a module-level function to a method).
 
 `GitleaksAdapter.scan()` proves the exact `ContainerRunnerPort.run()` call
 shape via `FakeContainerRunner` (no real Docker socket needed here — that
 live proof lives in `tests/integration/test_gitleaks_adapter_live.py`).
-`parse()` is a pure function: exit 0 -> no findings, exit 2 + JSON report ->
+`.parse()` is a pure method: exit 0 -> no findings, exit 2 + JSON report ->
 parsed `Finding`s, anything else (or `timed_out=True`) -> `GitleaksFailedError`
 (D4/D5 — never conflate "leaks found" with a genuine tool failure).
 """
@@ -15,9 +16,10 @@ import json
 import uuid
 
 from orchestrator.domain.ports.container_runner_port import RunResult
-from orchestrator.domain.value_objects.enums import FindingSeverity
+from orchestrator.domain.ports.scanner_adapter_port import ScannerAdapterPort
+from orchestrator.domain.value_objects.enums import FindingSeverity, ScannerType
 from orchestrator.infrastructure.config.settings import Settings
-from orchestrator.infrastructure.scanners.gitleaks_adapter import GitleaksAdapter, parse
+from orchestrator.infrastructure.scanners.gitleaks_adapter import GitleaksAdapter
 from tests.fakes.fake_container_runner import FakeContainerRunner
 
 _SCAN_TASK_ID = uuid.uuid4()
@@ -31,6 +33,12 @@ def _settings() -> Settings:
         secret_key="s",
         jwt_secret_key="j",
     )
+
+
+def _adapter() -> GitleaksAdapter:
+    """A `GitleaksAdapter` used only for `.parse()` in these tests — no
+    container calls, so a fresh unscripted `FakeContainerRunner` is fine."""
+    return GitleaksAdapter(runner=FakeContainerRunner(), settings=_settings())
 
 
 # ---------------------------------------------------------------------------
@@ -85,7 +93,7 @@ def test_scan_returns_the_raw_run_result() -> None:
 def test_parse_exit_0_returns_no_findings() -> None:
     result = RunResult(exit_code=0, stdout="", stderr="", timed_out=False)
 
-    findings = parse(result, _SCAN_TASK_ID)
+    findings = _adapter().parse(result, _SCAN_TASK_ID)
 
     assert findings == []
 
@@ -104,7 +112,7 @@ def test_parse_exit_2_with_one_leak_returns_one_finding_with_all_fields_mapped()
     ]
     result = RunResult(exit_code=2, stdout=json.dumps(report), stderr="", timed_out=False)
 
-    findings = parse(result, _SCAN_TASK_ID)
+    findings = _adapter().parse(result, _SCAN_TASK_ID)
 
     assert len(findings) == 1
     finding = findings[0]
@@ -146,7 +154,7 @@ def test_parse_exit_2_with_three_leaks_returns_three_findings_triangulation() ->
     ]
     result = RunResult(exit_code=2, stdout=json.dumps(report), stderr="", timed_out=False)
 
-    findings = parse(result, _SCAN_TASK_ID)
+    findings = _adapter().parse(result, _SCAN_TASK_ID)
 
     assert len(findings) == 3
     assert {f.rule_id for f in findings} == {"generic-api-key", "slack-token"}
@@ -160,7 +168,7 @@ def test_parse_exit_1_raises_gitleaks_failed_error() -> None:
     result = RunResult(exit_code=1, stdout="", stderr="fatal: bad config", timed_out=False)
 
     try:
-        parse(result, _SCAN_TASK_ID)
+        _adapter().parse(result, _SCAN_TASK_ID)
     except GitleaksFailedError as exc:
         assert "1" in str(exc)
     else:
@@ -173,7 +181,7 @@ def test_parse_other_nonstandard_exit_code_raises_gitleaks_failed_error() -> Non
     result = RunResult(exit_code=126, stdout="", stderr="unknown flag", timed_out=False)
 
     try:
-        parse(result, _SCAN_TASK_ID)
+        _adapter().parse(result, _SCAN_TASK_ID)
     except GitleaksFailedError:
         pass
     else:
@@ -186,7 +194,7 @@ def test_parse_timed_out_raises_gitleaks_failed_error_even_with_exit_code_0() ->
     result = RunResult(exit_code=0, stdout="", stderr="", timed_out=True)
 
     try:
-        parse(result, _SCAN_TASK_ID)
+        _adapter().parse(result, _SCAN_TASK_ID)
     except GitleaksFailedError:
         pass
     else:
@@ -199,7 +207,7 @@ def test_parse_malformed_json_on_exit_2_raises_gitleaks_failed_error() -> None:
     result = RunResult(exit_code=2, stdout="{not valid json", stderr="", timed_out=False)
 
     try:
-        parse(result, _SCAN_TASK_ID)
+        _adapter().parse(result, _SCAN_TASK_ID)
     except GitleaksFailedError:
         pass
     else:
@@ -210,6 +218,31 @@ def test_parse_uses_rule_id_as_title_fallback_when_description_missing() -> None
     report = [{"RuleID": "generic-secret", "File": "x.py", "StartLine": 1, "Secret": "s"}]
     result = RunResult(exit_code=2, stdout=json.dumps(report), stderr="", timed_out=False)
 
-    findings = parse(result, _SCAN_TASK_ID)
+    findings = _adapter().parse(result, _SCAN_TASK_ID)
 
     assert findings[0].title == "generic-secret"
+
+
+# ---------------------------------------------------------------------------
+# Module 7 PR1 — `ScannerAdapterPort` retrofit
+# ---------------------------------------------------------------------------
+
+
+def test_gitleaks_adapter_implements_scanner_adapter_port() -> None:
+    assert isinstance(_adapter(), ScannerAdapterPort)
+
+
+def test_gitleaks_adapter_supports_secrets_but_not_sast() -> None:
+    adapter = _adapter()
+
+    assert adapter.supports(ScannerType.SECRETS) is True
+    assert adapter.supports(ScannerType.SAST) is False
+
+
+def test_module_level_parse_function_no_longer_exists() -> None:
+    """Module 7 tasks 2.2/6.1: the old module-level `parse()` shim is
+    DELETED once `GitleaksAdapter.parse()` exists — no dead duplicate entry
+    point left behind."""
+    import orchestrator.infrastructure.scanners.gitleaks_adapter as gitleaks_adapter_module
+
+    assert not hasattr(gitleaks_adapter_module, "parse")

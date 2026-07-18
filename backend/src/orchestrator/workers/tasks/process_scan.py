@@ -4,7 +4,7 @@
     run_async: load task -> run -> repository; pending -> running          [DB]
     sync:      GitCheckout(...).checkout(clone_url, ref) -> Workspace      [init container]
                GitleaksAdapter(...).scan(workspace.volume_name)            [scanner container]
-               parse(RunResult) -> list[Finding]
+               GitleaksAdapter(...).parse(RunResult) -> list[Finding]
                # Workspace.__exit__ force-removes the volume (finally)
     run_async: persist resolved commit_sha + Finding(s);
                task + run -> completed                                    [DB]
@@ -67,7 +67,6 @@ from orchestrator.infrastructure.db.repositories.scan_task_repository import (
 from orchestrator.infrastructure.scanners.gitleaks_adapter import (
     GitleaksAdapter,
     GitleaksFailedError,
-    parse,
 )
 from orchestrator.infrastructure.vcs.git_checkout import CheckoutFailedError, GitCheckout
 from orchestrator.workers.backoff import backoff_jitter
@@ -137,13 +136,20 @@ def _checkout_and_scan(
     DB session/event loop (Module 6 D3).
 
     Raises `CheckoutFailedError` (deterministic, from `GitCheckout`) or
-    `GitleaksFailedError` (deterministic, from `parse()`) unchanged — callers
-    classify those as non-retryable (D5). Any OTHER exception is left to
-    propagate to the caller, which wraps it as `TransientScanError`.
+    `GitleaksFailedError` (deterministic, from `GitleaksAdapter.parse()`)
+    unchanged — callers classify those as non-retryable (D5). Any OTHER
+    exception is left to propagate to the caller, which wraps it as
+    `TransientScanError`.
+
+    Note: this is a minimal Module 7 PR1 compatibility fix (calling
+    `GitleaksAdapter.parse()` as a method instead of the deleted
+    module-level `parse()`) — NOT the full registry-routed re-wire (that is
+    Module 7 PR4, D6).
     """
+    adapter = GitleaksAdapter(runner, settings)
     with GitCheckout(runner, docker_client, settings).checkout(clone_url, ref) as workspace:
-        result = GitleaksAdapter(runner, settings).scan(workspace.volume_name)
-    return workspace.head_sha, parse(result, scan_task_id)
+        result = adapter.scan(workspace.volume_name)
+    return workspace.head_sha, adapter.parse(result, scan_task_id)
 
 
 async def _complete_scan(

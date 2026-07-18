@@ -32,7 +32,7 @@ import pytest
 from orchestrator.domain.value_objects.enums import FindingSeverity
 from orchestrator.infrastructure.config.settings import Settings
 from orchestrator.infrastructure.container.docker_container_runner import DockerContainerRunner
-from orchestrator.infrastructure.scanners.gitleaks_adapter import GitleaksAdapter, parse
+from orchestrator.infrastructure.scanners.gitleaks_adapter import GitleaksAdapter
 
 pytestmark = pytest.mark.integration
 
@@ -122,7 +122,7 @@ def test_gitleaks_adapter_detects_a_real_planted_fake_secret_via_real_docker(
         assert result.timed_out is False
 
         scan_task_id = uuid.uuid4()
-        findings = parse(result, scan_task_id)
+        findings = adapter.parse(result, scan_task_id)
 
         assert len(findings) >= 1
         finding = findings[0]
@@ -157,7 +157,7 @@ def test_gitleaks_adapter_reports_zero_findings_on_a_real_clean_scan(
         result = adapter.scan(volume_name)
         assert result.exit_code == 0, f"expected clean exit 0, got {result.exit_code}"
 
-        findings = parse(result, uuid.uuid4())
+        findings = adapter.parse(result, uuid.uuid4())
         assert findings == []
     finally:
         docker_client.volumes.get(volume_name).remove(force=True)
