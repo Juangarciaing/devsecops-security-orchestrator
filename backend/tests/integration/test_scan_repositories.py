@@ -269,6 +269,67 @@ def test_scan_run_list_paginated_orders_newest_first_and_respects_limit_offset(
     asyncio.run(_scan_run_list_paginated_orders_newest_first_and_respects_limit_offset())
 
 
+async def _scan_run_update_commit_sha_persists_resolved_sha() -> None:
+    engine = create_async_engine(resolve_database_url())
+    sessionmaker = async_sessionmaker(engine, expire_on_commit=False)
+    try:
+        async with sessionmaker() as session:
+            code_repo = SqlAlchemyCodeRepositoryRepository(session)
+            repository = await code_repo.create(_make_repository())
+            await session.commit()
+            repository_id = repository.id
+
+        async with sessionmaker() as session:
+            scan_run_repo = SqlAlchemyScanRunRepository(session)
+            # `commit_sha` at creation is a placeholder branch/ref name (Module 5) —
+            # `GitCheckout` resolves the real HEAD SHA and this persists it back.
+            created = await scan_run_repo.create(
+                _make_scan_run(repository_id, commit_sha="main", ref="main")
+            )
+            await session.commit()
+            run_id = created.id
+
+        async with sessionmaker() as session:
+            scan_run_repo = SqlAlchemyScanRunRepository(session)
+            resolved_sha = "a" * 40
+            updated = await scan_run_repo.update_commit_sha(run_id, resolved_sha)
+            await session.commit()
+            assert updated.commit_sha == resolved_sha
+            # `ref` (the original branch name) is untouched — only `commit_sha`
+            # is overwritten with the resolved SHA.
+            assert updated.ref == "main"
+
+        async with sessionmaker() as session:
+            scan_run_repo = SqlAlchemyScanRunRepository(session)
+            persisted = await scan_run_repo.get_by_id(run_id)
+            assert persisted is not None
+            assert persisted.commit_sha == resolved_sha
+    finally:
+        await engine.dispose()
+
+
+def test_scan_run_update_commit_sha_persists_resolved_sha(migrated_schema: None) -> None:
+    asyncio.run(_scan_run_update_commit_sha_persists_resolved_sha())
+
+
+async def _scan_run_update_commit_sha_raises_not_found() -> None:
+    engine = create_async_engine(resolve_database_url())
+    sessionmaker = async_sessionmaker(engine, expire_on_commit=False)
+    try:
+        async with sessionmaker() as session:
+            scan_run_repo = SqlAlchemyScanRunRepository(session)
+            with pytest.raises(ScanRunNotFoundError):
+                await scan_run_repo.update_commit_sha(uuid.uuid4(), "b" * 40)
+    finally:
+        await engine.dispose()
+
+
+def test_scan_run_update_commit_sha_raises_not_found_for_missing_id(
+    migrated_schema: None,
+) -> None:
+    asyncio.run(_scan_run_update_commit_sha_raises_not_found())
+
+
 # ---------------------------------------------------------------------------
 # SqlAlchemyScanTaskRepository
 # ---------------------------------------------------------------------------
