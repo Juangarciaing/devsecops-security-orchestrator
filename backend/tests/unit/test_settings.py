@@ -83,3 +83,40 @@ def test_settings_celery_broker_url_can_be_overridden(
 
     assert settings.celery_broker_url == "redis://localhost:6379/1"
     assert settings.celery_result_backend == "redis://localhost:6379/2"
+
+
+def test_settings_scan_container_defaults(valid_env: None) -> None:
+    """Module 6: hardened-container tuning knobs default sensibly (design's
+    File Changes table) so a fresh checkout runs scans without extra config."""
+    settings = Settings(_env_file=None)
+
+    assert settings.scan_container_image.startswith("ghcr.io/gitleaks/gitleaks:")
+    assert "@sha256:" in settings.scan_container_image
+    assert settings.scan_git_image.startswith("alpine/git:")
+    assert "@sha256:" in settings.scan_git_image
+    assert settings.scan_memory_limit_mb == 512
+    assert settings.scan_cpu_limit == 1.0
+    assert settings.scan_pids_limit == 128
+    assert settings.scan_timeout_seconds == 120
+
+
+def test_settings_scan_container_values_can_be_overridden(
+    monkeypatch: pytest.MonkeyPatch, valid_env: None
+) -> None:
+    overridden_container_image = "ghcr.io/gitleaks/gitleaks:v8.99.0@sha256:" + "a" * 64
+    overridden_git_image = "alpine/git:9.9.9@sha256:" + "b" * 64
+    monkeypatch.setenv("SCAN_CONTAINER_IMAGE", overridden_container_image)
+    monkeypatch.setenv("SCAN_GIT_IMAGE", overridden_git_image)
+    monkeypatch.setenv("SCAN_MEMORY_LIMIT_MB", "1024")
+    monkeypatch.setenv("SCAN_CPU_LIMIT", "2.5")
+    monkeypatch.setenv("SCAN_PIDS_LIMIT", "256")
+    monkeypatch.setenv("SCAN_TIMEOUT_SECONDS", "300")
+
+    settings = Settings(_env_file=None)
+
+    assert settings.scan_container_image == overridden_container_image
+    assert settings.scan_git_image == overridden_git_image
+    assert settings.scan_memory_limit_mb == 1024
+    assert settings.scan_cpu_limit == 2.5
+    assert settings.scan_pids_limit == 256
+    assert settings.scan_timeout_seconds == 300

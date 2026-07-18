@@ -1,4 +1,6 @@
-"""The domain layer MUST stay framework-free: no SQLAlchemy or Pydantic imports."""
+"""The domain layer MUST stay framework-free: no SQLAlchemy, Pydantic, or
+`docker` SDK imports (Module 6: `ContainerRunnerPort` is framework-free —
+only `infrastructure.container.docker_container_runner` imports `docker`)."""
 
 from __future__ import annotations
 
@@ -7,7 +9,7 @@ from pathlib import Path
 
 DOMAIN_ROOT = Path(__file__).parents[3] / "src" / "orchestrator" / "domain"
 
-FORBIDDEN_MODULE_PREFIXES = ("sqlalchemy", "pydantic")
+FORBIDDEN_MODULE_PREFIXES = ("sqlalchemy", "pydantic", "docker")
 
 
 def _imported_module_names(source: str) -> set[str]:
