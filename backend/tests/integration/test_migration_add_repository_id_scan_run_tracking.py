@@ -102,7 +102,12 @@ async def _findings_fk_ondelete_actions() -> dict[str, str]:
 
 
 def test_upgrade_head_adds_repository_id_and_scan_run_tracking_columns(db_env: None) -> None:
-    _run_alembic("upgrade", "head")
+    # Explicit own revision, NOT "head" — Module 7 PR3's `072bb3e01833`
+    # becomes the new head and tightens `repository_id` to `NOT NULL`
+    # (task 4.11), which would silently invalidate this PR2-scoped
+    # "stays nullable" assertion if it tracked a moving `head` (same lesson
+    # as `test_migration_add_credential_ref_is_active.py`, PR2).
+    _run_alembic("upgrade", "9a4af6f0e9d0")
     try:
         columns = asyncio.run(_findings_columns())
 
@@ -131,7 +136,8 @@ def test_upgrade_head_adds_repository_id_and_scan_run_tracking_columns(db_env: N
 
 
 def test_downgrade_one_step_restores_prior_findings_schema(db_env: None) -> None:
-    _run_alembic("upgrade", "head")
+    # Same "explicit own revision, not head" reasoning as the test above.
+    _run_alembic("upgrade", "9a4af6f0e9d0")
     _run_alembic("downgrade", "-1")
     try:
         columns = asyncio.run(_findings_columns())

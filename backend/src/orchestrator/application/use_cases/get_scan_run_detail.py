@@ -1,12 +1,15 @@
 """`get_scan_run_detail` use case — composes a `ScanRun` + its `ScanTask` + a
 findings count for `GET /scans/{id}` (spec: a COUNT, never a findings list).
 
-`FindingCounter` is a structural `Protocol`, not `FindingPort`: `count_by_scan_task`
-is deliberately an adapter-only helper on `SqlAlchemyFindingRepository` (PR1
-precedent — extend the concrete class, not the abstract contract, when only
-one call site needs it). The `Protocol` lets this use case stay framework-light
-and independently testable with a fake, without promoting the method onto the
-full `FindingPort` abstract contract or coupling to SQLAlchemy directly.
+Module 7 D5 redefines the count: `count_by_last_seen_scan_run(scan_run_id)`
+(counts findings currently attributed to this run — first-seen OR re-observed
+on it) replaces the old `count_by_scan_task(task.id)` (findings physically
+produced by this run's `ScanTask`). Unlike PR1/PR2's `count_by_scan_task`
+precedent, `count_by_last_seen_scan_run` IS also promoted onto the abstract
+`FindingPort` (Module 7 PR3, D4/D5) — cross-run dedup counting is now a core
+port concern. `FindingCounter` stays a structural `Protocol` here regardless:
+it lets this use case stay framework-light and independently testable with a
+fake, without coupling to `FindingPort`/SQLAlchemy directly.
 """
 
 from __future__ import annotations
@@ -21,9 +24,9 @@ from orchestrator.domain.ports.scan_task_port import ScanTaskPort
 
 
 class FindingCounter(Protocol):
-    """Structural contract for `SqlAlchemyFindingRepository.count_by_scan_task`."""
+    """Structural contract for `FindingPort.count_by_last_seen_scan_run`."""
 
-    async def count_by_scan_task(self, scan_task_id: uuid.UUID) -> int: ...
+    async def count_by_last_seen_scan_run(self, scan_run_id: uuid.UUID) -> int: ...
 
 
 class ScanRunNotFoundError(Exception):
@@ -52,5 +55,5 @@ async def get_scan_run_detail(
         raise RuntimeError(f"data integrity violation: ScanRun {scan_run_id} has no ScanTask")
     task = tasks[0]
 
-    findings_count = await finding_counter.count_by_scan_task(task.id)
+    findings_count = await finding_counter.count_by_last_seen_scan_run(run.id)
     return run, task, findings_count

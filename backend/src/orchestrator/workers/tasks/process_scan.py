@@ -95,11 +95,17 @@ class TransientScanError(RuntimeError):
 
 async def _load_and_start(
     session: AsyncSession, scan_task_id: uuid.UUID
-) -> tuple[str, str, uuid.UUID]:
+) -> tuple[str, str, uuid.UUID, uuid.UUID]:
     """Load the repo's `clone_url` + the run's `ref`; transition `pending -> running`.
 
-    Returns `(clone_url, ref, scan_run_id)`. Idempotent on the `pending ->
-    running` transition, matching Module 5's original convention.
+    Returns `(clone_url, ref, scan_run_id, repository_id)`. Idempotent on the
+    `pending -> running` transition, matching Module 5's original convention.
+
+    `repository_id` was added in Module 7 PR3 (task 4.11 compat fix, NOT the
+    full registry+`bulk_upsert_findings` re-wire — that stays PR4, D6): once
+    `findings.repository_id` is `NOT NULL`, this module's still-legacy
+    per-finding `create()` loop in `_complete_scan` needs it to stamp every
+    persisted `Finding`.
     """
     scan_task_repo = SqlAlchemyScanTaskRepository(session)
     scan_run_repo = SqlAlchemyScanRunRepository(session)
@@ -121,7 +127,7 @@ async def _load_and_start(
         await scan_run_repo.update_status(task.scan_run_id, ScanRunStatus.RUNNING, started_at=now)
         await session.commit()
 
-    return repository.clone_url, run.ref, task.scan_run_id
+    return repository.clone_url, run.ref, task.scan_run_id, repository.id
 
 
 def _checkout_and_scan(
@@ -156,6 +162,7 @@ async def _complete_scan(
     session: AsyncSession,
     scan_task_id: uuid.UUID,
     scan_run_id: uuid.UUID,
+    repository_id: uuid.UUID,
     head_sha: str,
     findings: list[Finding],
 ) -> None:
@@ -163,6 +170,17 @@ async def _complete_scan(
 
     Zero `findings` (a clean repo) is a valid, successful outcome (D4/spec) —
     NOT treated as failure.
+
+    Still a per-finding `create()` loop, NOT `bulk_upsert_findings` (that
+    registry-routed re-wire, including cross-run dedup on re-scans, is
+    Module 7 PR4, D6) — `repository_id`/`first_seen_scan_run_id`/
+    `last_seen_scan_run_id` are stamped here only as a PR3 data-completeness
+    compat fix (task 4.11: `findings.repository_id` is now `NOT NULL`, and
+    `GET /scans/{id}` now counts via `count_by_last_seen_scan_run`, D5).
+    Every finding from a single `process_scan_task` run is necessarily
+    "first seen == last seen == this run" from this legacy loop's point of
+    view (it has no cross-run dedup of its own) — this mirrors exactly what
+    `bulk_upsert_findings` stamps on a first-ever INSERT.
     """
     scan_task_repo = SqlAlchemyScanTaskRepository(session)
     scan_run_repo = SqlAlchemyScanRunRepository(session)
@@ -170,6 +188,9 @@ async def _complete_scan(
 
     await scan_run_repo.update_commit_sha(scan_run_id, head_sha)
     for finding in findings:
+        finding.repository_id = repository_id
+        finding.first_seen_scan_run_id = scan_run_id
+        finding.last_seen_scan_run_id = scan_run_id
         await finding_repo.create(finding)
 
     completed_at = datetime.now(UTC).replace(tzinfo=None)
@@ -218,7 +239,7 @@ def process_scan_task(
 
     try:
         try:
-            clone_url, ref, scan_run_id = run_async(
+            clone_url, ref, scan_run_id, repository_id = run_async(
                 lambda session: _load_and_start(session, task_id)
             )
             try:
@@ -233,7 +254,9 @@ def process_scan_task(
                 raise TransientScanError(str(exc)) from exc
 
             run_async(
-                lambda session: _complete_scan(session, task_id, scan_run_id, head_sha, findings)
+                lambda session: _complete_scan(
+                    session, task_id, scan_run_id, repository_id, head_sha, findings
+                )
             )
         finally:
             if docker_client is None:

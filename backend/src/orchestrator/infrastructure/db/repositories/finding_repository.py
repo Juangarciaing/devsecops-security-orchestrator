@@ -7,6 +7,7 @@ from __future__ import annotations
 import uuid
 
 from sqlalchemy import func, select
+from sqlalchemy.dialects import postgresql
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from orchestrator.domain.entities.finding import Finding
@@ -60,6 +61,66 @@ class SqlAlchemyFindingRepository(FindingPort):
             select(func.count())
             .select_from(FindingModel)
             .where(FindingModel.scan_task_id == scan_task_id)
+        )
+        result = await self._session.execute(stmt)
+        return result.scalar_one()
+
+    async def bulk_upsert_findings(
+        self, repository_id: uuid.UUID, scan_run_id: uuid.UUID, findings: list[Finding]
+    ) -> None:
+        """`FindingPort.bulk_upsert_findings` — DB-atomic `ON CONFLICT` upsert.
+
+        Postgres-specific (`sqlalchemy.dialects.postgresql.insert`), matching
+        design D4: read-then-write would race under concurrent same-repo
+        scans (TOCTOU), so this relies on Postgres's atomic conflict
+        resolution instead. No-op on an empty `findings` list (Postgres
+        rejects a zero-row `VALUES` clause).
+        """
+        if not findings:
+            return
+
+        values = [
+            {
+                "id": finding.id,
+                "scan_task_id": finding.scan_task_id,
+                "repository_id": repository_id,
+                "first_seen_scan_run_id": scan_run_id,
+                "last_seen_scan_run_id": scan_run_id,
+                "severity": finding.severity,
+                "status": finding.status,
+                "rule_id": finding.rule_id,
+                "title": finding.title,
+                "fingerprint": finding.fingerprint,
+                "created_at": finding.created_at,
+                "updated_at": finding.updated_at,
+                "description": finding.description,
+                "file_path": finding.file_path,
+                "line_number": finding.line_number,
+                "raw_evidence": finding.raw_evidence,
+                "snippet": finding.snippet,
+            }
+            for finding in findings
+        ]
+
+        insert_stmt = postgresql.insert(FindingModel).values(values)
+        upsert_stmt = insert_stmt.on_conflict_do_update(
+            index_elements=["repository_id", "fingerprint"],
+            set_={
+                "last_seen_scan_run_id": insert_stmt.excluded.last_seen_scan_run_id,
+                "updated_at": func.now(),
+            },
+        )
+        await self._session.execute(upsert_stmt)
+
+    async def count_by_last_seen_scan_run(self, scan_run_id: uuid.UUID) -> int:
+        """Return the number of `Finding`s whose `last_seen_scan_run_id == scan_run_id`.
+
+        Powers the redefined `GET /scans/{id}` findings COUNT (Module 7 D5).
+        """
+        stmt = (
+            select(func.count())
+            .select_from(FindingModel)
+            .where(FindingModel.last_seen_scan_run_id == scan_run_id)
         )
         result = await self._session.execute(stmt)
         return result.scalar_one()

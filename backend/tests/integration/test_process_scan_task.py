@@ -214,6 +214,12 @@ def test_process_scan_task_happy_path_persists_real_findings_and_resolved_sha(
     assert len(findings) == 2
     rule_ids = {f.rule_id for f in findings}  # type: ignore[attr-defined]
     assert rule_ids == {"stripe-access-token", "generic-api-key"}
+    # Module 7 PR3 task 4.11: `findings.repository_id` is now `NOT NULL` at
+    # the DB level — this still-legacy per-finding `create()` loop (the real
+    # registry+`bulk_upsert_findings` re-wire is PR4, D6) must stamp
+    # `repository_id` on every finding it persists, or every live scan would
+    # start failing with a Postgres `NOT NULL` violation.
+    assert all(f.repository_id == run.repository_id for f in findings)  # type: ignore[attr-defined]
 
 
 def test_process_scan_task_clean_repo_completes_with_zero_findings(
