@@ -13,6 +13,7 @@ from orchestrator.api.v1.errors.problem import register_exception_handlers
 from orchestrator.api.v1.routers.auth import router as auth_router
 from orchestrator.api.v1.routers.health import router as health_router
 from orchestrator.api.v1.routers.repositories import router as repositories_router
+from orchestrator.api.v1.routers.scans import router as scans_router
 from orchestrator.api.v1.routers.users import router as users_router
 
 
@@ -23,4 +24,5 @@ def create_app() -> FastAPI:
     app.include_router(auth_router)
     app.include_router(users_router)
     app.include_router(repositories_router)
+    app.include_router(scans_router)
     return app

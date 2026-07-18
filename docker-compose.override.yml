@@ -28,3 +28,22 @@ services:
   frontend:
     volumes:
       - ./frontend/src:/app/src
+
+  # Flower: web UI for the `scan` queue (spec: "Worker starts and binds to
+  # the scan queue ... Flower is reachable and shows the scan queue"). Dev
+  # convenience only — not part of the prod-like base compose file.
+  flower:
+    build:
+      context: .
+      dockerfile: docker/backend.Dockerfile
+    restart: unless-stopped
+    env_file:
+      - .env
+    command: ["celery", "-A", "orchestrator.workers.celery_app", "flower", "--port=5555"]
+    ports:
+      - "5555:5555"
+    depends_on:
+      redis:
+        condition: service_healthy
+      worker:
+        condition: service_started

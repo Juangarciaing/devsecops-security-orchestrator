@@ -36,6 +36,16 @@ class SqlAlchemyScanRunRepository(ScanRunPort):
         result = await self._session.execute(stmt)
         return [scan_run_to_entity(model) for model in result.scalars().all()]
 
+    async def list_paginated(self, limit: int, offset: int) -> list[ScanRun]:
+        stmt = (
+            select(ScanRunModel)
+            .order_by(ScanRunModel.created_at.desc())
+            .limit(limit)
+            .offset(offset)
+        )
+        result = await self._session.execute(stmt)
+        return [scan_run_to_entity(model) for model in result.scalars().all()]
+
     async def create(self, scan_run: ScanRun) -> ScanRun:
         model = scan_run_to_model(scan_run)
         self._session.add(model)

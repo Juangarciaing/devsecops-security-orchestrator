@@ -226,6 +226,49 @@ def test_scan_run_update_status_persists_started_and_completed_at(
     asyncio.run(_scan_run_update_status_persists_started_and_completed_at())
 
 
+async def _scan_run_list_paginated_orders_newest_first_and_respects_limit_offset() -> None:
+    engine = create_async_engine(resolve_database_url())
+    sessionmaker = async_sessionmaker(engine, expire_on_commit=False)
+    try:
+        async with sessionmaker() as session:
+            code_repo = SqlAlchemyCodeRepositoryRepository(session)
+            repository = await code_repo.create(_make_repository())
+            await session.commit()
+            repository_id = repository.id
+
+        run_ids: list[uuid.UUID] = []
+        for i in range(3):
+            async with sessionmaker() as session:
+                scan_run_repo = SqlAlchemyScanRunRepository(session)
+                created = await scan_run_repo.create(
+                    _make_scan_run(
+                        repository_id,
+                        commit_sha=f"page-{i}",
+                        ref=f"page-{i}",
+                        created_at=datetime(2026, 1, 1 + i),
+                    )
+                )
+                await session.commit()
+                run_ids.append(created.id)
+
+        async with sessionmaker() as session:
+            scan_run_repo = SqlAlchemyScanRunRepository(session)
+
+            first_page = await scan_run_repo.list_paginated(limit=2, offset=0)
+            assert [r.id for r in first_page] == [run_ids[2], run_ids[1]]
+
+            second_page = await scan_run_repo.list_paginated(limit=2, offset=2)
+            assert [r.id for r in second_page] == [run_ids[0]]
+    finally:
+        await engine.dispose()
+
+
+def test_scan_run_list_paginated_orders_newest_first_and_respects_limit_offset(
+    migrated_schema: None,
+) -> None:
+    asyncio.run(_scan_run_list_paginated_orders_newest_first_and_respects_limit_offset())
+
+
 # ---------------------------------------------------------------------------
 # SqlAlchemyScanTaskRepository
 # ---------------------------------------------------------------------------

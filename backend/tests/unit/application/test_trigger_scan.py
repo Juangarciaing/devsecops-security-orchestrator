@@ -93,6 +93,10 @@ class _FakeScanRunRepository(ScanRunPort):
         run.status = status
         return run
 
+    async def list_paginated(self, limit: int, offset: int) -> list[ScanRun]:
+        ordered = sorted(self._by_id.values(), key=lambda r: r.created_at, reverse=True)
+        return ordered[offset : offset + limit]
+
 
 class _FakeScanTaskRepository(ScanTaskPort):
     def __init__(self) -> None:

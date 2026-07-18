@@ -74,3 +74,10 @@ def test_scan_task_port_declares_find_active_task() -> None:
     """`ScanTaskPort` gains `find_active_task` (D3) — used by `trigger_scan` for idempotency."""
     assert "find_active_task" in ScanTaskPort.__abstractmethods__
     assert inspect.iscoroutinefunction(ScanTaskPort.find_active_task)
+
+
+def test_scan_run_port_declares_list_paginated() -> None:
+    """`ScanRunPort` gains `list_paginated` — powers `GET /scans` (design deviation #7:
+    the list endpoint was never paginated before this module)."""
+    assert "list_paginated" in ScanRunPort.__abstractmethods__
+    assert inspect.iscoroutinefunction(ScanRunPort.list_paginated)
