@@ -76,3 +76,19 @@ class SqlAlchemyScanRunRepository(ScanRunPort):
             model.completed_at = completed_at
         await self._session.flush()
         return scan_run_to_entity(model)
+
+    async def update_commit_sha(self, scan_run_id: uuid.UUID, commit_sha: str) -> ScanRun:
+        """Persist the resolved real HEAD SHA onto `ScanRun.commit_sha`.
+
+        `commit_sha` at creation may be a placeholder branch/ref name
+        (Module 5); Module 6's `GitCheckout` resolves the actual HEAD SHA via
+        `git rev-parse` and this persists it back. Adapter-only extension
+        beyond `ScanRunPort` (worker flow), matching `update_status`'s
+        precedent for adapter-only kwargs beyond the abstract signature.
+        """
+        model = await self._session.get(ScanRunModel, scan_run_id)
+        if model is None:
+            raise ScanRunNotFoundError(scan_run_id)
+        model.commit_sha = commit_sha
+        await self._session.flush()
+        return scan_run_to_entity(model)
