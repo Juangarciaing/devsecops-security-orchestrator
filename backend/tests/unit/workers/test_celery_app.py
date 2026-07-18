@@ -67,3 +67,18 @@ def test_celery_app_routes_scan_task_to_scan_queue(
 
     routes = module.celery_app.conf.task_routes
     assert routes["orchestrator.workers.tasks.process_scan.process_scan_task"] == {"queue": "scan"}
+
+
+def test_webhook_queue_is_declared_but_no_task_is_routed_to_it(
+    monkeypatch: pytest.MonkeyPatch, valid_env: None
+) -> None:
+    """Explicit non-goal (spec): the `webhook` queue is configured/routable but
+    inert — no task is registered against it in this module (reserved for
+    Module 10)."""
+    module = _import_celery_app(monkeypatch)
+
+    queue_names = {queue.name for queue in module.celery_app.conf.task_queues}
+    assert "webhook" in queue_names
+
+    routed_queues = {route["queue"] for route in module.celery_app.conf.task_routes.values()}
+    assert "webhook" not in routed_queues

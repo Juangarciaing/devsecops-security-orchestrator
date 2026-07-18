@@ -31,3 +31,11 @@ class ScanRunPort(ABC):
     @abstractmethod
     async def update_status(self, scan_run_id: uuid.UUID, status: ScanRunStatus) -> ScanRun:
         """Update the lifecycle `status` of the given `ScanRun` and return it."""
+
+    @abstractmethod
+    async def list_paginated(self, limit: int, offset: int) -> list[ScanRun]:
+        """Return up to `limit` `ScanRun`s, most-recently-created first, skipping `offset` rows.
+
+        Powers `GET /scans` (design deviation #7: the list endpoint was never
+        paginated before this module).
+        """
