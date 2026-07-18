@@ -13,6 +13,7 @@ dependencies = [
     "asyncpg>=0.30",
     "argon2-cffi>=23.1",
     "pyjwt>=2.9",
+    "celery[redis]>=5.4",
 ]
 
 [dependency-groups]
@@ -52,3 +53,7 @@ mypy_path = "src"
 explicit_package_bases = true
 strict = true
 plugins = ["pydantic.mypy"]
+
+[[tool.mypy.overrides]]
+module = ["celery.*", "kombu.*"]
+ignore_missing_imports = true

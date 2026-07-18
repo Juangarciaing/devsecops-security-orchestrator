@@ -64,3 +64,22 @@ def test_settings_jwt_expiry_minutes_can_be_overridden(
     settings = Settings(_env_file=None)
 
     assert settings.jwt_expiry_minutes == 120
+
+
+def test_settings_celery_broker_url_defaults_to_none(valid_env: None) -> None:
+    settings = Settings(_env_file=None)
+
+    assert settings.celery_broker_url is None
+    assert settings.celery_result_backend is None
+
+
+def test_settings_celery_broker_url_can_be_overridden(
+    monkeypatch: pytest.MonkeyPatch, valid_env: None
+) -> None:
+    monkeypatch.setenv("CELERY_BROKER_URL", "redis://localhost:6379/1")
+    monkeypatch.setenv("CELERY_RESULT_BACKEND", "redis://localhost:6379/2")
+
+    settings = Settings(_env_file=None)
+
+    assert settings.celery_broker_url == "redis://localhost:6379/1"
+    assert settings.celery_result_backend == "redis://localhost:6379/2"

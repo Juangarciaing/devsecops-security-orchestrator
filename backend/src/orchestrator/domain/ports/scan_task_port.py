@@ -10,7 +10,7 @@ import uuid
 from abc import ABC, abstractmethod
 
 from orchestrator.domain.entities.scan_task import ScanTask
-from orchestrator.domain.value_objects.enums import ScanTaskStatus
+from orchestrator.domain.value_objects.enums import ScannerType, ScanTaskStatus
 
 
 class ScanTaskPort(ABC):
@@ -36,3 +36,16 @@ class ScanTaskPort(ABC):
     @abstractmethod
     async def update_status(self, scan_task_id: uuid.UUID, status: ScanTaskStatus) -> ScanTask:
         """Update the lifecycle `status` of the given `ScanTask` and return it."""
+
+    @abstractmethod
+    async def find_active_task(
+        self, repository_id: uuid.UUID, commit_sha: str, scanner_type: ScannerType
+    ) -> ScanTask | None:
+        """Return an in-flight `ScanTask` for `(repository_id, commit_sha, scanner_type)`.
+
+        "In-flight" means the task's `status` is `PENDING` or `RUNNING` — a
+        `COMPLETED`/`FAILED`/`SKIPPED` task never blocks a fresh trigger.
+        Returns `None` if no such task exists. Matching spans both aggregates:
+        `repository_id`/`commit_sha` live on the owning `ScanRun`, while
+        `scanner_type` lives on the `ScanTask` itself (D3).
+        """
