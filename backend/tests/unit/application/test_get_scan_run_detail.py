@@ -89,8 +89,8 @@ class _FakeFindingCounter:
         self._count = count
         self.calls: list[uuid.UUID] = []
 
-    async def count_by_scan_task(self, scan_task_id: uuid.UUID) -> int:
-        self.calls.append(scan_task_id)
+    async def count_by_last_seen_scan_run(self, scan_run_id: uuid.UUID) -> int:
+        self.calls.append(scan_run_id)
         return self._count
 
 
@@ -151,7 +151,7 @@ def test_get_scan_run_detail_returns_run_task_and_findings_count() -> None:
     assert result_run.id == run.id
     assert result_task.id == task.id
     assert count == 1
-    assert finding_counter.calls == [task.id]
+    assert finding_counter.calls == [run.id]
 
 
 def test_get_scan_run_detail_findings_count_can_be_zero_for_pending_scan() -> None:

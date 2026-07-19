@@ -5,8 +5,10 @@ with zero SQLAlchemy import (same no-framework-imports style as
 from __future__ import annotations
 
 import ast
+import asyncio
 import inspect
 import uuid
+from datetime import UTC, datetime
 from pathlib import Path
 
 from orchestrator.domain.ports.api_key_port import ApiKeyPort
@@ -18,6 +20,7 @@ from orchestrator.domain.ports.user_port import UserPort
 from orchestrator.domain.value_objects.enums import ScannerType
 
 PORTS_ROOT = Path(__file__).parents[3] / "src" / "orchestrator" / "domain" / "ports"
+_NOW = datetime.now(UTC).replace(tzinfo=None)
 
 ALL_PORTS = (CodeRepositoryPort, ScanRunPort, ScanTaskPort, FindingPort, UserPort, ApiKeyPort)
 
@@ -138,3 +141,74 @@ def test_scanner_adapter_port_full_implementation_can_be_instantiated_and_used()
     assert adapter.parse("raw-result", task_id) == ["raw-result"]
     assert adapter.supports(ScannerType.SECRETS) is True
     assert adapter.supports(ScannerType.SAST) is False
+
+
+def test_finding_port_declares_bulk_upsert_and_count_by_last_seen_scan_run() -> None:
+    """Module 7 D4/D5: cross-run dedup promotes `bulk_upsert_findings`/
+    `count_by_last_seen_scan_run` onto `FindingPort` itself — unlike PR1's
+    `count_by_scan_task` precedent (an adapter-only helper), dedup counting is
+    now a core `FindingPort` concern, not a single call-site helper."""
+    assert "bulk_upsert_findings" in FindingPort.__abstractmethods__
+    assert "count_by_last_seen_scan_run" in FindingPort.__abstractmethods__
+    assert inspect.iscoroutinefunction(FindingPort.bulk_upsert_findings)
+    assert inspect.iscoroutinefunction(FindingPort.count_by_last_seen_scan_run)
+
+
+def test_finding_port_full_implementation_can_be_instantiated_and_used() -> None:
+    """Unit-level calling-contract coverage for `bulk_upsert_findings`/
+    `count_by_last_seen_scan_run` via a fake `FindingPort` — no SQLite
+    `ON CONFLICT` variant here; the real Postgres upsert/race semantics are
+    integration-only coverage (`tests/integration/test_finding_repository.py`)."""
+    from orchestrator.domain.entities.finding import Finding
+    from orchestrator.domain.value_objects.enums import FindingSeverity, FindingStatus
+
+    class _FakeFindingRepository(FindingPort):
+        def __init__(self) -> None:
+            self.upserted: list[tuple[uuid.UUID, uuid.UUID, list[Finding]]] = []
+            self.counted: list[uuid.UUID] = []
+
+        async def get_by_id(self, finding_id: uuid.UUID) -> Finding | None:
+            return None
+
+        async def list_by_scan_task(self, scan_task_id: uuid.UUID) -> list[Finding]:
+            return []
+
+        async def create(self, finding: Finding) -> Finding:
+            return finding
+
+        async def update_status(self, finding_id: uuid.UUID, status: FindingStatus) -> Finding:
+            raise NotImplementedError
+
+        async def bulk_upsert_findings(
+            self, repository_id: uuid.UUID, scan_run_id: uuid.UUID, findings: list[Finding]
+        ) -> None:
+            self.upserted.append((repository_id, scan_run_id, findings))
+
+        async def count_by_last_seen_scan_run(self, scan_run_id: uuid.UUID) -> int:
+            self.counted.append(scan_run_id)
+            return len(self.counted)
+
+    async def _run() -> None:
+        repo = _FakeFindingRepository()
+        repository_id = uuid.uuid4()
+        scan_run_id = uuid.uuid4()
+        finding = Finding(
+            id=uuid.uuid4(),
+            scan_task_id=uuid.uuid4(),
+            severity=FindingSeverity.HIGH,
+            rule_id="rule",
+            title="title",
+            fingerprint="fp-1",
+            created_at=_NOW,
+            updated_at=_NOW,
+        )
+
+        result = await repo.bulk_upsert_findings(repository_id, scan_run_id, [finding])
+        assert result is None
+        assert repo.upserted == [(repository_id, scan_run_id, [finding])]
+
+        count = await repo.count_by_last_seen_scan_run(scan_run_id)
+        assert count == 1
+        assert repo.counted == [scan_run_id]
+
+    asyncio.run(_run())

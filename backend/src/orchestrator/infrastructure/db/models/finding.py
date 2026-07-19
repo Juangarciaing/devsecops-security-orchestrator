@@ -7,24 +7,20 @@ Mirrors `domain.entities.finding.Finding`. Belongs to one `ScanTaskModel` via
 `first_seen_scan_run_id`/`last_seen_scan_run_id` track which `ScanRun`
 first/most-recently observed this fingerprint (`ON DELETE SET NULL`).
 
-All three of `repository_id`/`first_seen_scan_run_id`/`last_seen_scan_run_id`
-are `nullable=True` at the DB level (Module 7 PR2), which deviates from
-design D3's literal "`repository_id` ... NOT NULL" wording:
-- `first_seen_scan_run_id`/`last_seen_scan_run_id` MUST stay nullable
-  regardless — a `NOT NULL` column combined with `ON DELETE SET NULL` would
-  raise an `IntegrityError` the moment a referenced `ScanRun` is deleted (e.g.
-  via the `code_repositories -> scan_runs` cascade in `test_cascade_delete.py`).
-- `repository_id` is ALSO left nullable for now because the write path that
-  guarantees a value on every insert (`bulk_upsert_findings` +
-  `process_scan_task`'s registry re-route, D6) is explicitly PR3/PR4 scope,
-  not PR2. `process_scan.py`'s still-per-finding `finding_repo.create(...)`
-  loop (PR1's minimal compat shim) has no `repository_id` to supply today; a
-  `NOT NULL` constraint here would break every live-DB scan integration test
-  before PR4 lands. PR4 should add a follow-up migration enforcing `NOT NULL`
-  once every write path is guaranteed to populate it. `UNIQUE
-  (repository_id, fingerprint)` is unaffected by this: Postgres treats every
-  `NULL` as distinct, so unmigrated rows never spuriously collide — dedup
-  simply does not activate until `repository_id` is populated (PR3/PR4).
+`repository_id` is `nullable=False` (Module 7 PR3, task 4.11 — tightened from
+PR2's temporary `nullable=True`): `bulk_upsert_findings` (`FindingPort`,
+`SqlAlchemyFindingRepository`) is now the write path and always stamps it on
+every insert, so the column-level guarantee finally matches design D3's
+literal wording. See `alembic/versions/072bb3e01833_tighten_findings_repository_id_to_not_.py`
+for the tightening migration (safe: PR2's own migration already backfills
+`repository_id` for any pre-existing rows, and the `findings` table carries
+no production data).
+
+`first_seen_scan_run_id`/`last_seen_scan_run_id` stay `nullable=True` — a
+`NOT NULL` column combined with `ON DELETE SET NULL` would raise an
+`IntegrityError` the moment a referenced `ScanRun` is deleted (e.g. via the
+`code_repositories -> scan_runs` cascade in `test_cascade_delete.py`).
+`UNIQUE (repository_id, fingerprint)` is unaffected by any of this.
 
 `raw_evidence` is `JSONB` (Postgres) — falls back to generic `JSON` on
 SQLite so unit tests can exercise `Base.metadata.create_all` without a live DB.
@@ -55,8 +51,8 @@ class FindingModel(Base):
     scan_task_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("scan_tasks.id", ondelete="CASCADE"), nullable=False
     )
-    repository_id: Mapped[uuid.UUID | None] = mapped_column(
-        ForeignKey("code_repositories.id", ondelete="CASCADE"), nullable=True, index=True
+    repository_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("code_repositories.id", ondelete="CASCADE"), nullable=False, index=True
     )
     first_seen_scan_run_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("scan_runs.id", ondelete="SET NULL"), nullable=True

@@ -133,16 +133,20 @@ def test_findings_unique_constraint_and_fk(engine: sa.Engine) -> None:
 
 
 def test_findings_has_repository_id_and_scan_run_tracking_columns(engine: sa.Engine) -> None:
-    """Module 7 PR2: `repository_id` (denormalized, CASCADE) plus
-    `first_seen_scan_run_id`/`last_seen_scan_run_id` (SET NULL). All 3 stay
-    nullable in PR2 — `repository_id` is only guaranteed non-null once the
-    write path (`bulk_upsert_findings`, PR3/PR4) populates it on every
-    insert; `first_seen`/`last_seen` are nullable by design (SET NULL)."""
+    """Module 7 PR2/PR3: `repository_id` (denormalized, CASCADE) plus
+    `first_seen_scan_run_id`/`last_seen_scan_run_id` (SET NULL).
+
+    `repository_id` was `nullable=True` in PR2 (no write path guaranteed
+    population yet) and is tightened to `NOT NULL` in PR3 (task 4.11) now
+    that `bulk_upsert_findings` is the write path and always stamps it.
+    `first_seen`/`last_seen` MUST stay nullable regardless — they're
+    `ON DELETE SET NULL`, and a `NOT NULL` column can never be a `SET NULL`
+    target without risking an `IntegrityError`."""
     inspector = sa.inspect(engine)
     columns = {col["name"]: col for col in inspector.get_columns("findings")}
 
     assert "repository_id" in columns
-    assert columns["repository_id"]["nullable"] is True
+    assert columns["repository_id"]["nullable"] is False
 
     assert "first_seen_scan_run_id" in columns
     assert columns["first_seen_scan_run_id"]["nullable"] is True
