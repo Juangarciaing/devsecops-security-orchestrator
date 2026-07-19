@@ -104,4 +104,63 @@ describe('ScanDetailPage', () => {
       expect(callCount).toBe(2)
     })
   })
+
+  describe('findings table', () => {
+    it('renders the findings table once the scan completes', async () => {
+      server.use(
+        http.get('*/api/v1/scans/s1', () =>
+          HttpResponse.json({
+            ...baseScan,
+            status: 'completed',
+            task_status: 'completed',
+            completed_at: '2026-01-01T00:05:00Z',
+            findings_count: 1,
+          }),
+        ),
+        http.get('*/api/v1/scans/s1/findings', () =>
+          HttpResponse.json([
+            {
+              id: 'f1',
+              scan_task_id: 't1',
+              severity: 'high',
+              status: 'open',
+              rule_id: 'generic-api-key',
+              title: 'Hardcoded API key',
+              fingerprint: 'abc123',
+              created_at: '2026-01-01T00:00:00Z',
+              updated_at: '2026-01-01T00:00:00Z',
+              description: null,
+              file_path: null,
+              line_number: null,
+              raw_evidence: null,
+              snippet: null,
+              repository_id: 'r1',
+              first_seen_scan_run_id: 's1',
+              last_seen_scan_run_id: 's1',
+            },
+          ]),
+        ),
+      )
+      renderPage('s1')
+
+      expect(await screen.findByText('Hardcoded API key')).toBeInTheDocument()
+    })
+
+    it('does not render the findings table while the scan is still running', async () => {
+      server.use(
+        http.get('*/api/v1/scans/s1', () =>
+          HttpResponse.json({
+            ...baseScan,
+            status: 'running',
+            task_status: 'running',
+            findings_count: 0,
+          }),
+        ),
+      )
+      renderPage('s1')
+
+      await screen.findByText('Running')
+      expect(screen.queryByText(/no findings/i)).not.toBeInTheDocument()
+    })
+  })
 })

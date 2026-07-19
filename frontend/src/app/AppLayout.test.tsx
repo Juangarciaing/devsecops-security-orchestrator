@@ -62,4 +62,17 @@ describe('AppLayout', () => {
     )
     expect(screen.getByRole('button', { name: /log out/i })).toBeInTheDocument()
   })
+
+  it('renders navigation links to Repositories and Findings', () => {
+    renderAppLayout()
+
+    expect(screen.getByRole('link', { name: /repositories/i })).toHaveAttribute(
+      'href',
+      '/',
+    )
+    expect(screen.getByRole('link', { name: /findings/i })).toHaveAttribute(
+      'href',
+      '/findings',
+    )
+  })
 })
