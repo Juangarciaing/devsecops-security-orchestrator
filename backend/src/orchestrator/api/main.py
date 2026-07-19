@@ -17,6 +17,7 @@ from orchestrator.api.v1.routers.health import router as health_router
 from orchestrator.api.v1.routers.repositories import router as repositories_router
 from orchestrator.api.v1.routers.scans import router as scans_router
 from orchestrator.api.v1.routers.users import router as users_router
+from orchestrator.api.v1.routers.webhooks import router as webhooks_router
 from orchestrator.infrastructure.config.settings import get_settings
 
 
@@ -49,4 +50,5 @@ def create_app() -> FastAPI:
     app.include_router(repositories_router)
     app.include_router(scans_router)
     app.include_router(findings_router)
+    app.include_router(webhooks_router)
     return app
