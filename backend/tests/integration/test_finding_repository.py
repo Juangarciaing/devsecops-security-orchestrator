@@ -474,3 +474,146 @@ def test_create_returns_an_entity_matching_the_persisted_row_after_refresh_fix(
     migrated_schema: None,
 ) -> None:
     asyncio.run(_create_returns_an_entity_matching_the_persisted_row_after_refresh_fix())
+
+
+# ---------------------------------------------------------------------------
+# `list_by_last_seen_scan_run` / `list_findings` (Module 8 PR2, task 1.6)
+# ---------------------------------------------------------------------------
+
+
+async def _list_by_last_seen_scan_run_returns_only_members_paginated() -> None:
+    """Only findings whose `last_seen_scan_run_id == scan_run_id` are returned,
+    most-recently-created first, respecting `limit`/`offset`."""
+    engine = create_async_engine(resolve_database_url())
+    sessionmaker = async_sessionmaker(engine, expire_on_commit=False)
+    try:
+        repository_id, run1_id, task1_id = await _seed_repository_run_and_task(sessionmaker)
+
+        async with sessionmaker() as session:
+            scan_run_repo = SqlAlchemyScanRunRepository(session)
+            run2 = await scan_run_repo.create(_make_scan_run(repository_id))
+            await session.commit()
+            run2_id = run2.id
+
+        async with sessionmaker() as session:
+            scan_task_repo = SqlAlchemyScanTaskRepository(session)
+            task2 = await scan_task_repo.create(_make_scan_task(run2_id))
+            await session.commit()
+            task2_id = task2.id
+
+        # 3 findings attributed to run1, 1 to run2.
+        run1_findings = [_make_finding(task1_id, fingerprint=f"fp-run1-{i}") for i in range(3)]
+        run2_findings = [_make_finding(task2_id, fingerprint=f"fp-run2-{i}") for i in range(1)]
+
+        async with sessionmaker() as session:
+            finding_repo = SqlAlchemyFindingRepository(session)
+            await finding_repo.bulk_upsert_findings(repository_id, run1_id, run1_findings)
+            await finding_repo.bulk_upsert_findings(repository_id, run2_id, run2_findings)
+            await session.commit()
+
+        async with sessionmaker() as session:
+            finding_repo = SqlAlchemyFindingRepository(session)
+            page1 = await finding_repo.list_by_last_seen_scan_run(run1_id, limit=2, offset=0)
+            page2 = await finding_repo.list_by_last_seen_scan_run(run1_id, limit=2, offset=2)
+            run2_page = await finding_repo.list_by_last_seen_scan_run(run2_id, limit=20, offset=0)
+
+        assert len(page1) == 2
+        assert len(page2) == 1
+        assert {f.id for f in page1} | {f.id for f in page2} == {f.id for f in run1_findings}
+        assert len(run2_page) == 1
+        assert run2_page[0].id == run2_findings[0].id
+    finally:
+        await engine.dispose()
+
+
+def test_list_by_last_seen_scan_run_returns_only_members_paginated(
+    migrated_schema: None,
+) -> None:
+    asyncio.run(_list_by_last_seen_scan_run_returns_only_members_paginated())
+
+
+async def _list_findings_empty_result_when_nothing_matches() -> None:
+    engine = create_async_engine(resolve_database_url())
+    sessionmaker = async_sessionmaker(engine, expire_on_commit=False)
+    try:
+        async with sessionmaker() as session:
+            finding_repo = SqlAlchemyFindingRepository(session)
+            results = await finding_repo.list_findings(
+                repository_id=uuid.uuid4(), limit=20, offset=0
+            )
+        assert results == []
+    finally:
+        await engine.dispose()
+
+
+def test_list_findings_empty_result_when_nothing_matches(migrated_schema: None) -> None:
+    asyncio.run(_list_findings_empty_result_when_nothing_matches())
+
+
+async def _list_findings_combined_filters_and_scanner_type_join() -> None:
+    """Seeds two `ScanTask`s of DIFFERENT `scanner_type` on the SAME repo, one
+    finding on each with differing severity/status, then proves the
+    severity+status+repository_id+scanner_type combination narrows to exactly
+    the one matching row — verifying the conditional join is correct, not just
+    present."""
+    engine = create_async_engine(resolve_database_url())
+    sessionmaker = async_sessionmaker(engine, expire_on_commit=False)
+    try:
+        repository_id, run_id, secrets_task_id = await _seed_repository_run_and_task(sessionmaker)
+
+        async with sessionmaker() as session:
+            scan_task_repo = SqlAlchemyScanTaskRepository(session)
+            sast_task = await scan_task_repo.create(
+                _make_scan_task(run_id, scanner_type=ScannerType.SAST)
+            )
+            await session.commit()
+            sast_task_id = sast_task.id
+
+        secrets_finding = _make_finding(
+            secrets_task_id,
+            fingerprint="fp-secrets",
+            severity=FindingSeverity.HIGH,
+            status=FindingStatus.OPEN,
+        )
+        sast_finding = _make_finding(
+            sast_task_id,
+            fingerprint="fp-sast",
+            severity=FindingSeverity.HIGH,
+            status=FindingStatus.OPEN,
+        )
+
+        async with sessionmaker() as session:
+            finding_repo = SqlAlchemyFindingRepository(session)
+            await finding_repo.bulk_upsert_findings(
+                repository_id, run_id, [secrets_finding, sast_finding]
+            )
+            await session.commit()
+
+        async with sessionmaker() as session:
+            finding_repo = SqlAlchemyFindingRepository(session)
+            # No scanner_type filter -> both match on severity/status/repository_id.
+            both = await finding_repo.list_findings(
+                severity=FindingSeverity.HIGH,
+                status=FindingStatus.OPEN,
+                repository_id=repository_id,
+                limit=20,
+                offset=0,
+            )
+            # scanner_type=SECRETS -> only the secrets-task finding.
+            secrets_only = await finding_repo.list_findings(
+                severity=FindingSeverity.HIGH,
+                status=FindingStatus.OPEN,
+                repository_id=repository_id,
+                scanner_type=ScannerType.SECRETS,
+                limit=20,
+                offset=0,
+            )
+
+        assert {f.id for f in both} == {secrets_finding.id, sast_finding.id}
+        assert [f.id for f in secrets_only] == [secrets_finding.id]
+    finally:
+        await engine.dispose()
+
+
+def test_list_findings_combined_filters_and_scanner_type_join(migrated_schema: None) -> None:
+    asyncio.run(_list_findings_combined_filters_and_scanner_type_join())

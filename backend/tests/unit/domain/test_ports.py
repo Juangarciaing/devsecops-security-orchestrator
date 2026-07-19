@@ -188,6 +188,23 @@ def test_finding_port_full_implementation_can_be_instantiated_and_used() -> None
             self.counted.append(scan_run_id)
             return len(self.counted)
 
+        async def list_by_last_seen_scan_run(
+            self, scan_run_id: uuid.UUID, limit: int, offset: int
+        ) -> list[Finding]:
+            return []
+
+        async def list_findings(
+            self,
+            *,
+            severity: FindingSeverity | None = None,
+            status: FindingStatus | None = None,
+            repository_id: uuid.UUID | None = None,
+            scanner_type: ScannerType | None = None,
+            limit: int,
+            offset: int,
+        ) -> list[Finding]:
+            return []
+
     async def _run() -> None:
         repo = _FakeFindingRepository()
         repository_id = uuid.uuid4()
@@ -210,5 +227,108 @@ def test_finding_port_full_implementation_can_be_instantiated_and_used() -> None
         count = await repo.count_by_last_seen_scan_run(scan_run_id)
         assert count == 1
         assert repo.counted == [scan_run_id]
+
+    asyncio.run(_run())
+
+
+def test_finding_port_declares_list_by_last_seen_scan_run_and_list_findings() -> None:
+    """Module 8 PR2 task 1.6: two new paginated list methods on `FindingPort` —
+    `list_by_last_seen_scan_run` powers `GET /scans/{id}/findings`,
+    `list_findings` (severity/status/repository_id/scanner_type filters) powers
+    `GET /findings`."""
+    assert "list_by_last_seen_scan_run" in FindingPort.__abstractmethods__
+    assert "list_findings" in FindingPort.__abstractmethods__
+    assert inspect.iscoroutinefunction(FindingPort.list_by_last_seen_scan_run)
+    assert inspect.iscoroutinefunction(FindingPort.list_findings)
+
+
+def test_finding_port_list_methods_full_implementation_can_be_instantiated_and_used() -> None:
+    """Unit-level calling-contract coverage via a fake `FindingPort` — the real
+    filter/join/pagination semantics are integration-only coverage
+    (`tests/integration/test_finding_repository.py`)."""
+    from orchestrator.domain.entities.finding import Finding
+    from orchestrator.domain.value_objects.enums import FindingSeverity, FindingStatus, ScannerType
+
+    class _FakeFindingRepository(FindingPort):
+        def __init__(self) -> None:
+            self.scan_run_list_calls: list[tuple[uuid.UUID, int, int]] = []
+            self.filter_calls: list[dict[str, object]] = []
+
+        async def get_by_id(self, finding_id: uuid.UUID) -> Finding | None:
+            return None
+
+        async def list_by_scan_task(self, scan_task_id: uuid.UUID) -> list[Finding]:
+            return []
+
+        async def create(self, finding: Finding) -> Finding:
+            return finding
+
+        async def update_status(self, finding_id: uuid.UUID, status: FindingStatus) -> Finding:
+            raise NotImplementedError
+
+        async def bulk_upsert_findings(
+            self, repository_id: uuid.UUID, scan_run_id: uuid.UUID, findings: list[Finding]
+        ) -> None:
+            return None
+
+        async def count_by_last_seen_scan_run(self, scan_run_id: uuid.UUID) -> int:
+            return 0
+
+        async def list_by_last_seen_scan_run(
+            self, scan_run_id: uuid.UUID, limit: int, offset: int
+        ) -> list[Finding]:
+            self.scan_run_list_calls.append((scan_run_id, limit, offset))
+            return []
+
+        async def list_findings(
+            self,
+            *,
+            severity: FindingSeverity | None = None,
+            status: FindingStatus | None = None,
+            repository_id: uuid.UUID | None = None,
+            scanner_type: ScannerType | None = None,
+            limit: int,
+            offset: int,
+        ) -> list[Finding]:
+            self.filter_calls.append(
+                {
+                    "severity": severity,
+                    "status": status,
+                    "repository_id": repository_id,
+                    "scanner_type": scanner_type,
+                    "limit": limit,
+                    "offset": offset,
+                }
+            )
+            return []
+
+    async def _run() -> None:
+        repo = _FakeFindingRepository()
+        scan_run_id = uuid.uuid4()
+        repository_id = uuid.uuid4()
+
+        result = await repo.list_by_last_seen_scan_run(scan_run_id, 20, 0)
+        assert result == []
+        assert repo.scan_run_list_calls == [(scan_run_id, 20, 0)]
+
+        result = await repo.list_findings(
+            severity=FindingSeverity.HIGH,
+            status=FindingStatus.OPEN,
+            repository_id=repository_id,
+            scanner_type=ScannerType.SECRETS,
+            limit=10,
+            offset=5,
+        )
+        assert result == []
+        assert repo.filter_calls == [
+            {
+                "severity": FindingSeverity.HIGH,
+                "status": FindingStatus.OPEN,
+                "repository_id": repository_id,
+                "scanner_type": ScannerType.SECRETS,
+                "limit": 10,
+                "offset": 5,
+            }
+        ]
 
     asyncio.run(_run())
