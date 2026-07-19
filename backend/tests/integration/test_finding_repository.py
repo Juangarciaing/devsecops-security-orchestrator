@@ -377,3 +377,100 @@ def test_bulk_upsert_concurrent_calls_same_fingerprint_are_race_safe(
     migrated_schema: None,
 ) -> None:
     asyncio.run(_bulk_upsert_concurrent_calls_same_fingerprint_are_race_safe())
+
+
+# ---------------------------------------------------------------------------
+# `update_status` / `create` — MissingGreenlet refresh fix (Module 8 PR1)
+# ---------------------------------------------------------------------------
+
+
+async def _update_status_persists_through_the_live_orm_path_without_missing_greenlet() -> None:
+    """Spec: "Working `update_status` Persistence" — must be reachable
+    through the REAL async SQLAlchemy ORM session (no fake/mock, no raw-SQL
+    workaround), must not raise `MissingGreenlet`, and must persist both the
+    new `status` and a newer `updated_at`.
+
+    Root cause (design): `FindingModel.updated_at` has `onupdate=func.now()`.
+    After `model.status = status; await flush()`, `updated_at` is expired
+    server-side; `finding_to_entity(model)` reading it inside the SAME
+    non-awaited call triggers a synchronous lazy refresh outside the awaited
+    greenlet context. Using `bulk_upsert_findings` (the real production write
+    path, not `create()`) to seed the row keeps this test isolated to
+    `update_status` alone.
+    """
+    engine = create_async_engine(resolve_database_url())
+    sessionmaker = async_sessionmaker(engine, expire_on_commit=False)
+    try:
+        repository_id, scan_run_id, scan_task_id = await _seed_repository_run_and_task(sessionmaker)
+        finding = _make_finding(scan_task_id)
+
+        async with sessionmaker() as session:
+            finding_repo = SqlAlchemyFindingRepository(session)
+            await finding_repo.bulk_upsert_findings(repository_id, scan_run_id, [finding])
+            await session.commit()
+
+        async with sessionmaker() as session:
+            finding_repo = SqlAlchemyFindingRepository(session)
+            before = await finding_repo.get_by_id(finding.id)
+            assert before is not None
+
+        async with sessionmaker() as session:
+            finding_repo = SqlAlchemyFindingRepository(session)
+            updated = await finding_repo.update_status(finding.id, FindingStatus.SUPPRESSED)
+            await session.commit()
+
+        assert updated.status == FindingStatus.SUPPRESSED
+        assert updated.updated_at > before.updated_at
+
+        async with sessionmaker() as session:
+            finding_repo = SqlAlchemyFindingRepository(session)
+            reread = await finding_repo.get_by_id(finding.id)
+            assert reread is not None
+            assert reread.status == FindingStatus.SUPPRESSED
+            assert reread.updated_at > before.updated_at
+    finally:
+        await engine.dispose()
+
+
+def test_update_status_persists_through_the_live_orm_path_without_missing_greenlet(
+    migrated_schema: None,
+) -> None:
+    asyncio.run(_update_status_persists_through_the_live_orm_path_without_missing_greenlet())
+
+
+async def _create_returns_an_entity_matching_the_persisted_row_after_refresh_fix() -> None:
+    """Regression coverage for the defensive `refresh` fix in `create()`
+    (design: `create()` carries the identical latent bug via
+    `created_at`/`updated_at` server defaults, though no live caller hits it
+    today since `Finding` always supplies explicit timestamps) — proves the
+    fix doesn't change `create()`'s observable behavior."""
+    engine = create_async_engine(resolve_database_url())
+    sessionmaker = async_sessionmaker(engine, expire_on_commit=False)
+    try:
+        repository_id, _, scan_task_id = await _seed_repository_run_and_task(sessionmaker)
+        finding = _make_finding(scan_task_id, repository_id=repository_id)
+
+        async with sessionmaker() as session:
+            finding_repo = SqlAlchemyFindingRepository(session)
+            created = await finding_repo.create(finding)
+            await session.commit()
+
+        assert created.id == finding.id
+        assert created.status == FindingStatus.OPEN
+        assert created.created_at == finding.created_at
+        assert created.updated_at == finding.updated_at
+
+        async with sessionmaker() as session:
+            finding_repo = SqlAlchemyFindingRepository(session)
+            reread = await finding_repo.get_by_id(finding.id)
+            assert reread is not None
+            assert reread.id == created.id
+            assert reread.status == FindingStatus.OPEN
+    finally:
+        await engine.dispose()
+
+
+def test_create_returns_an_entity_matching_the_persisted_row_after_refresh_fix(
+    migrated_schema: None,
+) -> None:
+    asyncio.run(_create_returns_an_entity_matching_the_persisted_row_after_refresh_fix())
