@@ -41,12 +41,32 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from orchestrator.api.main import create_app
 from orchestrator.api.v1.dependencies.db import get_db_session
 from orchestrator.domain.entities.code_repository import CodeRepository
+from orchestrator.domain.entities.finding import Finding
+from orchestrator.domain.entities.scan_run import ScanRun
+from orchestrator.domain.entities.scan_task import ScanTask
 from orchestrator.domain.entities.user import User
 from orchestrator.domain.ports.container_runner_port import RunResult
-from orchestrator.domain.value_objects.enums import RepositoryProvider, UserRole
+from orchestrator.domain.value_objects.enums import (
+    FindingSeverity,
+    FindingStatus,
+    RepositoryProvider,
+    ScannerType,
+    ScanRunStatus,
+    ScanTaskStatus,
+    UserRole,
+)
 from orchestrator.infrastructure.db.engine import resolve_database_url
 from orchestrator.infrastructure.db.repositories.code_repository_repository import (
     SqlAlchemyCodeRepositoryRepository,
+)
+from orchestrator.infrastructure.db.repositories.finding_repository import (
+    SqlAlchemyFindingRepository,
+)
+from orchestrator.infrastructure.db.repositories.scan_run_repository import (
+    SqlAlchemyScanRunRepository,
+)
+from orchestrator.infrastructure.db.repositories.scan_task_repository import (
+    SqlAlchemyScanTaskRepository,
 )
 from orchestrator.infrastructure.db.repositories.user_repository import SqlAlchemyUserRepository
 from orchestrator.infrastructure.security.jwt import create_access_token
@@ -538,3 +558,172 @@ def test_trigger_scan_then_process_scan_task_then_get_shows_completed_with_one_f
         assert body["findings_count"] == 1
 
     asyncio.run(_run_with_client(verify_scenario))
+
+
+# ---------------------------------------------------------------------------
+# GET /scans/{id}/findings — scan-scoped findings list (Module 8 PR3)
+# ---------------------------------------------------------------------------
+
+
+async def _seed_scan_run_and_task(
+    sessionmaker: async_sessionmaker[AsyncSession], repository_id: uuid.UUID
+) -> tuple[uuid.UUID, uuid.UUID]:
+    """Create one `ScanRun` (on `repository_id`) + one `ScanTask` on it.
+    Returns `(scan_run_id, scan_task_id)`."""
+    async with sessionmaker() as session:
+        scan_run_repo = SqlAlchemyScanRunRepository(session)
+        run = await scan_run_repo.create(
+            ScanRun(
+                id=uuid.uuid4(),
+                repository_id=repository_id,
+                status=ScanRunStatus.COMPLETED,
+                trigger="manual",
+                commit_sha="abc123",
+                ref="abc123",
+                created_at=_NOW,
+                started_at=_NOW,
+                completed_at=_NOW,
+            )
+        )
+        await session.commit()
+        run_id = run.id
+
+    async with sessionmaker() as session:
+        scan_task_repo = SqlAlchemyScanTaskRepository(session)
+        task = await scan_task_repo.create(
+            ScanTask(
+                id=uuid.uuid4(),
+                scan_run_id=run_id,
+                scanner_type=ScannerType.SECRETS,
+                status=ScanTaskStatus.COMPLETED,
+                started_at=_NOW,
+                completed_at=_NOW,
+                error_message=None,
+            )
+        )
+        await session.commit()
+        task_id = task.id
+
+    return run_id, task_id
+
+
+async def _seed_finding(
+    sessionmaker: async_sessionmaker[AsyncSession],
+    scan_task_id: uuid.UUID,
+    repository_id: uuid.UUID,
+    last_seen_scan_run_id: uuid.UUID,
+    **overrides: object,
+) -> uuid.UUID:
+    """Insert one `Finding` directly through the repository (no HTTP write
+    path exists for findings — Module 8 non-goal). Returns the created id."""
+    async with sessionmaker() as session:
+        finding_repo = SqlAlchemyFindingRepository(session)
+        defaults: dict[str, object] = {
+            "id": uuid.uuid4(),
+            "scan_task_id": scan_task_id,
+            "severity": FindingSeverity.HIGH,
+            "status": FindingStatus.OPEN,
+            "rule_id": "generic-api-key",
+            "title": "Hardcoded API key",
+            "fingerprint": f"fp-{uuid.uuid4()}",
+            "created_at": _NOW,
+            "updated_at": _NOW,
+            "repository_id": repository_id,
+            "first_seen_scan_run_id": last_seen_scan_run_id,
+            "last_seen_scan_run_id": last_seen_scan_run_id,
+        }
+        defaults.update(overrides)
+        created = await finding_repo.create(Finding(**defaults))  # type: ignore[arg-type]
+        await session.commit()
+        return created.id
+
+
+def test_list_scan_findings_without_token_returns_401(migrated_schema: None) -> None:
+    async def scenario(
+        client: httpx.AsyncClient, _sessionmaker: async_sessionmaker[AsyncSession]
+    ) -> None:
+        response = await client.get(f"/api/v1/scans/{uuid.uuid4()}/findings")
+
+        assert response.status_code == 401
+
+    asyncio.run(_run_with_client(scenario))
+
+
+def test_list_scan_findings_unknown_scan_returns_404(migrated_schema: None) -> None:
+    async def scenario(
+        client: httpx.AsyncClient, sessionmaker: async_sessionmaker[AsyncSession]
+    ) -> None:
+        member = await _seed_user(
+            sessionmaker, "member-scan-findings-404@example.com", UserRole.MEMBER
+        )
+
+        response = await client.get(
+            f"/api/v1/scans/{uuid.uuid4()}/findings", headers=_auth_header(member)
+        )
+
+        assert response.status_code == 404
+        assert response.headers["content-type"] == "application/problem+json"
+
+    asyncio.run(_run_with_client(scenario))
+
+
+def test_list_scan_findings_returns_only_findings_attributed_to_the_run(
+    migrated_schema: None,
+) -> None:
+    async def scenario(
+        client: httpx.AsyncClient, sessionmaker: async_sessionmaker[AsyncSession]
+    ) -> None:
+        member = await _seed_user(
+            sessionmaker, "member-scan-findings-membership@example.com", UserRole.MEMBER
+        )
+        repo = await _seed_repository(sessionmaker, "acme-scan-findings", "widgets-scan-findings")
+        run_id, task_id = await _seed_scan_run_and_task(sessionmaker, repo.id)
+        other_run_id, other_task_id = await _seed_scan_run_and_task(sessionmaker, repo.id)
+
+        matching_1 = await _seed_finding(sessionmaker, task_id, repo.id, run_id)
+        matching_2 = await _seed_finding(sessionmaker, task_id, repo.id, run_id)
+        await _seed_finding(sessionmaker, other_task_id, repo.id, other_run_id)
+
+        response = await client.get(
+            f"/api/v1/scans/{run_id}/findings", headers=_auth_header(member)
+        )
+
+        assert response.status_code == 200
+        body = response.json()
+        returned_ids = {item["id"] for item in body}
+        assert returned_ids == {str(matching_1), str(matching_2)}
+        # membership list is also redacted (member role)
+        assert all(item["raw_evidence"] is None for item in body)
+
+    asyncio.run(_run_with_client(scenario))
+
+
+def test_list_scan_findings_supports_pagination(migrated_schema: None) -> None:
+    async def scenario(
+        client: httpx.AsyncClient, sessionmaker: async_sessionmaker[AsyncSession]
+    ) -> None:
+        member = await _seed_user(
+            sessionmaker, "member-scan-findings-page@example.com", UserRole.MEMBER
+        )
+        repo = await _seed_repository(sessionmaker, "acme-scan-findings-page", "widgets-page")
+        run_id, task_id = await _seed_scan_run_and_task(sessionmaker, repo.id)
+        for _ in range(3):
+            await _seed_finding(sessionmaker, task_id, repo.id, run_id)
+
+        first_page = await client.get(
+            f"/api/v1/scans/{run_id}/findings",
+            params={"limit": 2, "offset": 0},
+            headers=_auth_header(member),
+        )
+        assert first_page.status_code == 200
+        assert len(first_page.json()) == 2
+
+        second_page = await client.get(
+            f"/api/v1/scans/{run_id}/findings",
+            params={"limit": 2, "offset": 2},
+            headers=_auth_header(member),
+        )
+        assert second_page.status_code == 200
+        assert len(second_page.json()) == 1
+
+    asyncio.run(_run_with_client(scenario))

@@ -24,6 +24,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from orchestrator.api.v1.dependencies.auth import get_current_user
 from orchestrator.api.v1.dependencies.db import get_db_session
 from orchestrator.api.v1.errors.problem import ProblemException
+from orchestrator.application.dto.finding import FindingRead
 from orchestrator.application.dto.scan_run import ScanRunRead
 from orchestrator.application.dto.scan_trigger import ScanRunDetailRead, ScanTriggerRequest
 from orchestrator.application.use_cases.get_repository import RepositoryNotFoundError
@@ -31,6 +32,10 @@ from orchestrator.application.use_cases.get_scan_run_detail import (
     ScanRunNotFoundError,
     get_scan_run_detail,
 )
+from orchestrator.application.use_cases.list_scan_findings import (
+    ScanRunNotFoundError as ListScanFindingsNotFoundError,
+)
+from orchestrator.application.use_cases.list_scan_findings import list_scan_findings
 from orchestrator.application.use_cases.list_scan_runs import list_scan_runs
 from orchestrator.application.use_cases.trigger_scan import trigger_scan
 from orchestrator.domain.entities.user import User
@@ -141,3 +146,22 @@ async def get_scan_endpoint(
         raise _scan_not_found() from exc
 
     return ScanRunDetailRead.from_run_task_and_count(run, task, findings_count)
+
+
+@router.get("/scans/{scan_run_id}/findings", response_model=list[FindingRead])
+async def list_scan_findings_endpoint(
+    scan_run_id: uuid.UUID,
+    limit: int = Query(default=20, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+    _user: User = Depends(get_current_user),  # noqa: B008
+    session: AsyncSession = Depends(get_db_session),  # noqa: B008
+) -> list[FindingRead]:
+    scan_run_port = SqlAlchemyScanRunRepository(session)
+    finding_port = SqlAlchemyFindingRepository(session)
+
+    try:
+        return await list_scan_findings(
+            scan_run_port, finding_port, scan_run_id, _user.role, limit, offset
+        )
+    except ListScanFindingsNotFoundError as exc:
+        raise _scan_not_found() from exc
