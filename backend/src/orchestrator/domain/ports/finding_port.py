@@ -10,7 +10,7 @@ import uuid
 from abc import ABC, abstractmethod
 
 from orchestrator.domain.entities.finding import Finding
-from orchestrator.domain.value_objects.enums import FindingStatus
+from orchestrator.domain.value_objects.enums import FindingSeverity, FindingStatus, ScannerType
 
 
 class FindingPort(ABC):
@@ -62,4 +62,35 @@ class FindingPort(ABC):
         introduced by it or merely re-observed on it — not findings
         physically produced by this run's `ScanTask` (that was the old,
         replaced `count_by_scan_task` semantics).
+        """
+
+    @abstractmethod
+    async def list_by_last_seen_scan_run(
+        self, scan_run_id: uuid.UUID, limit: int, offset: int
+    ) -> list[Finding]:
+        """Return up to `limit` `Finding`s whose `last_seen_scan_run_id ==
+        scan_run_id`, most-recently-created first, skipping `offset` rows.
+
+        Powers `GET /scans/{scan_run_id}/findings` (Module 8 PR2).
+        """
+
+    @abstractmethod
+    async def list_findings(
+        self,
+        *,
+        severity: FindingSeverity | None = None,
+        status: FindingStatus | None = None,
+        repository_id: uuid.UUID | None = None,
+        scanner_type: ScannerType | None = None,
+        limit: int,
+        offset: int,
+    ) -> list[Finding]:
+        """Return up to `limit` `Finding`s matching the given filters (all
+        optional, AND-combined), most-recently-created first, skipping
+        `offset` rows.
+
+        `scanner_type` requires a join to the owning `ScanTask` (`Finding`
+        has no denormalized scanner_type column); implementations MUST only
+        perform that join when `scanner_type` is supplied. Powers
+        `GET /findings` (Module 8 PR2).
         """

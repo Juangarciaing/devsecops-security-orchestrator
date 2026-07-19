@@ -12,9 +12,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from orchestrator.domain.entities.finding import Finding
 from orchestrator.domain.ports.finding_port import FindingPort
-from orchestrator.domain.value_objects.enums import FindingStatus
+from orchestrator.domain.value_objects.enums import FindingSeverity, FindingStatus, ScannerType
 from orchestrator.infrastructure.db.mappers import finding_to_entity, finding_to_model
 from orchestrator.infrastructure.db.models.finding import FindingModel
+from orchestrator.infrastructure.db.models.scan_task import ScanTaskModel
 
 
 class FindingNotFoundError(LookupError):
@@ -125,3 +126,52 @@ class SqlAlchemyFindingRepository(FindingPort):
         )
         result = await self._session.execute(stmt)
         return result.scalar_one()
+
+    async def list_by_last_seen_scan_run(
+        self, scan_run_id: uuid.UUID, limit: int, offset: int
+    ) -> list[Finding]:
+        """Powers `GET /scans/{scan_run_id}/findings`."""
+        stmt = (
+            select(FindingModel)
+            .where(FindingModel.last_seen_scan_run_id == scan_run_id)
+            .order_by(FindingModel.created_at.desc(), FindingModel.id)
+            .limit(limit)
+            .offset(offset)
+        )
+        result = await self._session.execute(stmt)
+        return [finding_to_entity(model) for model in result.scalars().all()]
+
+    async def list_findings(
+        self,
+        *,
+        severity: FindingSeverity | None = None,
+        status: FindingStatus | None = None,
+        repository_id: uuid.UUID | None = None,
+        scanner_type: ScannerType | None = None,
+        limit: int,
+        offset: int,
+    ) -> list[Finding]:
+        """Powers `GET /findings`. Joins to `ScanTaskModel` ONLY when
+        `scanner_type` is supplied — `Finding` carries no denormalized
+        scanner_type column, and the join key (`scan_task_id` -> PK) is
+        indexed, but the cost is avoided entirely when the filter is unused.
+        """
+        stmt = select(FindingModel)
+        if scanner_type is not None:
+            stmt = stmt.join(ScanTaskModel, FindingModel.scan_task_id == ScanTaskModel.id).where(
+                ScanTaskModel.scanner_type == scanner_type
+            )
+        if severity is not None:
+            stmt = stmt.where(FindingModel.severity == severity)
+        if status is not None:
+            stmt = stmt.where(FindingModel.status == status)
+        if repository_id is not None:
+            stmt = stmt.where(FindingModel.repository_id == repository_id)
+
+        stmt = (
+            stmt.order_by(FindingModel.created_at.desc(), FindingModel.id)
+            .limit(limit)
+            .offset(offset)
+        )
+        result = await self._session.execute(stmt)
+        return [finding_to_entity(model) for model in result.scalars().all()]
