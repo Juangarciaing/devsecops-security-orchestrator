@@ -1,6 +1,11 @@
 """`GitleaksAdapter` — runs Gitleaks against a checked-out volume and parses
 its JSON report into `Finding`s (Module 6 D4, tasks 2.1-2.3).
 
+Implements `ScannerAdapterPort` (Module 7 D1, tasks 2.1-2.2): `parse()` is a
+method here, not a module-level function — the old module-level `parse()`
+shim was DELETED once this method existed, so there is exactly one entry
+point.
+
 ## Exit-code contract (D4)
 Gitleaks' own source (`cmd/root.go`, confirmed against the real v8.30.1
 release, not merely inferred from docs) exits 1 whenever `detector.DetectSource`
@@ -31,7 +36,8 @@ from typing import TYPE_CHECKING, Any
 
 from orchestrator.domain.entities.finding import Finding
 from orchestrator.domain.ports.container_runner_port import ResourceLimits, RunResult
-from orchestrator.domain.value_objects.enums import FindingSeverity
+from orchestrator.domain.ports.scanner_adapter_port import ScannerAdapterPort
+from orchestrator.domain.value_objects.enums import FindingSeverity, ScannerType
 
 if TYPE_CHECKING:
     from orchestrator.domain.ports.container_runner_port import ContainerRunnerPort
@@ -63,8 +69,12 @@ class GitleaksFailedError(Exception):
     """A genuine adapter/tool failure — never raised for "leaks found" (D4)."""
 
 
-class GitleaksAdapter:
-    """Launches the pinned Gitleaks image against a checked-out volume (D4)."""
+class GitleaksAdapter(ScannerAdapterPort):
+    """Launches the pinned Gitleaks image against a checked-out volume (D4).
+
+    Implements `ScannerAdapterPort` (Module 7 D1) — selected via
+    `infrastructure.scanners.registry.get_adapter(ScannerType.SECRETS, ...)`.
+    """
 
     def __init__(self, runner: ContainerRunnerPort, settings: Settings) -> None:
         self._runner = runner
@@ -75,7 +85,7 @@ class GitleaksAdapter:
 
         Returns the raw `RunResult` — callers pass it to `parse()` to get
         `Finding`s (kept separate so `parse()` stays a pure, easily
-        triangulated function with no container dependency).
+        triangulated method with no container dependency).
         """
         return self._runner.run(
             image=self._settings.scan_container_image,
@@ -88,40 +98,44 @@ class GitleaksAdapter:
             timeout_seconds=self._settings.scan_timeout_seconds,
         )
 
+    def parse(
+        self,
+        result: RunResult,
+        scan_task_id: uuid.UUID,
+        *,
+        default_severity: FindingSeverity = DEFAULT_SEVERITY,
+    ) -> list[Finding]:
+        """Interpret one Gitleaks `RunResult` per the D4 exit-code contract.
+
+        Zero findings on a clean repo (exit 0) is a valid, successful
+        outcome — returns `[]`, not an error.
+        """
+        if result.timed_out:
+            raise GitleaksFailedError(
+                f"gitleaks timed out (exit_code={result.exit_code}, stderr={result.stderr!r})"
+            )
+        if result.exit_code == _CLEAN_EXIT_CODE:
+            return []
+        if result.exit_code != _LEAKS_FOUND_EXIT_CODE:
+            raise GitleaksFailedError(
+                f"gitleaks exited {result.exit_code} (genuine failure, not leaks-found): "
+                f"{result.stderr}"
+            )
+
+        entries = _parse_json_report(result.stdout)
+        now = datetime.now(UTC).replace(tzinfo=None)
+        return [_entry_to_finding(entry, scan_task_id, default_severity, now) for entry in entries]
+
+    def supports(self, scanner_type: ScannerType) -> bool:
+        """`GitleaksAdapter` only handles `ScannerType.SECRETS`."""
+        return scanner_type == ScannerType.SECRETS
+
     def _resource_limits(self) -> ResourceLimits:
         return ResourceLimits(
             memory_mb=self._settings.scan_memory_limit_mb,
             nano_cpus=int(self._settings.scan_cpu_limit * 1_000_000_000),
             pids_limit=self._settings.scan_pids_limit,
         )
-
-
-def parse(
-    result: RunResult,
-    scan_task_id: uuid.UUID,
-    *,
-    default_severity: FindingSeverity = DEFAULT_SEVERITY,
-) -> list[Finding]:
-    """Interpret one Gitleaks `RunResult` per the D4 exit-code contract.
-
-    Zero findings on a clean repo (exit 0) is a valid, successful outcome —
-    returns `[]`, not an error.
-    """
-    if result.timed_out:
-        raise GitleaksFailedError(
-            f"gitleaks timed out (exit_code={result.exit_code}, stderr={result.stderr!r})"
-        )
-    if result.exit_code == _CLEAN_EXIT_CODE:
-        return []
-    if result.exit_code != _LEAKS_FOUND_EXIT_CODE:
-        raise GitleaksFailedError(
-            f"gitleaks exited {result.exit_code} (genuine failure, not leaks-found): "
-            f"{result.stderr}"
-        )
-
-    entries = _parse_json_report(result.stdout)
-    now = datetime.now(UTC).replace(tzinfo=None)
-    return [_entry_to_finding(entry, scan_task_id, default_severity, now) for entry in entries]
 
 
 def _parse_json_report(stdout: str) -> list[dict[str, Any]]:
