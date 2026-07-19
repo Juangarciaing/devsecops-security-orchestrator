@@ -15,6 +15,7 @@ from orchestrator.domain.entities.finding import Finding
 from orchestrator.domain.entities.scan_run import ScanRun
 from orchestrator.domain.entities.scan_task import ScanTask
 from orchestrator.domain.entities.user import User
+from orchestrator.domain.entities.webhook_delivery import WebhookDelivery
 from orchestrator.domain.value_objects.enums import (
     FindingSeverity,
     FindingStatus,
@@ -23,6 +24,7 @@ from orchestrator.domain.value_objects.enums import (
     ScanRunStatus,
     ScanTaskStatus,
     UserRole,
+    WebhookOutcome,
 )
 from orchestrator.infrastructure.db.mappers import (
     api_key_to_entity,
@@ -37,6 +39,8 @@ from orchestrator.infrastructure.db.mappers import (
     scan_task_to_model,
     user_to_entity,
     user_to_model,
+    webhook_delivery_to_entity,
+    webhook_delivery_to_model,
 )
 
 _NOW = datetime(2026, 1, 1, tzinfo=UTC)
@@ -203,3 +207,46 @@ def test_api_key_round_trip() -> None:
     round_tripped = api_key_to_entity(model)
 
     assert round_tripped == entity
+
+
+def test_webhook_delivery_round_trip() -> None:
+    entity = WebhookDelivery(
+        id=uuid.uuid4(),
+        signature_valid=True,
+        outcome=WebhookOutcome.ACCEPTED,
+        received_at=_NOW,
+        delivery_id="delivery-1",
+        event_type="push",
+        source_ip="203.0.113.5",
+        repository_full_name="acme/widgets",
+        ref="refs/heads/main",
+        commit_sha="c" * 40,
+    )
+
+    model = webhook_delivery_to_model(entity)
+    round_tripped = webhook_delivery_to_entity(model)
+
+    assert round_tripped == entity
+
+
+def test_webhook_delivery_round_trip_with_null_delivery_id_on_rejected_signature() -> None:
+    """Rejected/header-less deliveries never populate `delivery_id` — the
+    mapper must preserve `None` rather than coercing it."""
+    entity = WebhookDelivery(
+        id=uuid.uuid4(),
+        signature_valid=False,
+        outcome=WebhookOutcome.REJECTED_SIGNATURE,
+        received_at=_NOW,
+        delivery_id=None,
+        event_type=None,
+        source_ip="203.0.113.5",
+        repository_full_name=None,
+        ref=None,
+        commit_sha=None,
+    )
+
+    model = webhook_delivery_to_model(entity)
+    round_tripped = webhook_delivery_to_entity(model)
+
+    assert round_tripped == entity
+    assert round_tripped.delivery_id is None

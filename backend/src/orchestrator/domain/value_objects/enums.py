@@ -70,3 +70,20 @@ class UserRole(StrEnum):
 
     ADMIN = "admin"
     MEMBER = "member"
+
+
+class WebhookOutcome(StrEnum):
+    """Result of processing one inbound `WebhookDelivery` (Module 10 D3).
+
+    The `IngestWebhookUseCase` records exactly one of these for every
+    delivery, whether or not a scan was ultimately triggered.
+    """
+
+    ACCEPTED = "accepted"
+    DUPLICATE = "duplicate"
+    REJECTED_SIGNATURE = "rejected_signature"
+    IGNORED_EVENT = "ignored_event"
+    INVALID_PAYLOAD = "invalid_payload"
+    IGNORED_UNKNOWN_REPO = "ignored_unknown_repo"
+    IGNORED_INACTIVE_REPO = "ignored_inactive_repo"
+    IGNORED_NON_DEFAULT_BRANCH = "ignored_non_default_branch"

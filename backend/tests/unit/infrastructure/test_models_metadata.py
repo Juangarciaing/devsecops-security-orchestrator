@@ -17,6 +17,7 @@ from orchestrator.infrastructure.db.models.finding import FindingModel
 from orchestrator.infrastructure.db.models.scan_run import ScanRunModel
 from orchestrator.infrastructure.db.models.scan_task import ScanTaskModel
 from orchestrator.infrastructure.db.models.user import UserModel
+from orchestrator.infrastructure.db.models.webhook_delivery import WebhookDeliveryModel
 
 __all__ = [
     "ApiKeyModel",
@@ -25,6 +26,7 @@ __all__ = [
     "ScanRunModel",
     "ScanTaskModel",
     "UserModel",
+    "WebhookDeliveryModel",
 ]
 
 
@@ -182,3 +184,45 @@ def test_scan_runs_fk_cascade(engine: sa.Engine) -> None:
         fk["referred_table"] == "code_repositories" and fk["options"].get("ondelete") == "CASCADE"
         for fk in fks
     )
+
+
+def test_webhook_deliveries_table_is_created(engine: sa.Engine) -> None:
+    inspector = sa.inspect(engine)
+    table_names = set(inspector.get_table_names())
+
+    assert "webhook_deliveries" in table_names
+
+
+def test_webhook_deliveries_delivery_id_is_unique_and_nullable(engine: sa.Engine) -> None:
+    inspector = sa.inspect(engine)
+    columns = {col["name"]: col for col in inspector.get_columns("webhook_deliveries")}
+    unique_column_sets = {
+        tuple(uc["column_names"]) for uc in inspector.get_unique_constraints("webhook_deliveries")
+    }
+
+    assert "delivery_id" in columns
+    assert columns["delivery_id"]["nullable"] is True
+    assert ("delivery_id",) in unique_column_sets
+
+
+def test_webhook_deliveries_required_columns_are_not_null(engine: sa.Engine) -> None:
+    inspector = sa.inspect(engine)
+    columns = {col["name"]: col for col in inspector.get_columns("webhook_deliveries")}
+
+    assert columns["signature_valid"]["nullable"] is False
+    assert columns["outcome"]["nullable"] is False
+    assert columns["received_at"]["nullable"] is False
+
+
+def test_webhook_deliveries_optional_columns_are_nullable(engine: sa.Engine) -> None:
+    inspector = sa.inspect(engine)
+    columns = {col["name"]: col for col in inspector.get_columns("webhook_deliveries")}
+
+    for column_name in (
+        "event_type",
+        "source_ip",
+        "repository_full_name",
+        "ref",
+        "commit_sha",
+    ):
+        assert columns[column_name]["nullable"] is True

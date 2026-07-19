@@ -49,6 +49,12 @@ class Settings(BaseSettings):
     scan_pids_limit: int = 128
     scan_timeout_seconds: int = 120
 
+    # Module 10 — HMAC-SHA256 secret for verifying inbound GitHub webhook
+    # deliveries. Nullable/fail-closed (D1): the app boots without it; the
+    # signature verifier treats an unset secret as always-invalid, so every
+    # delivery is 401-audited rather than accepted unverified.
+    github_webhook_secret: str | None = None
+
 
 @lru_cache
 def get_settings() -> Settings:
