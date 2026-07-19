@@ -27,6 +27,7 @@ async def trigger_scan(
     repository_id: uuid.UUID,
     commit_sha: str | None = None,
     scanner_type: ScannerType = ScannerType.SECRETS,
+    trigger: str = "manual",
 ) -> tuple[ScanRun, bool]:
     """Trigger a scan for `repository_id`, idempotently.
 
@@ -37,8 +38,10 @@ async def trigger_scan(
     matches `(repository_id, resolved_commit_sha, scanner_type)` (D3) — no
     new `ScanRun`/`ScanTask` is created and nothing is re-enqueued.
 
-    Otherwise creates one `ScanRun(status=pending, trigger="manual")` and one
+    Otherwise creates one `ScanRun(status=pending, trigger=trigger)` and one
     `ScanTask(scanner_type, status=pending)`, and returns `(new_run, True)`.
+    `trigger` defaults to `"manual"` (module 10 D5: still a plain `str`, no
+    `ScanTrigger` enum); the webhook intake (PR3) passes `trigger="webhook"`.
     When `commit_sha` is omitted, both `ScanRun.commit_sha` and
     `ScanRun.ref` default to `repository.default_branch`.
 
@@ -67,7 +70,7 @@ async def trigger_scan(
         id=uuid.uuid4(),
         repository_id=repository_id,
         status=ScanRunStatus.PENDING,
-        trigger="manual",
+        trigger=trigger,
         commit_sha=resolved_commit_sha,
         ref=resolved_commit_sha,
         created_at=now,

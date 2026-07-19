@@ -88,6 +88,7 @@ async def trigger_scan_endpoint(
             repository_id,
             commit_sha,
             scanner_type,
+            trigger="manual",
         )
     except RepositoryNotFoundError as exc:
         raise _repository_not_found() from exc
