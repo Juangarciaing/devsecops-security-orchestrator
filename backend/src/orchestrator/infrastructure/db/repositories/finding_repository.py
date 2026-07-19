@@ -50,21 +50,6 @@ class SqlAlchemyFindingRepository(FindingPort):
         await self._session.flush()
         return finding_to_entity(model)
 
-    async def count_by_scan_task(self, scan_task_id: uuid.UUID) -> int:
-        """Return the number of `Finding`s for `scan_task_id` without loading rows.
-
-        Adapter-only helper (not part of `FindingPort`) — powers the
-        `GET /scans/{id}` findings COUNT (design's non-goal: no findings
-        listing endpoint in this module).
-        """
-        stmt = (
-            select(func.count())
-            .select_from(FindingModel)
-            .where(FindingModel.scan_task_id == scan_task_id)
-        )
-        result = await self._session.execute(stmt)
-        return result.scalar_one()
-
     async def bulk_upsert_findings(
         self, repository_id: uuid.UUID, scan_run_id: uuid.UUID, findings: list[Finding]
     ) -> None:

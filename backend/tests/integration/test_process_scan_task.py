@@ -1,9 +1,12 @@
-"""Integration tests for `process_scan_task`'s REAL flow (Module 6 D1-D5):
-checkout (init-container clone + `rev-parse HEAD`) -> resolve/persist the real
-commit SHA -> run Gitleaks -> parse -> persist `Finding`s -> drive the
-`ScanTask`/`ScanRun` state machine to `completed` (0..N real findings) or
-`failed` (deterministic checkout/scan failure, no retry) or `completed` after
-a transient Docker-daemon error retries and succeeds.
+"""Integration tests for `process_scan_task`'s REAL flow (Module 6 D1-D5,
+Module 7 D6): checkout (init-container clone + `rev-parse HEAD`) -> resolve/
+persist the real commit SHA -> resolve the adapter via
+`registry.get_adapter(scanner_type, ...)` -> run Gitleaks -> parse ->
+`bulk_upsert_findings` (cross-run dedup on `(repository_id, fingerprint)`) ->
+drive the `ScanTask`/`ScanRun` state machine to `completed` (0..N real
+findings) or `failed` (deterministic checkout/scan/registry-lookup failure, no
+retry) or `completed` after a transient Docker-daemon error retries and
+succeeds.
 
 Uses `Task.apply()` — Celery's built-in eager/synchronous execution path — so
 no live broker or running `celery worker` process is required. `container_runner`
@@ -34,6 +37,7 @@ from datetime import datetime
 from unittest.mock import MagicMock
 
 import pytest
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from orchestrator.domain.entities.code_repository import CodeRepository
@@ -41,12 +45,14 @@ from orchestrator.domain.entities.scan_run import ScanRun
 from orchestrator.domain.entities.scan_task import ScanTask
 from orchestrator.domain.ports.container_runner_port import RunResult
 from orchestrator.domain.value_objects.enums import (
+    FindingStatus,
     RepositoryProvider,
     ScannerType,
     ScanRunStatus,
     ScanTaskStatus,
 )
 from orchestrator.infrastructure.db.engine import resolve_database_url
+from orchestrator.infrastructure.db.models.finding import FindingModel
 from orchestrator.infrastructure.db.repositories.code_repository_repository import (
     SqlAlchemyCodeRepositoryRepository,
 )
@@ -120,8 +126,12 @@ def _make_scan_task(scan_run_id: uuid.UUID, **overrides: object) -> ScanTask:
     return ScanTask(**defaults)  # type: ignore[arg-type]
 
 
-async def _seed_pending_task() -> tuple[uuid.UUID, uuid.UUID]:
-    """Create a `CodeRepository` + pending `ScanRun`/`ScanTask`; return (task_id, run_id)."""
+async def _seed_pending_task(**scan_task_overrides: object) -> tuple[uuid.UUID, uuid.UUID]:
+    """Create a `CodeRepository` + pending `ScanRun`/`ScanTask`; return (task_id, run_id).
+
+    `**scan_task_overrides` (e.g. `scanner_type=ScannerType.SAST`) are passed
+    through to `_make_scan_task`.
+    """
     engine = create_async_engine(resolve_database_url())
     sessionmaker = async_sessionmaker(engine, expire_on_commit=False)
     try:
@@ -138,7 +148,9 @@ async def _seed_pending_task() -> tuple[uuid.UUID, uuid.UUID]:
             run_id = run.id
 
         async with sessionmaker() as session:
-            task = await SqlAlchemyScanTaskRepository(session).create(_make_scan_task(run_id))
+            task = await SqlAlchemyScanTaskRepository(session).create(
+                _make_scan_task(run_id, **scan_task_overrides)
+            )
             await session.commit()
             task_id = task.id
 
@@ -160,6 +172,89 @@ async def _load_state(
             assert task is not None
             assert run is not None
             return task, run, list(findings)
+    finally:
+        await engine.dispose()
+
+
+async def _seed_repository() -> uuid.UUID:
+    """Create one `CodeRepository` (no run/task yet). Returns its id.
+
+    Used by the re-scan/dedup test below, which needs MULTIPLE `ScanRun`s +
+    `ScanTask`s attached to the SAME repository — `_seed_pending_task`
+    creates its own repository per call, which would defeat the whole point
+    (dedup is scoped to `(repository_id, fingerprint)`, Module 7 D4).
+    """
+    engine = create_async_engine(resolve_database_url())
+    sessionmaker = async_sessionmaker(engine, expire_on_commit=False)
+    try:
+        async with sessionmaker() as session:
+            repository = await SqlAlchemyCodeRepositoryRepository(session).create(
+                _make_repository()
+            )
+            await session.commit()
+            return repository.id
+    finally:
+        await engine.dispose()
+
+
+async def _seed_pending_task_for_repository(
+    repository_id: uuid.UUID,
+) -> tuple[uuid.UUID, uuid.UUID]:
+    """Create a pending `ScanRun`/`ScanTask` on an EXISTING `repository_id`.
+
+    Returns `(task_id, run_id)`.
+    """
+    engine = create_async_engine(resolve_database_url())
+    sessionmaker = async_sessionmaker(engine, expire_on_commit=False)
+    try:
+        async with sessionmaker() as session:
+            run = await SqlAlchemyScanRunRepository(session).create(_make_scan_run(repository_id))
+            await session.commit()
+            run_id = run.id
+
+        async with sessionmaker() as session:
+            task = await SqlAlchemyScanTaskRepository(session).create(_make_scan_task(run_id))
+            await session.commit()
+            task_id = task.id
+
+        return task_id, run_id
+    finally:
+        await engine.dispose()
+
+
+async def _load_findings_for_repository(repository_id: uuid.UUID) -> list[FindingModel]:
+    """Direct model query (bypasses `FindingPort`, which has no "list all
+    findings for a repository" method) — needed to prove NO duplicate row
+    was created across re-scans, which `list_by_scan_task` cannot show: on a
+    conflict, `bulk_upsert_findings` does NOT update `scan_task_id`, so a
+    re-seen `Finding` stays attributed to whichever `ScanTask` first inserted
+    it (Module 7 D4)."""
+    engine = create_async_engine(resolve_database_url())
+    sessionmaker = async_sessionmaker(engine, expire_on_commit=False)
+    try:
+        async with sessionmaker() as session:
+            stmt = select(FindingModel).where(FindingModel.repository_id == repository_id)
+            result = await session.execute(stmt)
+            return list(result.scalars().all())
+    finally:
+        await engine.dispose()
+
+
+async def _suppress_finding(finding_id: uuid.UUID) -> None:
+    """Raw `UPDATE` (not `finding_repo.update_status` — see Module 7 PR3
+    apply-progress "Issues Found": that method has a pre-existing,
+    unreachable `MissingGreenlet` bug, out of this batch's scope) to simulate
+    a triage action between scans."""
+    engine = create_async_engine(resolve_database_url())
+    sessionmaker = async_sessionmaker(engine, expire_on_commit=False)
+    try:
+        async with sessionmaker() as session:
+            await session.execute(
+                update(FindingModel)
+                .where(FindingModel.id == finding_id)
+                .values(status=FindingStatus.SUPPRESSED)
+            )
+            await session.commit()
     finally:
         await engine.dispose()
 
@@ -449,3 +544,167 @@ def test_process_scan_task_exhausts_retries_on_persistent_transient_error_and_ma
     assert "docker daemon unreachable" in task.error_message
     assert run.status == ScanRunStatus.FAILED
     assert len(findings) == 0
+
+
+def test_process_scan_task_marks_failed_when_scanner_type_has_no_registered_adapter(
+    migrated_schema: None,
+) -> None:
+    """Module 7 D6 proof: the adapter is now resolved via
+    `registry.get_adapter(task.scanner_type, ...)`, NOT a hardcoded
+    `GitleaksAdapter(...)`. A `ScanTask` whose `scanner_type` has no
+    registration (only `ScannerType.SECRETS` is registered today) must fail
+    with `UnregisteredScannerError`'s message — which is only reachable if
+    `scanner_type` is genuinely consulted before any checkout/scan attempt.
+    Before this PR (hardcoded `GitleaksAdapter`), `scanner_type` was never
+    read at all and this scenario would instead fail on the FIRST scripted
+    container call (or crash with an empty-script error) with a completely
+    different message.
+    """
+    from orchestrator.workers.tasks.process_scan import process_scan_task
+
+    task_id, run_id = asyncio.run(_seed_pending_task(scanner_type=ScannerType.SAST))
+
+    # No container calls should happen at all: `get_adapter` raises before
+    # `GitCheckout.checkout()` (or `adapter.scan()`) is ever reached.
+    fake_runner = FakeContainerRunner()
+    docker_client = MagicMock()
+
+    result = process_scan_task.apply(
+        args=(str(task_id),),
+        kwargs={"container_runner": fake_runner, "docker_client": docker_client},
+    )
+    result.get()
+
+    task, run, findings = asyncio.run(_load_state(task_id, run_id))
+    assert task.status == ScanTaskStatus.FAILED
+    assert task.error_message is not None
+    assert "no adapter registered for scanner type" in task.error_message
+    assert "sast" in task.error_message.lower()
+    assert run.status == ScanRunStatus.FAILED
+    assert len(findings) == 0
+    assert len(fake_runner.calls) == 0
+
+
+def test_process_scan_task_second_and_third_scans_of_same_repo_dedupe_and_preserve_status(
+    migrated_schema: None,
+) -> None:
+    """Module 7 D4/D6 end-to-end proof (the actual point of this module) via
+    the REAL `process_scan_task` flow (not just `bulk_upsert_findings` in
+    isolation, which `test_finding_repository.py` already covers):
+
+    1. First scan of a repo finds one secret -> exactly 1 `Finding`,
+       `first_seen == last_seen == run1`.
+    2. Second scan of the SAME repo (same secret re-observed + one brand-new
+       secret) -> still exactly 2 `Finding`s total (NOT 3): the recurring one
+       is NOT duplicated, its `last_seen_scan_run_id` advances to run2 while
+       `first_seen_scan_run_id` stays on run1; the new one inserts fresh with
+       `first_seen == last_seen == run2`.
+    3. The recurring `Finding` is manually suppressed, then a THIRD scan
+       re-observes the SAME secret again -> row count is STILL 2, `status`
+       stays SUPPRESSED (not reset to OPEN), `last_seen_scan_run_id` advances
+       to run3.
+    """
+    from orchestrator.workers.tasks.process_scan import process_scan_task
+
+    repository_id = asyncio.run(_seed_repository())
+    task1_id, run1_id = asyncio.run(_seed_pending_task_for_repository(repository_id))
+
+    recurring_entry = {
+        "RuleID": "stripe-access-token",
+        "Description": "Stripe Access Token",
+        "File": "config.py",
+        "StartLine": 4,
+        "Secret": "543736274dd00e9ca09b5942773b552873862520",
+    }
+    docker_client = MagicMock()
+
+    fake_runner1 = FakeContainerRunner()
+    fake_runner1.script(
+        _CLONE_OK,
+        _REV_PARSE_OK,
+        RunResult(exit_code=2, stdout=json.dumps([recurring_entry]), stderr="", timed_out=False),
+    )
+    process_scan_task.apply(
+        args=(str(task1_id),),
+        kwargs={"container_runner": fake_runner1, "docker_client": docker_client},
+    ).get()
+
+    rows_after_run1 = asyncio.run(_load_findings_for_repository(repository_id))
+    assert len(rows_after_run1) == 1
+    assert rows_after_run1[0].first_seen_scan_run_id == run1_id
+    assert rows_after_run1[0].last_seen_scan_run_id == run1_id
+    assert rows_after_run1[0].status == FindingStatus.OPEN
+    recurring_finding_id = rows_after_run1[0].id
+
+    # --- Second scan: re-observes the same secret + a brand-new one ---
+    new_entry = {
+        "RuleID": "generic-api-key",
+        "Description": "Generic API Key",
+        "File": "settings.py",
+        "StartLine": 9,
+        "Secret": "some-other-secret",
+    }
+    task2_id, run2_id = asyncio.run(_seed_pending_task_for_repository(repository_id))
+    fake_runner2 = FakeContainerRunner()
+    fake_runner2.script(
+        _CLONE_OK,
+        _REV_PARSE_OK,
+        RunResult(
+            exit_code=2,
+            stdout=json.dumps([recurring_entry, new_entry]),
+            stderr="",
+            timed_out=False,
+        ),
+    )
+    process_scan_task.apply(
+        args=(str(task2_id),),
+        kwargs={"container_runner": fake_runner2, "docker_client": docker_client},
+    ).get()
+
+    rows_after_run2 = asyncio.run(_load_findings_for_repository(repository_id))
+    assert len(rows_after_run2) == 2  # deduped: NOT 3
+    recurring_row = next(r for r in rows_after_run2 if r.id == recurring_finding_id)
+    new_row = next(r for r in rows_after_run2 if r.id != recurring_finding_id)
+    assert recurring_row.first_seen_scan_run_id == run1_id  # unchanged
+    assert recurring_row.last_seen_scan_run_id == run2_id  # advanced
+    assert recurring_row.status == FindingStatus.OPEN
+    assert new_row.first_seen_scan_run_id == run2_id
+    assert new_row.last_seen_scan_run_id == run2_id
+
+    async def _counts() -> tuple[int, int]:
+        engine = create_async_engine(resolve_database_url())
+        sessionmaker = async_sessionmaker(engine, expire_on_commit=False)
+        try:
+            async with sessionmaker() as session:
+                finding_repo = SqlAlchemyFindingRepository(session)
+                run1_count = await finding_repo.count_by_last_seen_scan_run(run1_id)
+                run2_count = await finding_repo.count_by_last_seen_scan_run(run2_id)
+                return run1_count, run2_count
+        finally:
+            await engine.dispose()
+
+    run1_count, run2_count = asyncio.run(_counts())
+    assert run1_count == 0  # the recurring finding moved off run1's count entirely
+    assert run2_count == 2  # `GET /scans/{id}` findings_count semantics (D5)
+
+    # --- Suppress the recurring finding, then a third re-scan ---
+    asyncio.run(_suppress_finding(recurring_finding_id))
+
+    task3_id, run3_id = asyncio.run(_seed_pending_task_for_repository(repository_id))
+    fake_runner3 = FakeContainerRunner()
+    fake_runner3.script(
+        _CLONE_OK,
+        _REV_PARSE_OK,
+        RunResult(exit_code=2, stdout=json.dumps([recurring_entry]), stderr="", timed_out=False),
+    )
+    process_scan_task.apply(
+        args=(str(task3_id),),
+        kwargs={"container_runner": fake_runner3, "docker_client": docker_client},
+    ).get()
+
+    rows_after_run3 = asyncio.run(_load_findings_for_repository(repository_id))
+    assert len(rows_after_run3) == 2  # STILL no duplicate row
+    recurring_row_after_run3 = next(r for r in rows_after_run3 if r.id == recurring_finding_id)
+    assert recurring_row_after_run3.status == FindingStatus.SUPPRESSED  # preserved, not reset
+    assert recurring_row_after_run3.first_seen_scan_run_id == run1_id  # still unchanged
+    assert recurring_row_after_run3.last_seen_scan_run_id == run3_id  # advanced again

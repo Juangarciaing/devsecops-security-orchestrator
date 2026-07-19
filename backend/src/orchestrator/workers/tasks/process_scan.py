@@ -1,13 +1,14 @@
-"""`process_scan_task` — the real Module 6 scan flow (D1-D5).
+"""`process_scan_task` — the real Module 6/7 scan flow (D1-D6).
 
 ## Flow
     run_async: load task -> run -> repository; pending -> running          [DB]
-    sync:      GitCheckout(...).checkout(clone_url, ref) -> Workspace      [init container]
-               GitleaksAdapter(...).scan(workspace.volume_name)            [scanner container]
-               GitleaksAdapter(...).parse(RunResult) -> list[Finding]
+    sync:      get_adapter(task.scanner_type, runner, settings)            [registry, D2/D6]
+               GitCheckout(...).checkout(clone_url, ref) -> Workspace      [init container]
+               adapter.scan(workspace.volume_name)                        [scanner container]
+               adapter.parse(RunResult, scan_task_id) -> list[Finding]
                # Workspace.__exit__ force-removes the volume (finally)
-    run_async: persist resolved commit_sha + Finding(s);
-               task + run -> completed                                    [DB]
+    run_async: persist resolved commit_sha + bulk_upsert_findings(...)     [DB, dedup on
+               (repository_id, fingerprint); task + run -> completed        Module 7 D4/D6]
 
 Container work (checkout + scan) is sync/blocking (the `docker` SDK itself
 is sync, Module 6 D3) and runs OUTSIDE any async DB session/event loop —
@@ -46,7 +47,7 @@ from celery.utils.log import get_task_logger
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from orchestrator.domain.entities.finding import Finding
-from orchestrator.domain.value_objects.enums import ScanRunStatus, ScanTaskStatus
+from orchestrator.domain.value_objects.enums import ScannerType, ScanRunStatus, ScanTaskStatus
 from orchestrator.infrastructure.config.settings import get_settings
 from orchestrator.infrastructure.container.docker_container_runner import DockerContainerRunner
 from orchestrator.infrastructure.db.repositories.code_repository_repository import (
@@ -64,10 +65,8 @@ from orchestrator.infrastructure.db.repositories.scan_task_repository import (
     ScanTaskNotFoundError,
     SqlAlchemyScanTaskRepository,
 )
-from orchestrator.infrastructure.scanners.gitleaks_adapter import (
-    GitleaksAdapter,
-    GitleaksFailedError,
-)
+from orchestrator.infrastructure.scanners.gitleaks_adapter import GitleaksFailedError
+from orchestrator.infrastructure.scanners.registry import get_adapter
 from orchestrator.infrastructure.vcs.git_checkout import CheckoutFailedError, GitCheckout
 from orchestrator.workers.backoff import backoff_jitter
 from orchestrator.workers.celery_app import celery_app
@@ -95,17 +94,17 @@ class TransientScanError(RuntimeError):
 
 async def _load_and_start(
     session: AsyncSession, scan_task_id: uuid.UUID
-) -> tuple[str, str, uuid.UUID, uuid.UUID]:
+) -> tuple[str, str, uuid.UUID, uuid.UUID, ScannerType]:
     """Load the repo's `clone_url` + the run's `ref`; transition `pending -> running`.
 
-    Returns `(clone_url, ref, scan_run_id, repository_id)`. Idempotent on the
-    `pending -> running` transition, matching Module 5's original convention.
+    Returns `(clone_url, ref, scan_run_id, repository_id, scanner_type)`.
+    Idempotent on the `pending -> running` transition, matching Module 5's
+    original convention.
 
-    `repository_id` was added in Module 7 PR3 (task 4.11 compat fix, NOT the
-    full registry+`bulk_upsert_findings` re-wire — that stays PR4, D6): once
-    `findings.repository_id` is `NOT NULL`, this module's still-legacy
-    per-finding `create()` loop in `_complete_scan` needs it to stamp every
-    persisted `Finding`.
+    `repository_id`/`scanner_type` are returned so `_checkout_and_scan`
+    (registry-routed, Module 7 D2/D6) and `_complete_scan`
+    (`bulk_upsert_findings`, Module 7 D4/D6) don't need to re-load `task`/
+    `repository` themselves.
     """
     scan_task_repo = SqlAlchemyScanTaskRepository(session)
     scan_run_repo = SqlAlchemyScanRunRepository(session)
@@ -127,32 +126,33 @@ async def _load_and_start(
         await scan_run_repo.update_status(task.scan_run_id, ScanRunStatus.RUNNING, started_at=now)
         await session.commit()
 
-    return repository.clone_url, run.ref, task.scan_run_id, repository.id
+    return repository.clone_url, run.ref, task.scan_run_id, repository.id, task.scanner_type
 
 
 def _checkout_and_scan(
     clone_url: str,
     ref: str,
     scan_task_id: uuid.UUID,
+    scanner_type: ScannerType,
     runner: ContainerRunnerPort,
     docker_client: DockerClient,
     settings: Settings,
 ) -> tuple[str, list[Finding]]:
-    """Sync/blocking: checkout + run Gitleaks + parse. Runs OUTSIDE any async
-    DB session/event loop (Module 6 D3).
+    """Sync/blocking: resolve the adapter, checkout, scan, parse. Runs OUTSIDE
+    any async DB session/event loop (Module 6 D3).
 
-    Raises `CheckoutFailedError` (deterministic, from `GitCheckout`) or
-    `GitleaksFailedError` (deterministic, from `GitleaksAdapter.parse()`)
-    unchanged — callers classify those as non-retryable (D5). Any OTHER
-    exception is left to propagate to the caller, which wraps it as
-    `TransientScanError`.
-
-    Note: this is a minimal Module 7 PR1 compatibility fix (calling
-    `GitleaksAdapter.parse()` as a method instead of the deleted
-    module-level `parse()`) — NOT the full registry-routed re-wire (that is
-    Module 7 PR4, D6).
+    The adapter is resolved via `registry.get_adapter(scanner_type, ...)`
+    (Module 7 D2/D6) instead of a hardcoded `GitleaksAdapter(...)` — this is
+    what actually makes `ScanTask.scanner_type` meaningful. Raises
+    `UnregisteredScannerError` (via `get_adapter`) for any `scanner_type`
+    with no registration; `CheckoutFailedError` (deterministic, from
+    `GitCheckout`) or `GitleaksFailedError` (deterministic, from
+    `GitleaksAdapter.parse()`) unchanged — callers classify those as
+    non-retryable (D5). Any OTHER exception (including
+    `UnregisteredScannerError`) is left to propagate to the caller, which
+    wraps it as `TransientScanError`.
     """
-    adapter = GitleaksAdapter(runner, settings)
+    adapter = get_adapter(scanner_type, runner, settings)
     with GitCheckout(runner, docker_client, settings).checkout(clone_url, ref) as workspace:
         result = adapter.scan(workspace.volume_name)
     return workspace.head_sha, adapter.parse(result, scan_task_id)
@@ -169,29 +169,23 @@ async def _complete_scan(
     """Persist the resolved HEAD SHA + `Finding`s; `task`/`run` -> `completed`.
 
     Zero `findings` (a clean repo) is a valid, successful outcome (D4/spec) —
-    NOT treated as failure.
+    NOT treated as failure (`bulk_upsert_findings` no-ops on an empty list).
 
-    Still a per-finding `create()` loop, NOT `bulk_upsert_findings` (that
-    registry-routed re-wire, including cross-run dedup on re-scans, is
-    Module 7 PR4, D6) — `repository_id`/`first_seen_scan_run_id`/
-    `last_seen_scan_run_id` are stamped here only as a PR3 data-completeness
-    compat fix (task 4.11: `findings.repository_id` is now `NOT NULL`, and
-    `GET /scans/{id}` now counts via `count_by_last_seen_scan_run`, D5).
-    Every finding from a single `process_scan_task` run is necessarily
-    "first seen == last seen == this run" from this legacy loop's point of
-    view (it has no cross-run dedup of its own) — this mirrors exactly what
-    `bulk_upsert_findings` stamps on a first-ever INSERT.
+    Persistence is ONE `bulk_upsert_findings(repository_id, scan_run_id,
+    findings)` call (Module 7 D4/D6) — REPLACES the former per-finding
+    `create()` loop. This is what actually gives cross-run dedup on re-scans:
+    a `Finding` whose `(repository_id, fingerprint)` was already seen has its
+    `last_seen_scan_run_id` advanced (and `status` left untouched — suppressed
+    stays suppressed) instead of inserting a duplicate row; a brand-new
+    fingerprint inserts with `first_seen_scan_run_id == last_seen_scan_run_id
+    == scan_run_id`.
     """
     scan_task_repo = SqlAlchemyScanTaskRepository(session)
     scan_run_repo = SqlAlchemyScanRunRepository(session)
     finding_repo = SqlAlchemyFindingRepository(session)
 
     await scan_run_repo.update_commit_sha(scan_run_id, head_sha)
-    for finding in findings:
-        finding.repository_id = repository_id
-        finding.first_seen_scan_run_id = scan_run_id
-        finding.last_seen_scan_run_id = scan_run_id
-        await finding_repo.create(finding)
+    await finding_repo.bulk_upsert_findings(repository_id, scan_run_id, findings)
 
     completed_at = datetime.now(UTC).replace(tzinfo=None)
     await scan_task_repo.update_status(
@@ -239,12 +233,12 @@ def process_scan_task(
 
     try:
         try:
-            clone_url, ref, scan_run_id, repository_id = run_async(
+            clone_url, ref, scan_run_id, repository_id, scanner_type = run_async(
                 lambda session: _load_and_start(session, task_id)
             )
             try:
                 head_sha, findings = _checkout_and_scan(
-                    clone_url, ref, task_id, runner, client, settings
+                    clone_url, ref, task_id, scanner_type, runner, client, settings
                 )
             except (CheckoutFailedError, GitleaksFailedError):
                 raise

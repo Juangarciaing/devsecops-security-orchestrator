@@ -614,7 +614,14 @@ def test_find_active_task_filters_by_scanner_type(migrated_schema: None) -> None
 # ---------------------------------------------------------------------------
 
 
-async def _finding_create_count_and_list_roundtrip() -> None:
+async def _finding_create_and_list_roundtrip() -> None:
+    """`count_by_scan_task` was removed in Module 7 PR4 (task 6.2 cleanup):
+    it was an adapter-only helper with zero production callers since PR3
+    rewired `GET /scans/{id}` onto `count_by_last_seen_scan_run` — this test
+    now only exercises `create`/`get_by_id`/`list_by_scan_task`, which remain
+    genuinely used (directly, by `test_finding_repository.py`'s helpers, and
+    by `process_scan_task`'s own read-back assertions in
+    `test_process_scan_task.py`)."""
     engine = create_async_engine(resolve_database_url())
     sessionmaker = async_sessionmaker(engine, expire_on_commit=False)
     try:
@@ -639,8 +646,8 @@ async def _finding_create_count_and_list_roundtrip() -> None:
         async with sessionmaker() as session:
             finding_repo = SqlAlchemyFindingRepository(session)
 
-            zero_count = await finding_repo.count_by_scan_task(task_id)
-            assert zero_count == 0
+            by_task_before = await finding_repo.list_by_scan_task(task_id)
+            assert by_task_before == []
 
             created = await finding_repo.create(_make_finding(task_id, repository_id))
             await session.commit()
@@ -655,9 +662,6 @@ async def _finding_create_count_and_list_roundtrip() -> None:
             assert by_id.repository_id == repository_id
             assert by_id.rule_id == "placeholder"
 
-            one_count = await finding_repo.count_by_scan_task(task_id)
-            assert one_count == 1
-
             by_task = await finding_repo.list_by_scan_task(task_id)
             assert len(by_task) == 1
             assert by_task[0].id == finding_id
@@ -665,5 +669,5 @@ async def _finding_create_count_and_list_roundtrip() -> None:
         await engine.dispose()
 
 
-def test_finding_create_count_and_list_by_scan_task(migrated_schema: None) -> None:
-    asyncio.run(_finding_create_count_and_list_roundtrip())
+def test_finding_create_and_list_by_scan_task(migrated_schema: None) -> None:
+    asyncio.run(_finding_create_and_list_roundtrip())
