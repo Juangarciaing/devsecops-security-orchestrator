@@ -222,6 +222,42 @@ def test_trigger_scan_missing_commit_sha_defaults_to_default_branch() -> None:
     assert run.ref == "develop"
 
 
+def test_trigger_scan_defaults_trigger_to_manual_when_omitted() -> None:
+    repository_port = _FakeCodeRepositoryRepository()
+    repository = _make_repository()
+    repository_port.seed(repository)
+    scan_run_port = _FakeScanRunRepository()
+    scan_task_port = _FakeScanTaskRepository()
+
+    run, _created = asyncio.run(
+        trigger_scan(repository_port, scan_run_port, scan_task_port, repository.id)
+    )
+
+    assert run.trigger == "manual"
+
+
+def test_trigger_scan_propagates_an_explicit_webhook_trigger() -> None:
+    repository_port = _FakeCodeRepositoryRepository()
+    repository = _make_repository()
+    repository_port.seed(repository)
+    scan_run_port = _FakeScanRunRepository()
+    scan_task_port = _FakeScanTaskRepository()
+
+    run, created = asyncio.run(
+        trigger_scan(
+            repository_port,
+            scan_run_port,
+            scan_task_port,
+            repository.id,
+            commit_sha="abc123",
+            trigger="webhook",
+        )
+    )
+
+    assert created is True
+    assert run.trigger == "webhook"
+
+
 def test_trigger_scan_returns_existing_run_when_active_task_exists() -> None:
     repository_port = _FakeCodeRepositoryRepository()
     repository = _make_repository()
