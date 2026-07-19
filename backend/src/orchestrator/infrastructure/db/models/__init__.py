@@ -8,6 +8,7 @@ from orchestrator.infrastructure.db.models.finding import FindingModel
 from orchestrator.infrastructure.db.models.scan_run import ScanRunModel
 from orchestrator.infrastructure.db.models.scan_task import ScanTaskModel
 from orchestrator.infrastructure.db.models.user import UserModel
+from orchestrator.infrastructure.db.models.webhook_delivery import WebhookDeliveryModel
 
 __all__ = [
     "ApiKeyModel",
@@ -16,4 +17,5 @@ __all__ = [
     "ScanRunModel",
     "ScanTaskModel",
     "UserModel",
+    "WebhookDeliveryModel",
 ]

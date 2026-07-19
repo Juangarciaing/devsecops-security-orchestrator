@@ -100,6 +100,24 @@ def test_settings_scan_container_defaults(valid_env: None) -> None:
     assert settings.scan_timeout_seconds == 120
 
 
+def test_settings_github_webhook_secret_defaults_to_none(valid_env: None) -> None:
+    """Module 10 D1: unset secret is a valid boot state (fail-closed at
+    verification time, not at startup)."""
+    settings = Settings(_env_file=None)
+
+    assert settings.github_webhook_secret is None
+
+
+def test_settings_github_webhook_secret_can_be_overridden(
+    monkeypatch: pytest.MonkeyPatch, valid_env: None
+) -> None:
+    monkeypatch.setenv("GITHUB_WEBHOOK_SECRET", "a-real-secret")
+
+    settings = Settings(_env_file=None)
+
+    assert settings.github_webhook_secret == "a-real-secret"
+
+
 def test_settings_scan_container_values_can_be_overridden(
     monkeypatch: pytest.MonkeyPatch, valid_env: None
 ) -> None:

@@ -14,10 +14,14 @@ from orchestrator.infrastructure.db.repositories.code_repository_repository impo
     SqlAlchemyCodeRepositoryRepository,
 )
 from orchestrator.infrastructure.db.repositories.user_repository import SqlAlchemyUserRepository
+from orchestrator.infrastructure.db.repositories.webhook_delivery_repository import (
+    SqlAlchemyWebhookDeliveryRepository,
+)
 
 __all__ = [
     "CodeRepositoryNotFoundError",
     "SqlAlchemyApiKeyRepository",
     "SqlAlchemyCodeRepositoryRepository",
     "SqlAlchemyUserRepository",
+    "SqlAlchemyWebhookDeliveryRepository",
 ]

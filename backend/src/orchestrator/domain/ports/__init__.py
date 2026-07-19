@@ -16,6 +16,7 @@ from orchestrator.domain.ports.finding_port import FindingPort
 from orchestrator.domain.ports.scan_run_port import ScanRunPort
 from orchestrator.domain.ports.scan_task_port import ScanTaskPort
 from orchestrator.domain.ports.user_port import UserPort
+from orchestrator.domain.ports.webhook_delivery_port import WebhookDeliveryPort
 
 __all__ = [
     "ApiKeyPort",
@@ -27,4 +28,5 @@ __all__ = [
     "ScanRunPort",
     "ScanTaskPort",
     "UserPort",
+    "WebhookDeliveryPort",
 ]

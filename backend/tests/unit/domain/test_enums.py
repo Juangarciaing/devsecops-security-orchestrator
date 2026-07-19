@@ -10,6 +10,7 @@ from orchestrator.domain.value_objects.enums import (
     ScanRunStatus,
     ScanTaskStatus,
     UserRole,
+    WebhookOutcome,
 )
 
 
@@ -72,3 +73,16 @@ def test_finding_status_members() -> None:
 
 def test_user_role_members() -> None:
     assert {member.value for member in UserRole} == {"admin", "member"}
+
+
+def test_webhook_outcome_members() -> None:
+    assert {member.value for member in WebhookOutcome} == {
+        "accepted",
+        "duplicate",
+        "rejected_signature",
+        "ignored_event",
+        "invalid_payload",
+        "ignored_unknown_repo",
+        "ignored_inactive_repo",
+        "ignored_non_default_branch",
+    }

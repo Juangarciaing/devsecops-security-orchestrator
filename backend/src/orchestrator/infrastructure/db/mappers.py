@@ -13,12 +13,14 @@ from orchestrator.domain.entities.finding import Finding
 from orchestrator.domain.entities.scan_run import ScanRun
 from orchestrator.domain.entities.scan_task import ScanTask
 from orchestrator.domain.entities.user import User
+from orchestrator.domain.entities.webhook_delivery import WebhookDelivery
 from orchestrator.infrastructure.db.models.api_key import ApiKeyModel
 from orchestrator.infrastructure.db.models.code_repository import CodeRepositoryModel
 from orchestrator.infrastructure.db.models.finding import FindingModel
 from orchestrator.infrastructure.db.models.scan_run import ScanRunModel
 from orchestrator.infrastructure.db.models.scan_task import ScanTaskModel
 from orchestrator.infrastructure.db.models.user import UserModel
+from orchestrator.infrastructure.db.models.webhook_delivery import WebhookDeliveryModel
 
 
 def code_repository_to_entity(model: CodeRepositoryModel) -> CodeRepository:
@@ -204,4 +206,36 @@ def api_key_to_model(entity: ApiKey) -> ApiKeyModel:
         created_at=entity.created_at,
         last_used_at=entity.last_used_at,
         revoked_at=entity.revoked_at,
+    )
+
+
+def webhook_delivery_to_entity(model: WebhookDeliveryModel) -> WebhookDelivery:
+    """Convert a `WebhookDeliveryModel` into a domain `WebhookDelivery` entity."""
+    return WebhookDelivery(
+        id=model.id,
+        signature_valid=model.signature_valid,
+        outcome=model.outcome,
+        received_at=model.received_at,
+        delivery_id=model.delivery_id,
+        event_type=model.event_type,
+        source_ip=model.source_ip,
+        repository_full_name=model.repository_full_name,
+        ref=model.ref,
+        commit_sha=model.commit_sha,
+    )
+
+
+def webhook_delivery_to_model(entity: WebhookDelivery) -> WebhookDeliveryModel:
+    """Convert a domain `WebhookDelivery` entity into a `WebhookDeliveryModel`."""
+    return WebhookDeliveryModel(
+        id=entity.id,
+        signature_valid=entity.signature_valid,
+        outcome=entity.outcome,
+        received_at=entity.received_at,
+        delivery_id=entity.delivery_id,
+        event_type=entity.event_type,
+        source_ip=entity.source_ip,
+        repository_full_name=entity.repository_full_name,
+        ref=entity.ref,
+        commit_sha=entity.commit_sha,
     )

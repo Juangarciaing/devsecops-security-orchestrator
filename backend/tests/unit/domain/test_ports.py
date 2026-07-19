@@ -17,12 +17,21 @@ from orchestrator.domain.ports.finding_port import FindingPort
 from orchestrator.domain.ports.scan_run_port import ScanRunPort
 from orchestrator.domain.ports.scan_task_port import ScanTaskPort
 from orchestrator.domain.ports.user_port import UserPort
+from orchestrator.domain.ports.webhook_delivery_port import WebhookDeliveryPort
 from orchestrator.domain.value_objects.enums import ScannerType
 
 PORTS_ROOT = Path(__file__).parents[3] / "src" / "orchestrator" / "domain" / "ports"
 _NOW = datetime.now(UTC).replace(tzinfo=None)
 
-ALL_PORTS = (CodeRepositoryPort, ScanRunPort, ScanTaskPort, FindingPort, UserPort, ApiKeyPort)
+ALL_PORTS = (
+    CodeRepositoryPort,
+    ScanRunPort,
+    ScanTaskPort,
+    FindingPort,
+    UserPort,
+    ApiKeyPort,
+    WebhookDeliveryPort,
+)
 
 FORBIDDEN_MODULE_PREFIXES = ("sqlalchemy",)
 
@@ -330,5 +339,58 @@ def test_finding_port_list_methods_full_implementation_can_be_instantiated_and_u
                 "offset": 5,
             }
         ]
+
+    asyncio.run(_run())
+
+
+def test_webhook_delivery_port_declares_exists_and_record() -> None:
+    """Module 10 PR1: `WebhookDeliveryPort` — `exists` (idempotency check,
+    signature-valid deliveries only per D-data-model) and `record` (audits
+    every delivery, whatever the outcome)."""
+    assert "exists" in WebhookDeliveryPort.__abstractmethods__
+    assert "record" in WebhookDeliveryPort.__abstractmethods__
+    assert inspect.iscoroutinefunction(WebhookDeliveryPort.exists)
+    assert inspect.iscoroutinefunction(WebhookDeliveryPort.record)
+
+
+def test_webhook_delivery_port_full_implementation_can_be_instantiated_and_used() -> None:
+    """Unit-level calling-contract coverage via a fake `WebhookDeliveryPort` —
+    the real UNIQUE(delivery_id)-nullable persistence semantics are
+    integration-only coverage (`tests/integration/test_webhook_delivery_repository.py`)."""
+    from orchestrator.domain.entities.webhook_delivery import WebhookDelivery
+    from orchestrator.domain.value_objects.enums import WebhookOutcome
+
+    class _FakeWebhookDeliveryRepository(WebhookDeliveryPort):
+        def __init__(self) -> None:
+            self.known_delivery_ids: set[str] = set()
+            self.recorded: list[WebhookDelivery] = []
+
+        async def exists(self, delivery_id: str) -> bool:
+            return delivery_id in self.known_delivery_ids
+
+        async def record(self, delivery: WebhookDelivery) -> None:
+            self.recorded.append(delivery)
+            if delivery.delivery_id is not None:
+                self.known_delivery_ids.add(delivery.delivery_id)
+
+    async def _run() -> None:
+        repo = _FakeWebhookDeliveryRepository()
+        delivery = WebhookDelivery(
+            id=uuid.uuid4(),
+            signature_valid=True,
+            outcome=WebhookOutcome.ACCEPTED,
+            received_at=_NOW,
+            delivery_id="delivery-1",
+        )
+
+        missing = await repo.exists("delivery-1")
+        assert missing is False
+
+        result = await repo.record(delivery)
+        assert result is None
+        assert repo.recorded == [delivery]
+
+        present = await repo.exists("delivery-1")
+        assert present is True
 
     asyncio.run(_run())

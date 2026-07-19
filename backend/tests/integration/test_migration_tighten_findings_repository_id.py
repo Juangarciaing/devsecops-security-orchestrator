@@ -67,7 +67,12 @@ def test_upgrade_head_tightens_repository_id_to_not_null(db_env: None) -> None:
 
 
 def test_downgrade_one_step_restores_repository_id_nullable(db_env: None) -> None:
-    _run_alembic("upgrade", "head")
+    # Target this migration's own revision explicitly, then step back one —
+    # `downgrade -1` *from head* would instead undo whatever the newest
+    # migration happens to be (e.g. Module 10's `webhook_deliveries` table),
+    # not this one. Same fix as
+    # `test_migration_add_credential_ref_is_active.py`.
+    _run_alembic("upgrade", "072bb3e01833")
     _run_alembic("downgrade", "-1")
     try:
         columns = asyncio.run(_findings_columns())
