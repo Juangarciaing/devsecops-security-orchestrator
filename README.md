@@ -1,10 +1,67 @@
 # DevSecOps Security Orchestrator
 
-Module 1 walking skeleton: a runnable Docker Compose stack (postgres, redis,
-backend, frontend), CI/pre-commit quality gates, a liveness `/health`
-endpoint, and the hexagonal folder shape later modules build on. No domain
-logic, auth, or scanning yet — see `backend/src/orchestrator/` and
-`frontend/src/` for the empty-but-real package layout.
+A self-hosted platform for orchestrating security scans across registered
+Git repositories: register a repo, scan it on demand or automatically on
+every push, and triage the findings from a dashboard — with real secret
+detection running in hardened, ephemeral containers, not a mock.
+
+Built as a portfolio-grade reference for Clean/Hexagonal architecture, async
+task orchestration, and secure-by-design container execution. Delivered in
+13 independently-shippable modules via spec-driven development; 10 are
+merged as of this README.
+
+## What's actually implemented
+
+- **Auth & RBAC** — JWT (HS256) login, `admin`/`member` roles, admin-only
+  user provisioning, reusable FastAPI DI guards.
+- **Repository management** — register/list/update/soft-delete GitHub repos;
+  identity is `(provider, owner, name)`, credentials are an opaque pointer
+  (no secrets manager yet — public repos only for now).
+- **Real scan execution** — [Gitleaks](https://github.com/gitleaks/gitleaks)
+  runs in an ephemeral, non-root, read-only, network-isolated, resource-limited
+  sibling container per scan (`ContainerRunnerPort` behind a bounded
+  Docker-socket boundary — the worker holds the socket, scanner containers
+  never do). A formal `ScannerAdapterPort` + registry means adding a second
+  scanner is one adapter + one registry entry, no orchestration change.
+- **Async orchestration** — Celery + Redis; a scan is a `ScanRun` with one
+  `ScanTask` per scanner, polled from the dashboard, retried with
+  exponential backoff on transient failure.
+- **Findings** — deduplicated across scans by `(repository, fingerprint)`
+  with `first_seen`/`last_seen` tracking, so re-scanning a clean commit
+  doesn't spam duplicate rows; suppress/unsuppress workflow; results are
+  redacted (no raw secret, snippet, file path/line) for the `member` role.
+- **GitHub webhook automation** — `push` to a repo's default branch
+  auto-triggers a scan, HMAC-SHA256 verified over the raw body, replay-safe
+  (`X-GitHub-Delivery` idempotency), append-only delivery audit log, and a
+  hard "never return non-2xx except an invalid signature" contract so
+  GitHub doesn't hammer the endpoint with retries.
+- **Dashboard** — React 19 + TanStack Query + React Router + shadcn/ui:
+  login, repo list/detail, scan trigger with live status polling, findings
+  table with suppression, role-aware UI.
+
+Not yet built: more scanners (TruffleHog, pip-audit, SAST), a proper
+secrets manager for private-repo credentials, real-time push (still
+polling), and the observability/Kubernetes-migration hardening pass —
+see `## Roadmap` below.
+
+## Architecture
+
+Hexagonal/Clean layering, shared by both the FastAPI app and the Celery
+worker: `domain/` (framework-free entities, value objects, ports) →
+`application/` (use cases, orchestrate domain + ports, no framework
+imports) → `infrastructure/` (SQLAlchemy repos, Docker container runner,
+JWT/password hashing, scanner adapters) → `api/`+`workers/` (driving
+adapters — FastAPI routers and Celery tasks call the *same* use cases via
+the *same* infrastructure).
+
+```
+backend/src/orchestrator/
+├── domain/            # entities, value objects, ports — no framework imports
+├── application/        # use cases, DTOs, redaction/security logic
+├── infrastructure/      # db, container runner, scanners, security, config
+├── api/                # FastAPI routers, DI guards, RFC 7807 errors
+└── workers/             # Celery app + tasks (same use cases as api/)
+```
 
 ## Dev setup
 
@@ -55,3 +112,24 @@ cd frontend && npm run test
 and pull request. `.pre-commit-config.yaml` mirrors the same checks locally
 (`pre-commit install` once, then `pre-commit run --all-files` to check
 everything).
+
+## Roadmap
+
+Built in 13 sequential, independently-shippable modules (see `.atl/` /
+project SDD history for the full spec/design trail per module).
+
+| # | Module | Status |
+|---|--------|--------|
+| 1 | Project skeleton & CI baseline | ✅ |
+| 2 | Domain & persistence foundation | ✅ |
+| 3 | AuthN/AuthZ | ✅ |
+| 4 | Repository ingestion (manual CRUD) | ✅ |
+| 5 | Scan orchestration skeleton | ✅ |
+| 6 | One real scanner end-to-end (Gitleaks) | ✅ |
+| 7 | Normalization/adapter layer + dedup | ✅ |
+| 8 | Results API | ✅ |
+| 9 | Dashboard MVP | ✅ |
+| 10 | Webhook handling (GitHub push) | ✅ |
+| 11 | More scanners (TruffleHog, pip-audit, SAST) | ⏳ |
+| 12 | Advanced dashboard features (trends, diffing, Checks API) | ⏳ |
+| 13 | Hardening & observability (OTel, Prometheus, k8s Jobs migration) | ⏳ |
