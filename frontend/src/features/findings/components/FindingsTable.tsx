@@ -18,6 +18,7 @@ export function FindingsTable({ findings }: { findings: Finding[] }) {
       <TableHeader>
         <TableRow>
           <TableHead>Severity</TableHead>
+          <TableHead>Rule ID</TableHead>
           <TableHead>Title</TableHead>
           <TableHead>Status</TableHead>
           <TableHead>Location</TableHead>
