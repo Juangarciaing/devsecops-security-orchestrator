@@ -40,6 +40,16 @@ class SqlAlchemyFindingRepository(FindingPort):
         model = finding_to_model(finding)
         self._session.add(model)
         await self._session.flush()
+        # `created_at`/`updated_at` carry `server_default=func.now()`: after
+        # `flush()` those attributes are expired (their real value is only
+        # known server-side). `refresh` reloads them inside this awaited
+        # async context, before `finding_to_entity` reads them — without it,
+        # that synchronous attribute read would trigger a lazy-load outside
+        # the greenlet context and raise `MissingGreenlet`. No live caller
+        # hits this today (`Finding` always supplies explicit timestamps),
+        # but the fix is applied defensively since the bug is latent
+        # (identical root cause as `update_status` below).
+        await self._session.refresh(model)
         return finding_to_entity(model)
 
     async def update_status(self, finding_id: uuid.UUID, status: FindingStatus) -> Finding:
@@ -48,6 +58,12 @@ class SqlAlchemyFindingRepository(FindingPort):
             raise FindingNotFoundError(finding_id)
         model.status = status
         await self._session.flush()
+        # `updated_at` has `onupdate=func.now()`: this UPDATE expires it
+        # server-side post-flush. Refresh inside the async context before
+        # `finding_to_entity` reads it, or the subsequent synchronous
+        # attribute access lazy-loads outside the greenlet and raises
+        # `MissingGreenlet` (see design's Root Cause section).
+        await self._session.refresh(model)
         return finding_to_entity(model)
 
     async def bulk_upsert_findings(
