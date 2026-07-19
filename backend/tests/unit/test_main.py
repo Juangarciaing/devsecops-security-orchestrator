@@ -8,6 +8,7 @@ level and fire on a genuine request, not just present in source.
 
 from __future__ import annotations
 
+import pytest
 from fastapi.testclient import TestClient
 from pydantic import BaseModel
 
@@ -60,3 +61,47 @@ def test_create_app_wires_unhandled_exception_handler(valid_env: None) -> None:
     assert response.status_code == 500
     assert response.headers["content-type"] == "application/problem+json"
     assert "secret internal detail" not in response.text
+
+
+def test_create_app_has_no_cors_headers_by_default(valid_env: None) -> None:
+    """CORS is opt-in — an unconfigured deployment gets zero behavior change."""
+    app = create_app()
+    client = TestClient(app, raise_server_exceptions=False)
+
+    response = client.options(
+        "/api/v1/auth/login",
+        headers={
+            "Origin": "http://localhost:5173",
+            "Access-Control-Request-Method": "POST",
+        },
+    )
+
+    assert "access-control-allow-origin" not in response.headers
+
+
+def test_create_app_allows_configured_cors_origin(
+    valid_env: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Setting `CORS_ALLOWED_ORIGINS` enables cross-origin requests from that origin only."""
+    monkeypatch.setenv("CORS_ALLOWED_ORIGINS", "http://localhost:5173")
+    app = create_app()
+    client = TestClient(app, raise_server_exceptions=False)
+
+    response = client.options(
+        "/api/v1/auth/login",
+        headers={
+            "Origin": "http://localhost:5173",
+            "Access-Control-Request-Method": "POST",
+        },
+    )
+
+    assert response.headers["access-control-allow-origin"] == "http://localhost:5173"
+
+    other_origin_response = client.options(
+        "/api/v1/auth/login",
+        headers={
+            "Origin": "http://evil.example.com",
+            "Access-Control-Request-Method": "POST",
+        },
+    )
+    assert "access-control-allow-origin" not in other_origin_response.headers

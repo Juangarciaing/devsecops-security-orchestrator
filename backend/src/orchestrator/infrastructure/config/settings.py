@@ -26,6 +26,13 @@ class Settings(BaseSettings):
     celery_broker_url: str | None = None
     celery_result_backend: str | None = None
 
+    # Module 9 — opt-in CORS for a browser-hosted frontend served from a
+    # different origin (e.g. local `npm run dev` at :5173 talking to this
+    # API at :8000). Comma-separated list of exact allowed origins; empty
+    # (the default) adds ZERO middleware and ZERO behavior change — no
+    # deployment gets CORS headers unless it explicitly opts in.
+    cors_allowed_origins: str = ""
+
     # Module 6 — hardened scanner-container execution. Both images are
     # tag+digest-pinned (confirmed against the registry at implementation
     # time via `docker pull`/`docker inspect`) so a fresh checkout cannot
