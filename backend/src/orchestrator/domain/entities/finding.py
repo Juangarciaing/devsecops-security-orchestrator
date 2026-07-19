@@ -19,6 +19,14 @@ class Finding:
 
     Belongs to exactly one `ScanTask` (`scan_task_id`). `status` defaults to
     `FindingStatus.OPEN` when not explicitly specified at creation.
+
+    `repository_id`/`first_seen_scan_run_id`/`last_seen_scan_run_id` (Module 7
+    D3) denormalize the owning repository and cross-run dedup tracking onto
+    every `Finding`, so per-repository fingerprint dedup doesn't require a
+    join through `scan_task -> scan_run`. All three default to `None` — they
+    are only actually populated once the write path (`bulk_upsert_findings`,
+    Module 7 PR3/PR4) is wired; this stays additive/non-breaking for existing
+    callers (e.g. `GitleaksAdapter.parse()`) that don't supply them yet.
     """
 
     #: Fields considered sensitive for redaction purposes. This is a stable
@@ -39,3 +47,6 @@ class Finding:
     line_number: int | None = None
     raw_evidence: dict[str, Any] | None = field(default=None)
     snippet: str | None = None
+    repository_id: uuid.UUID | None = None
+    first_seen_scan_run_id: uuid.UUID | None = None
+    last_seen_scan_run_id: uuid.UUID | None = None

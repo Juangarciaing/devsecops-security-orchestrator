@@ -57,6 +57,9 @@ async def _run() -> None:
 
             finding = FindingModel(
                 scan_task_id=scan_task.id,
+                repository_id=repository.id,
+                first_seen_scan_run_id=scan_run.id,
+                last_seen_scan_run_id=scan_run.id,
                 severity=FindingSeverity.HIGH,
                 rule_id="rule-1",
                 title="Hardcoded secret",
@@ -82,6 +85,90 @@ async def _run() -> None:
             assert await session.get(FindingModel, finding_id) is None
     finally:
         await engine.dispose()
+
+
+async def _run_scan_run_set_null() -> None:
+    """Module 7 D3: deleting the `ScanRun` a `Finding` was first seen on must
+    `SET NULL` on `first_seen_scan_run_id` WITHOUT deleting the `Finding` —
+    unlike `scan_task_id` (`CASCADE`), this FK must not cascade-delete
+    historical findings."""
+    engine = create_async_engine(resolve_database_url())
+    sessionmaker = async_sessionmaker(engine, expire_on_commit=False)
+    try:
+        async with sessionmaker() as session:
+            repository = CodeRepositoryModel(
+                provider=RepositoryProvider.GITHUB,
+                owner="acme",
+                name="widgets",
+                clone_url="https://github.com/acme/widgets.git",
+                default_branch="main",
+            )
+            session.add(repository)
+            await session.flush()
+
+            # scan_run_1: the run the finding was FIRST seen on (superseded).
+            scan_run_1 = ScanRunModel(
+                repository_id=repository.id,
+                trigger="push",
+                commit_sha="abc123",
+                ref="refs/heads/main",
+            )
+            session.add(scan_run_1)
+            await session.flush()
+
+            # scan_run_2: the run that actually produced this Finding row
+            # (via scan_task_id -> CASCADE), and the run it was LAST seen on.
+            scan_run_2 = ScanRunModel(
+                repository_id=repository.id,
+                trigger="push",
+                commit_sha="def456",
+                ref="refs/heads/main",
+            )
+            session.add(scan_run_2)
+            await session.flush()
+
+            scan_task = ScanTaskModel(scan_run_id=scan_run_2.id, scanner_type=ScannerType.SECRETS)
+            session.add(scan_task)
+            await session.flush()
+
+            finding = FindingModel(
+                scan_task_id=scan_task.id,
+                repository_id=repository.id,
+                first_seen_scan_run_id=scan_run_1.id,
+                last_seen_scan_run_id=scan_run_2.id,
+                severity=FindingSeverity.HIGH,
+                rule_id="rule-1",
+                title="Hardcoded secret",
+                fingerprint="fp-1",
+            )
+            session.add(finding)
+            await session.commit()
+
+            scan_run_1_id = scan_run_1.id
+            scan_run_2_id = scan_run_2.id
+            finding_id = finding.id
+
+        async with sessionmaker() as session:
+            persisted_scan_run_1 = await session.get(ScanRunModel, scan_run_1_id)
+            assert persisted_scan_run_1 is not None
+            await session.delete(persisted_scan_run_1)
+            await session.commit()
+
+        async with sessionmaker() as session:
+            assert await session.get(ScanRunModel, scan_run_1_id) is None
+
+            persisted_finding = await session.get(FindingModel, finding_id)
+            assert persisted_finding is not None
+            assert persisted_finding.first_seen_scan_run_id is None
+            assert persisted_finding.last_seen_scan_run_id == scan_run_2_id
+    finally:
+        await engine.dispose()
+
+
+def test_deleting_scan_run_sets_null_on_finding_first_seen_without_deleting_finding(
+    migrated_schema: None,
+) -> None:
+    asyncio.run(_run_scan_run_set_null())
 
 
 def test_deleting_code_repository_cascades_to_scan_runs_tasks_and_findings(

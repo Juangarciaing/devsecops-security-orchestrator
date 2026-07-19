@@ -5,6 +5,13 @@ I/O only — this is a DISTINCT layer from the ORM model, never the same class
 (decision D3). Redaction-sensitive fields (`raw_evidence`, `snippet`,
 `file_path`, `line_number`) are carried through unchanged — no redaction logic
 lives here (Module 3 concern).
+
+`FindingRead` gained `repository_id`/`first_seen_scan_run_id`/
+`last_seen_scan_run_id` in Module 7 PR2 (all optional, default `None`).
+`FindingCreate` is intentionally left unchanged here: it has no live caller
+and no test coverage yet, so extending it now would be speculative ahead of
+the write path (Module 7 PR3/PR4) that will determine what a creator actually
+needs to supply.
 """
 
 from __future__ import annotations
@@ -56,6 +63,9 @@ class FindingRead(BaseModel):
     line_number: int | None = None
     raw_evidence: dict[str, Any] | None = None
     snippet: str | None = None
+    repository_id: uuid.UUID | None = None
+    first_seen_scan_run_id: uuid.UUID | None = None
+    last_seen_scan_run_id: uuid.UUID | None = None
 
     @classmethod
     def from_entity(cls, entity: Finding) -> FindingRead:
@@ -75,6 +85,9 @@ class FindingRead(BaseModel):
             line_number=entity.line_number,
             raw_evidence=entity.raw_evidence,
             snippet=entity.snippet,
+            repository_id=entity.repository_id,
+            first_seen_scan_run_id=entity.first_seen_scan_run_id,
+            last_seen_scan_run_id=entity.last_seen_scan_run_id,
         )
 
     def to_entity(self) -> Finding:
@@ -94,4 +107,7 @@ class FindingRead(BaseModel):
             line_number=self.line_number,
             raw_evidence=self.raw_evidence,
             snippet=self.snippet,
+            repository_id=self.repository_id,
+            first_seen_scan_run_id=self.first_seen_scan_run_id,
+            last_seen_scan_run_id=self.last_seen_scan_run_id,
         )

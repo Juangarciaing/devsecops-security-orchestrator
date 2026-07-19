@@ -50,6 +50,35 @@ def test_round_trip_preserves_status_and_redaction_sensitive_fields() -> None:
     assert round_tripped.line_number == entity.line_number
 
 
+def test_round_trip_preserves_repository_and_scan_run_tracking_fields() -> None:
+    """Module 7 PR2: `repository_id`/`first_seen_scan_run_id`/
+    `last_seen_scan_run_id` survive an entity -> `FindingRead` -> entity
+    round trip."""
+    entity = _make_entity(
+        repository_id=uuid.uuid4(),
+        first_seen_scan_run_id=uuid.uuid4(),
+        last_seen_scan_run_id=uuid.uuid4(),
+    )
+
+    schema = FindingRead.from_entity(entity)
+    round_tripped = schema.to_entity()
+
+    assert round_tripped == entity
+    assert schema.repository_id == entity.repository_id
+    assert schema.first_seen_scan_run_id == entity.first_seen_scan_run_id
+    assert schema.last_seen_scan_run_id == entity.last_seen_scan_run_id
+
+
+def test_round_trip_defaults_repository_and_scan_run_tracking_fields_to_none() -> None:
+    entity = _make_entity()
+
+    schema = FindingRead.from_entity(entity)
+
+    assert schema.repository_id is None
+    assert schema.first_seen_scan_run_id is None
+    assert schema.last_seen_scan_run_id is None
+
+
 def test_round_trip_preserves_non_default_status_and_evidence() -> None:
     entity = _make_entity(
         severity=FindingSeverity.CRITICAL,

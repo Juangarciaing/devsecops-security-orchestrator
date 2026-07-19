@@ -67,7 +67,11 @@ def test_upgrade_head_adds_credential_ref_and_is_active_columns(db_env: None) ->
 
 
 def test_downgrade_one_step_drops_credential_ref_and_is_active_columns(db_env: None) -> None:
-    _run_alembic("upgrade", "head")
+    # Target this migration's own revision explicitly, then step back one —
+    # `downgrade -1` *from head* would instead undo whatever the newest
+    # migration happens to be (e.g. Module 7 PR2's `findings` migration),
+    # not this one.
+    _run_alembic("upgrade", "04c47c6921fb")
     _run_alembic("downgrade", "-1")
     try:
         columns = asyncio.run(_code_repositories_columns())
