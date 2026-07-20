@@ -1,11 +1,12 @@
-"""`ScannerType -> ScannerAdapterPort` registry/factory (Module 7 D2).
+"""`ScannerType -> ScannerAdapterPort` registry/factory (Module 7 D2; Module
+11 adds the `SCA` registration).
 
-Only `ScannerType.SECRETS` (Gitleaks) has a real registration today; every
-other `ScannerType` raises `UnregisteredScannerError` until a future module
-adds its adapter. `image_ref`/`default_args` are carried on the
-registration for future tools, but `GitleaksAdapter` keeps sourcing its
-image/args from `Settings`/its own module constants for now (D2 — avoids
-refactoring `GitleaksAdapter.scan()` in this module).
+`ScannerType.SECRETS` (Gitleaks) and `ScannerType.SCA` (pip-audit) have real
+registrations; every other `ScannerType` raises `UnregisteredScannerError`
+until a future module adds its adapter. `image_ref`/`default_args` are
+carried on the registration for future tools, but both adapters keep
+sourcing their image/args from `Settings`/their own module constants for now
+(D2 — avoids refactoring `.scan()` in this module).
 """
 
 from __future__ import annotations
@@ -17,6 +18,10 @@ from orchestrator.domain.value_objects.enums import ScannerType
 from orchestrator.infrastructure.scanners.gitleaks_adapter import (
     _GITLEAKS_ARGV,
     GitleaksAdapter,
+)
+from orchestrator.infrastructure.scanners.pip_audit_adapter import (
+    _PIP_AUDIT_ARGV,
+    PipAuditAdapter,
 )
 
 if TYPE_CHECKING:
@@ -41,6 +46,11 @@ _GITLEAKS_IMAGE_REF = (
     "@sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f"
 )
 
+#: Locally-built from `docker/pip-audit.Dockerfile` (which pins its own
+#: `python:3.12-slim` base by digest and `pip-audit` by exact version) — no
+#: registry digest to pin here since the image is never pushed (Module 11).
+_PIP_AUDIT_IMAGE_REF = "pip-audit-scanner:local"
+
 
 class UnregisteredScannerError(Exception):
     """Raised by `get_adapter()` when `scanner_type` has no registration."""
@@ -64,6 +74,11 @@ _REGISTRY: dict[ScannerType, ScannerRegistration] = {
         image_ref=_GITLEAKS_IMAGE_REF,
         adapter_class=GitleaksAdapter,
         default_args=_GITLEAKS_ARGV,
+    ),
+    ScannerType.SCA: ScannerRegistration(
+        image_ref=_PIP_AUDIT_IMAGE_REF,
+        adapter_class=PipAuditAdapter,
+        default_args=_PIP_AUDIT_ARGV,
     ),
 }
 

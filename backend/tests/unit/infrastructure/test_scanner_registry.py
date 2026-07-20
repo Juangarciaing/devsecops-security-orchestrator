@@ -1,9 +1,9 @@
 """`infrastructure/scanners/registry.py` — `ScannerType -> ScannerAdapterPort`
-factory (Module 7 D2, tasks 1.3-1.4).
+factory (Module 7 D2, tasks 1.3-1.4; Module 11 adds the `SCA` registration).
 
-Only `ScannerType.SECRETS` has a real registration (Gitleaks); every other
-`ScannerType` raises `UnregisteredScannerError` until a future module adds
-its adapter.
+`ScannerType.SECRETS` (Gitleaks) and `ScannerType.SCA` (pip-audit) have real
+registrations; every other `ScannerType` raises `UnregisteredScannerError`
+until a future module adds its adapter.
 """
 
 from __future__ import annotations
@@ -40,6 +40,25 @@ def test_get_adapter_returns_an_adapter_that_implements_the_port_contract() -> N
 
     assert isinstance(adapter, ScannerAdapterPort)
     assert adapter.supports(ScannerType.SECRETS) is True
+
+
+def test_get_adapter_resolves_pip_audit_adapter_for_sca() -> None:
+    from orchestrator.infrastructure.scanners.pip_audit_adapter import PipAuditAdapter
+    from orchestrator.infrastructure.scanners.registry import get_adapter
+
+    adapter = get_adapter(ScannerType.SCA, FakeContainerRunner(), _settings())
+
+    assert isinstance(adapter, PipAuditAdapter)
+
+
+def test_get_adapter_returns_a_pip_audit_adapter_that_implements_the_port_contract() -> None:
+    from orchestrator.domain.ports.scanner_adapter_port import ScannerAdapterPort
+    from orchestrator.infrastructure.scanners.registry import get_adapter
+
+    adapter = get_adapter(ScannerType.SCA, FakeContainerRunner(), _settings())
+
+    assert isinstance(adapter, ScannerAdapterPort)
+    assert adapter.supports(ScannerType.SCA) is True
 
 
 def test_get_adapter_raises_unregistered_scanner_error_for_sast() -> None:
