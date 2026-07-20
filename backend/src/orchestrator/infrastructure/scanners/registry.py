@@ -1,13 +1,13 @@
 """`ScannerType -> ScannerAdapterPort` registry/factory (Module 7 D2; Module
-11 adds the `SCA` and `SAST` registrations).
+11 adds the `SCA`, `SAST`, and `SEMGREP` registrations).
 
-`ScannerType.SECRETS` (Gitleaks), `ScannerType.SCA` (pip-audit), and
-`ScannerType.SAST` (`AstSastAdapter`) have real registrations; every other
-`ScannerType` raises `UnregisteredScannerError` until a future module adds
-its adapter. `image_ref`/`default_args` are carried on the registration for
-future tools, but every adapter keeps sourcing its image/args from
-`Settings`/its own module constants for now (D2 — avoids refactoring
-`.scan()` in this module).
+`ScannerType.SECRETS` (Gitleaks), `ScannerType.SCA` (pip-audit),
+`ScannerType.SAST` (`AstSastAdapter`), and `ScannerType.SEMGREP`
+(`SemgrepAdapter`) have real registrations; every other `ScannerType` raises
+`UnregisteredScannerError` until a future module adds its adapter.
+`image_ref`/`default_args` are carried on the registration for future tools,
+but every adapter keeps sourcing its image/args from `Settings`/its own
+module constants for now (D2 — avoids refactoring `.scan()` in this module).
 """
 
 from __future__ import annotations
@@ -27,6 +27,10 @@ from orchestrator.infrastructure.scanners.gitleaks_adapter import (
 from orchestrator.infrastructure.scanners.pip_audit_adapter import (
     _PIP_AUDIT_ARGV,
     PipAuditAdapter,
+)
+from orchestrator.infrastructure.scanners.semgrep_adapter import (
+    _SEMGREP_ARGV,
+    SemgrepAdapter,
 )
 
 if TYPE_CHECKING:
@@ -62,6 +66,12 @@ _PIP_AUDIT_IMAGE_REF = "pip-audit-scanner:local"
 #: pushed (Module 11).
 _SAST_IMAGE_REF = "sast-scanner:local"
 
+#: Locally-built from `docker/semgrep.Dockerfile` (which pins its own
+#: `python:3.12-slim` base by digest, `semgrep` by exact version, and its
+#: rule packs at build time) — no registry digest to pin here since the
+#: image is never pushed (Module 11).
+_SEMGREP_IMAGE_REF = "semgrep-scanner:local"
+
 
 class UnregisteredScannerError(Exception):
     """Raised by `get_adapter()` when `scanner_type` has no registration."""
@@ -95,6 +105,11 @@ _REGISTRY: dict[ScannerType, ScannerRegistration] = {
         image_ref=_SAST_IMAGE_REF,
         adapter_class=AstSastAdapter,
         default_args=_SAST_ARGV,
+    ),
+    ScannerType.SEMGREP: ScannerRegistration(
+        image_ref=_SEMGREP_IMAGE_REF,
+        adapter_class=SemgrepAdapter,
+        default_args=_SEMGREP_ARGV,
     ),
 }
 

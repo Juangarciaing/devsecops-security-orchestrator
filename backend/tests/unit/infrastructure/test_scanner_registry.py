@@ -82,6 +82,40 @@ def test_get_adapter_returns_an_ast_sast_adapter_that_implements_the_port_contra
     assert adapter.supports(ScannerType.SAST) is True
 
 
+def test_get_adapter_resolves_semgrep_adapter_for_semgrep() -> None:
+    from orchestrator.infrastructure.scanners.registry import get_adapter
+    from orchestrator.infrastructure.scanners.semgrep_adapter import SemgrepAdapter
+
+    adapter = get_adapter(ScannerType.SEMGREP, FakeContainerRunner(), _settings())
+
+    assert isinstance(adapter, SemgrepAdapter)
+
+
+def test_get_adapter_returns_a_semgrep_adapter_that_implements_the_port_contract() -> None:
+    from orchestrator.domain.ports.scanner_adapter_port import ScannerAdapterPort
+    from orchestrator.infrastructure.scanners.registry import get_adapter
+
+    adapter = get_adapter(ScannerType.SEMGREP, FakeContainerRunner(), _settings())
+
+    assert isinstance(adapter, ScannerAdapterPort)
+    assert adapter.supports(ScannerType.SEMGREP) is True
+
+
+def test_get_adapter_resolves_sast_and_semgrep_independently_in_one_scan_run() -> None:
+    """Dual SAST-category coexistence (spec Requirement) — both resolve to
+    their own distinct adapter with no cross-registration."""
+    from orchestrator.infrastructure.scanners.ast_sast_adapter import AstSastAdapter
+    from orchestrator.infrastructure.scanners.registry import get_adapter
+    from orchestrator.infrastructure.scanners.semgrep_adapter import SemgrepAdapter
+
+    sast_adapter = get_adapter(ScannerType.SAST, FakeContainerRunner(), _settings())
+    semgrep_adapter = get_adapter(ScannerType.SEMGREP, FakeContainerRunner(), _settings())
+
+    assert isinstance(sast_adapter, AstSastAdapter)
+    assert isinstance(semgrep_adapter, SemgrepAdapter)
+    assert type(sast_adapter) is not type(semgrep_adapter)
+
+
 def test_get_adapter_raises_unregistered_scanner_error_for_dast() -> None:
     from orchestrator.infrastructure.scanners.registry import (
         UnregisteredScannerError,

@@ -61,6 +61,12 @@ class Settings(BaseSettings):
     # Tag-only here, mirroring `scan_pip_audit_image`.
     scan_sast_image: str = "sast-scanner:local"
 
+    # Module 11 — Semgrep multi-language SAST scanner image, built locally
+    # from `docker/semgrep.Dockerfile` (which pins its `python:3.12-slim`
+    # base by digest, `semgrep` by exact version, and its rule packs at
+    # build time). Tag-only here, mirroring `scan_sast_image`.
+    scan_semgrep_image: str = "semgrep-scanner:local"
+
     # Module 10 — HMAC-SHA256 secret for verifying inbound GitHub webhook
     # deliveries. Nullable/fail-closed (D1): the app boots without it; the
     # signature verifier treats an unset secret as always-invalid, so every
