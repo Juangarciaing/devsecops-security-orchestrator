@@ -76,6 +76,51 @@ def test_run_mounts_only_the_given_volume_read_only_when_requested() -> None:
     assert volumes == {"scan-abc123": {"bind": "/checkout", "mode": "ro"}}
 
 
+def test_run_mounts_tmpfs_noexec_by_default() -> None:
+    """Module 11 PR2 live-Docker discovery: pip-audit needs an
+    exec-capable `/tmp` to bootstrap its internal audit virtualenv (upstream
+    limitation, pypa/pip-audit#732) — Gitleaks/`GitCheckout` never needed
+    this. `tmp_exec` is a narrow, opt-in-only per-call flag (mirrors
+    `network_disabled`'s precedent) so the STRICT `noexec` default is
+    preserved for every existing caller unless a caller explicitly opts in."""
+    client, _container = _make_mock_client()
+    runner = DockerContainerRunner(client=client)
+
+    runner.run(
+        image="ghcr.io/gitleaks/gitleaks:v8.30.1",
+        command=["dir", "/checkout/checkout"],
+        volume_name="scan-abc123",
+        mount_path="/checkout",
+        read_only_mount=True,
+        network_disabled=True,
+        limits=_LIMITS,
+        timeout_seconds=120,
+    )
+
+    call_kwargs: dict[str, Any] = client.containers.run.call_args.kwargs
+    assert "noexec" in call_kwargs["tmpfs"]["/tmp"]
+
+
+def test_run_mounts_tmpfs_exec_capable_when_tmp_exec_is_true() -> None:
+    client, _container = _make_mock_client()
+    runner = DockerContainerRunner(client=client)
+
+    runner.run(
+        image="pip-audit-scanner:local",
+        command=["pip-audit"],
+        volume_name="scan-abc123",
+        mount_path="/checkout",
+        read_only_mount=True,
+        network_disabled=False,
+        limits=_LIMITS,
+        timeout_seconds=120,
+        tmp_exec=True,
+    )
+
+    call_kwargs: dict[str, Any] = client.containers.run.call_args.kwargs
+    assert "noexec" not in call_kwargs["tmpfs"]["/tmp"]
+
+
 def test_run_mounts_volume_read_write_when_read_only_mount_is_false() -> None:
     client, _container = _make_mock_client()
     runner = DockerContainerRunner(client=client)

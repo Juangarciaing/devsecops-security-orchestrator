@@ -114,6 +114,17 @@ class PipAuditAdapter(ScannerAdapterPort):
             limits=self._resource_limits(),
             timeout_seconds=self._settings.scan_timeout_seconds,
         )
+        if probe_result.timed_out:
+            # A timed-out probe is NOT "manifest absent" — it signals a
+            # genuine container-runtime problem (the probe never even
+            # finished a stat). Treating it like "absent" would silently
+            # under-report a real failure as a clean, zero-findings scan.
+            # Surface it the same way a pip-audit-itself timeout is
+            # surfaced (D4) so it reaches the deterministic no-retry path.
+            raise PipAuditFailedError(
+                f"pip-audit manifest probe timed out "
+                f"(exit_code={probe_result.exit_code}, stderr={probe_result.stderr!r})"
+            )
         if probe_result.exit_code != _PROBE_PRESENT_EXIT_CODE:
             return RunResult(
                 exit_code=0, stdout=_SYNTHETIC_EMPTY_STDOUT, stderr="", timed_out=False
@@ -128,6 +139,13 @@ class PipAuditAdapter(ScannerAdapterPort):
             network_disabled=False,
             limits=self._resource_limits(),
             timeout_seconds=self._settings.scan_timeout_seconds,
+            # Live-Docker discovery (PR2): pip-audit bootstraps an internal
+            # audit virtualenv under `/tmp` and cannot function under the
+            # runner's default `noexec` tmpfs (upstream limitation,
+            # pypa/pip-audit#732) — opt in via the narrow `tmp_exec` flag
+            # (D7b). The probe call above does NOT need this (a bare
+            # `os.path.isfile` check, no subprocess/venv involved).
+            tmp_exec=True,
         )
 
     def parse(
@@ -150,13 +168,25 @@ class PipAuditAdapter(ScannerAdapterPort):
         report = _parse_json_report(result.stdout, result.stderr)
         now = datetime.now(UTC).replace(tzinfo=None)
         findings: list[Finding] = []
+        seen_fingerprints: set[str] = set()
         for dependency in report.get("dependencies", []):
             name = dependency.get("name") or "unknown-package"
             version = dependency.get("version") or ""
             for vuln in dependency.get("vulns") or []:
-                findings.append(
-                    _vuln_to_finding(name, version, vuln, scan_task_id, default_severity, now)
-                )
+                finding = _vuln_to_finding(name, version, vuln, scan_task_id, default_severity, now)
+                # Real-Docker discovery (PR2): pip-audit's own JSON report
+                # can list the SAME vuln `id` twice under one dependency
+                # (empirically confirmed for `requests==2.19.0`'s
+                # PYSEC-2023-74, likely from its dual OSV+PyPI lookup
+                # sources overlapping) — `bulk_upsert_findings` batches an
+                # entire scan's Findings into ONE multi-row
+                # `INSERT ... ON CONFLICT`, which Postgres rejects outright
+                # if the SAME conflict key appears twice in that one
+                # statement. Dedupe within this report, keep the first.
+                if finding.fingerprint in seen_fingerprints:
+                    continue
+                seen_fingerprints.add(finding.fingerprint)
+                findings.append(finding)
         return findings
 
     def supports(self, scanner_type: ScannerType) -> bool:

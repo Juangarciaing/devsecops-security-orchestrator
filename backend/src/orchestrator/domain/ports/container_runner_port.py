@@ -63,6 +63,7 @@ class ContainerRunnerPort(ABC):
         network_disabled: bool,
         limits: ResourceLimits,
         timeout_seconds: int,
+        tmp_exec: bool = False,
     ) -> RunResult:
         """Run `image` with an argv-only `command` (never a shell string).
 
@@ -78,4 +79,14 @@ class ContainerRunnerPort(ABC):
         MUST SIGKILL the container and return `RunResult(timed_out=True)`.
         The container MUST be force-removed in all cases (success, failure,
         timeout) before `.run()` returns.
+
+        `tmp_exec` (Module 11 D7b, opt-in, default `False`): whether the
+        ephemeral `/tmp` (a tmpfs) permits executing files from it. Defaults
+        to the strict `noexec` posture every caller relied on before this
+        flag existed (Gitleaks, `GitCheckout`) — a caller must explicitly
+        pass `tmp_exec=True` to relax it. Discovered live-Docker necessity:
+        pip-audit bootstraps an internal audit virtualenv under `/tmp` and
+        cannot function under `noexec` (upstream limitation,
+        pypa/pip-audit#732) — no other scanner needs this, so it is scoped
+        as a narrow per-call opt-in rather than a global relaxation.
         """

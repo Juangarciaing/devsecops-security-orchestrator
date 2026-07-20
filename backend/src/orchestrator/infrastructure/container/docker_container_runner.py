@@ -29,6 +29,10 @@ if TYPE_CHECKING:
 # its own `/etc/passwd` — Docker allows running as an arbitrary numeric UID.
 _NONROOT_USER = "65532:65532"
 _TMPFS_MOUNT_OPTS = "rw,noexec,nosuid,size=64m"
+#: Module 11 D7b: opt-in relaxation for callers that pass `tmp_exec=True`
+#: (pip-audit only, as of this module) — every other caller keeps the
+#: strict `noexec` default above unchanged.
+_TMPFS_MOUNT_OPTS_EXEC = "rw,exec,nosuid,size=64m"
 
 
 def _is_wait_read_timeout(exc: requests.exceptions.ConnectionError) -> bool:
@@ -69,6 +73,7 @@ class DockerContainerRunner(ContainerRunnerPort):
         network_disabled: bool,
         limits: ResourceLimits,
         timeout_seconds: int,
+        tmp_exec: bool = False,
     ) -> RunResult:
         container = self._client.containers.run(
             image=image,
@@ -82,7 +87,7 @@ class DockerContainerRunner(ContainerRunnerPort):
             mem_limit=f"{limits.memory_mb}m",
             nano_cpus=limits.nano_cpus,
             pids_limit=limits.pids_limit,
-            tmpfs={"/tmp": _TMPFS_MOUNT_OPTS},
+            tmpfs={"/tmp": _TMPFS_MOUNT_OPTS_EXEC if tmp_exec else _TMPFS_MOUNT_OPTS},
             detach=True,
         )
         try:
