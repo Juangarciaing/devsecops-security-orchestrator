@@ -24,6 +24,7 @@ class ScannerType(StrEnum):
     SCA = "sca"
     SECRETS = "secrets"
     IAC = "iac"
+    SEMGREP = "semgrep"
 
 
 class ScanRunStatus(StrEnum):

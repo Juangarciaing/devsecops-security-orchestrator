@@ -29,6 +29,7 @@ def test_scanner_type_members() -> None:
         "sca",
         "secrets",
         "iac",
+        "semgrep",
     }
 
 
