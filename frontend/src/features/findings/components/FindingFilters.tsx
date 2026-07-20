@@ -20,7 +20,14 @@ const STATUSES: FindingStatus[] = [
   'suppressed',
   'false_positive',
 ]
-const SCANNER_TYPES: ScannerType[] = ['sast', 'dast', 'sca', 'secrets', 'iac']
+const SCANNER_TYPES: ScannerType[] = [
+  'sast',
+  'dast',
+  'sca',
+  'secrets',
+  'iac',
+  'semgrep',
+]
 
 const selectClassName =
   'h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm'
