@@ -4,8 +4,9 @@ Postgres.
 Spec scenario: additive migration on top of `072bb3e01833` creates the
 `webhook_deliveries` table (nullable+`UNIQUE` `delivery_id`, `NOT NULL`
 `signature_valid`/`outcome`/`received_at`) plus the native `webhook_outcome`
-enum type; `downgrade -1` drops both cleanly, leaving no orphaned enum type
-behind (mirrors the baseline/`user_role` migration's manual `DROP TYPE`).
+enum type; downgrading back to this migration's own `down_revision` drops both
+cleanly, leaving no orphaned enum type behind (mirrors the baseline/`user_role`
+migration's manual `DROP TYPE`).
 """
 
 from __future__ import annotations
@@ -94,7 +95,11 @@ def test_upgrade_head_creates_webhook_deliveries_table(db_env: None) -> None:
 
 def test_downgrade_one_step_drops_table_and_enum_type(db_env: None) -> None:
     _run_alembic("upgrade", "head")
-    _run_alembic("downgrade", "-1")
+    # Target the webhook migration's own down_revision explicitly rather than
+    # "-1": later migrations (e.g. `2d367959d214`, adding `SEMGREP` to the
+    # `scanner_type` enum) may stack on top of head, so "-1" from head no
+    # longer necessarily reverts THIS migration.
+    _run_alembic("downgrade", "072bb3e01833")
     try:
         assert asyncio.run(_table_exists("webhook_deliveries")) is False
         assert asyncio.run(_enum_type_exists("webhook_outcome")) is False
