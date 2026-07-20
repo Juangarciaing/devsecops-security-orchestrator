@@ -41,6 +41,18 @@ describe('FindingFilters', () => {
     )
   })
 
+  it('offers semgrep as a selectable scanner type', async () => {
+    const user = userEvent.setup()
+    const onChange = vi.fn()
+    render(<FindingFilters filters={{}} onChange={onChange} />)
+
+    await user.selectOptions(screen.getByLabelText(/scanner/i), 'semgrep')
+
+    expect(onChange).toHaveBeenCalledWith(
+      expect.objectContaining({ scanner_type: 'semgrep' }),
+    )
+  })
+
   it('clears a filter back to "All" (undefined)', async () => {
     const user = userEvent.setup()
     const onChange = vi.fn()

@@ -1,4 +1,5 @@
-export type ScannerType = 'sast' | 'dast' | 'sca' | 'secrets' | 'iac'
+export type ScannerType =
+  'sast' | 'dast' | 'sca' | 'secrets' | 'iac' | 'semgrep'
 
 export type ScanRunStatus =
   'pending' | 'running' | 'completed' | 'failed' | 'cancelled'
