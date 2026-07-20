@@ -74,6 +74,7 @@ def test_scan_probes_manifest_presence_first_network_off() -> None:
     assert probe_call.timeout_seconds == settings.scan_timeout_seconds
     assert probe_call.command[0] == "python"
     assert "requirements.txt" in probe_call.command[-1]
+    assert probe_call.tmp_exec is False  # a bare os.path.isfile check, no subprocess/venv
 
 
 def test_scan_runs_pip_audit_network_on_when_manifest_present() -> None:
@@ -97,6 +98,11 @@ def test_scan_runs_pip_audit_network_on_when_manifest_present() -> None:
     assert audit_call.timeout_seconds == settings.scan_timeout_seconds
     assert audit_call.limits.memory_mb == settings.scan_memory_limit_mb
     assert audit_call.limits.pids_limit == settings.scan_pids_limit
+    # Live-Docker discovery (D7b): pip-audit needs an exec-capable /tmp to
+    # bootstrap its internal audit virtualenv (pypa/pip-audit#732) — the
+    # probe call does NOT (asserted below), keeping the blast radius of the
+    # opt-in narrow to exactly the call that needs it.
+    assert audit_call.tmp_exec is True
 
 
 def test_scan_short_circuits_to_synthetic_empty_result_when_manifest_absent() -> None:
@@ -123,6 +129,32 @@ def test_synthetic_empty_result_parses_to_zero_findings() -> None:
     findings = adapter.parse(result, _SCAN_TASK_ID)
 
     assert findings == []
+
+
+def test_scan_raises_pip_audit_failed_error_when_probe_times_out() -> None:
+    """PR1 flagged a masking edge case: a probe `RunResult` with
+    `timed_out=True` also has a non-zero `exit_code` (typically `-1`), which
+    used to fall into the SAME `exit_code != 0` branch as "manifest genuinely
+    absent" — silently returning a synthetic zero-findings result instead of
+    surfacing a real container-runtime problem. A probe timeout is NOT
+    "no manifest"; it must raise `PipAuditFailedError` (D4's existing
+    contract for "pip-audit itself timed out") so it reaches the SAME
+    deterministic no-retry failure path as any other adapter failure,
+    instead of silently under-reporting as a clean scan."""
+    fake_runner = FakeContainerRunner()
+    fake_runner.script(RunResult(exit_code=-1, stdout="", stderr="", timed_out=True))
+    adapter = PipAuditAdapter(runner=fake_runner, settings=_settings())
+
+    try:
+        adapter.scan("scan-probe-timeout")
+    except PipAuditFailedError:
+        pass
+    else:
+        raise AssertionError("expected PipAuditFailedError when the probe times out")
+
+    # Only the probe launched — a timed-out probe must not fall through to
+    # launching the network-enabled audit container.
+    assert len(fake_runner.calls) == 1
 
 
 # ---------------------------------------------------------------------------
@@ -211,6 +243,47 @@ def test_parse_multiple_dependencies_and_vulns_triangulation() -> None:
     assert len(findings) == 3
     assert {f.rule_id for f in findings} == {"GHSA-aaaa", "GHSA-bbbb", "GHSA-cccc"}
     assert len({f.fingerprint for f in findings}) == 3
+
+
+def test_parse_deduplicates_a_vuln_id_repeated_within_the_same_dependency() -> None:
+    """Real-Docker discovery (PR2 mandatory live proof): pip-audit's REAL
+    output for `requests==2.19.0` lists `PYSEC-2023-74` TWICE in the SAME
+    dependency's `vulns` array (confirmed against the real pinned image, not
+    assumed) — same `id`/`name`/`version`, so the naive per-vuln mapping
+    produced two `Finding`s with an IDENTICAL `fingerprint`. Because
+    `bulk_upsert_findings` batches every `Finding` from one scan into a
+    SINGLE multi-row `INSERT ... ON CONFLICT (repository_id, fingerprint) DO
+    UPDATE`, a same-batch duplicate fingerprint crashes Postgres with
+    `CardinalityViolationError: ON CONFLICT DO UPDATE command cannot affect
+    row a second time` — reproduced live, not hypothetical. `parse()` must
+    dedupe by fingerprint within one report, keeping the first occurrence."""
+    report = {
+        "dependencies": [
+            {
+                "name": "requests",
+                "version": "2.19.0",
+                "vulns": [
+                    {
+                        "id": "PYSEC-2023-74",
+                        "description": "first occurrence",
+                        "fix_versions": ["2.31.0"],
+                    },
+                    {
+                        "id": "PYSEC-2023-74",
+                        "description": "second occurrence (real pip-audit duplicate)",
+                        "fix_versions": ["2.31.0"],
+                    },
+                ],
+            }
+        ]
+    }
+    result = RunResult(exit_code=1, stdout=json.dumps(report), stderr="", timed_out=False)
+
+    findings = _adapter().parse(result, _SCAN_TASK_ID)
+
+    assert len(findings) == 1
+    assert findings[0].rule_id == "PYSEC-2023-74"
+    assert findings[0].snippet is not None and "first occurrence" in findings[0].snippet
 
 
 def test_parse_timed_out_raises_pip_audit_failed_error_even_with_exit_code_0() -> None:

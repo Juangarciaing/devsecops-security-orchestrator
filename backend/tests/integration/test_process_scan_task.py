@@ -480,6 +480,44 @@ def test_process_scan_task_marks_failed_on_gitleaks_timeout_with_no_retry(
     assert len(findings) == 0
 
 
+def test_process_scan_task_marks_failed_on_pip_audit_genuine_error_with_no_retry(
+    migrated_schema: None,
+) -> None:
+    """Module 11 D7: `PipAuditFailedError` must be classified the SAME as
+    `CheckoutFailedError`/`GitleaksFailedError` — a single deterministic
+    attempt straight to `failed`, bypassing Module 5's 6x transient
+    retry/backoff loop entirely. Mirrors
+    `test_process_scan_task_marks_failed_on_gitleaks_genuine_error_with_no_retry`
+    exactly, swapping the scanner and its genuine-failure `RunResult` shape
+    (malformed/empty pip-audit stdout, D4)."""
+    from orchestrator.workers.tasks.process_scan import process_scan_task
+
+    task_id, run_id = asyncio.run(_seed_pending_task(scanner_type=ScannerType.SCA))
+
+    fake_runner = FakeContainerRunner()
+    fake_runner.script(
+        _CLONE_OK,
+        _REV_PARSE_OK,
+        RunResult(exit_code=0, stdout="", stderr="", timed_out=False),  # probe: manifest present
+        RunResult(exit_code=1, stdout="", stderr="pip-audit crashed", timed_out=False),
+    )
+    docker_client = MagicMock()
+
+    result = process_scan_task.apply(
+        args=(str(task_id),),
+        kwargs={"container_runner": fake_runner, "docker_client": docker_client},
+    )
+    result.get()
+
+    task, run, findings = asyncio.run(_load_state(task_id, run_id))
+    assert task.status == ScanTaskStatus.FAILED
+    assert task.error_message is not None
+    assert run.status == ScanRunStatus.FAILED
+    assert len(findings) == 0
+    # exactly 4 attempts (clone + rev-parse + probe + pip-audit), never retried
+    assert len(fake_runner.calls) == 4
+
+
 def test_process_scan_task_retries_transient_docker_error_then_completes(
     migrated_schema: None,
 ) -> None:

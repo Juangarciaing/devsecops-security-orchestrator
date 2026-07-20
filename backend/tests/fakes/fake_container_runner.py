@@ -32,6 +32,7 @@ class RecordedRun:
     network_disabled: bool
     limits: ResourceLimits
     timeout_seconds: int
+    tmp_exec: bool = False
 
 
 @dataclass(slots=True)
@@ -56,6 +57,7 @@ class FakeContainerRunner(ContainerRunnerPort):
         network_disabled: bool,
         limits: ResourceLimits,
         timeout_seconds: int,
+        tmp_exec: bool = False,
     ) -> RunResult:
         self.calls.append(
             RecordedRun(
@@ -67,6 +69,7 @@ class FakeContainerRunner(ContainerRunnerPort):
                 network_disabled=network_disabled,
                 limits=limits,
                 timeout_seconds=timeout_seconds,
+                tmp_exec=tmp_exec,
             )
         )
         if self._results:
