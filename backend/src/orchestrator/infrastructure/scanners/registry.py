@@ -1,12 +1,13 @@
 """`ScannerType -> ScannerAdapterPort` registry/factory (Module 7 D2; Module
-11 adds the `SCA` registration).
+11 adds the `SCA` and `SAST` registrations).
 
-`ScannerType.SECRETS` (Gitleaks) and `ScannerType.SCA` (pip-audit) have real
-registrations; every other `ScannerType` raises `UnregisteredScannerError`
-until a future module adds its adapter. `image_ref`/`default_args` are
-carried on the registration for future tools, but both adapters keep
-sourcing their image/args from `Settings`/their own module constants for now
-(D2 — avoids refactoring `.scan()` in this module).
+`ScannerType.SECRETS` (Gitleaks), `ScannerType.SCA` (pip-audit), and
+`ScannerType.SAST` (`AstSastAdapter`) have real registrations; every other
+`ScannerType` raises `UnregisteredScannerError` until a future module adds
+its adapter. `image_ref`/`default_args` are carried on the registration for
+future tools, but every adapter keeps sourcing its image/args from
+`Settings`/its own module constants for now (D2 — avoids refactoring
+`.scan()` in this module).
 """
 
 from __future__ import annotations
@@ -15,6 +16,10 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Protocol
 
 from orchestrator.domain.value_objects.enums import ScannerType
+from orchestrator.infrastructure.scanners.ast_sast_adapter import (
+    _SAST_ARGV,
+    AstSastAdapter,
+)
 from orchestrator.infrastructure.scanners.gitleaks_adapter import (
     _GITLEAKS_ARGV,
     GitleaksAdapter,
@@ -51,6 +56,12 @@ _GITLEAKS_IMAGE_REF = (
 #: registry digest to pin here since the image is never pushed (Module 11).
 _PIP_AUDIT_IMAGE_REF = "pip-audit-scanner:local"
 
+#: Locally-built from `docker/sast-scanner.Dockerfile` (which pins its own
+#: `python:3.12-slim` base by digest and the `sast-scanner` source by exact
+#: commit SHA) — no registry digest to pin here since the image is never
+#: pushed (Module 11).
+_SAST_IMAGE_REF = "sast-scanner:local"
+
 
 class UnregisteredScannerError(Exception):
     """Raised by `get_adapter()` when `scanner_type` has no registration."""
@@ -79,6 +90,11 @@ _REGISTRY: dict[ScannerType, ScannerRegistration] = {
         image_ref=_PIP_AUDIT_IMAGE_REF,
         adapter_class=PipAuditAdapter,
         default_args=_PIP_AUDIT_ARGV,
+    ),
+    ScannerType.SAST: ScannerRegistration(
+        image_ref=_SAST_IMAGE_REF,
+        adapter_class=AstSastAdapter,
+        default_args=_SAST_ARGV,
     ),
 }
 

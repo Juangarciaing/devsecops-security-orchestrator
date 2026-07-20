@@ -590,17 +590,17 @@ def test_process_scan_task_marks_failed_when_scanner_type_has_no_registered_adap
     """Module 7 D6 proof: the adapter is now resolved via
     `registry.get_adapter(task.scanner_type, ...)`, NOT a hardcoded
     `GitleaksAdapter(...)`. A `ScanTask` whose `scanner_type` has no
-    registration (only `ScannerType.SECRETS` is registered today) must fail
-    with `UnregisteredScannerError`'s message — which is only reachable if
-    `scanner_type` is genuinely consulted before any checkout/scan attempt.
-    Before this PR (hardcoded `GitleaksAdapter`), `scanner_type` was never
-    read at all and this scenario would instead fail on the FIRST scripted
-    container call (or crash with an empty-script error) with a completely
-    different message.
+    registration (only `SECRETS`/`SCA`/`SAST` are registered as of Module 11
+    PR1 — `DAST` still is not) must fail with `UnregisteredScannerError`'s
+    message — which is only reachable if `scanner_type` is genuinely
+    consulted before any checkout/scan attempt. Before this PR (hardcoded
+    `GitleaksAdapter`), `scanner_type` was never read at all and this
+    scenario would instead fail on the FIRST scripted container call (or
+    crash with an empty-script error) with a completely different message.
     """
     from orchestrator.workers.tasks.process_scan import process_scan_task
 
-    task_id, run_id = asyncio.run(_seed_pending_task(scanner_type=ScannerType.SAST))
+    task_id, run_id = asyncio.run(_seed_pending_task(scanner_type=ScannerType.DAST))
 
     # No container calls should happen at all: `get_adapter` raises before
     # `GitCheckout.checkout()` (or `adapter.scan()`) is ever reached.
@@ -617,7 +617,7 @@ def test_process_scan_task_marks_failed_when_scanner_type_has_no_registered_adap
     assert task.status == ScanTaskStatus.FAILED
     assert task.error_message is not None
     assert "no adapter registered for scanner type" in task.error_message
-    assert "sast" in task.error_message.lower()
+    assert "dast" in task.error_message.lower()
     assert run.status == ScanRunStatus.FAILED
     assert len(findings) == 0
     assert len(fake_runner.calls) == 0
