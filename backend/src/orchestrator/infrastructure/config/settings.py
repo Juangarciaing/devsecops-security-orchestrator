@@ -49,6 +49,12 @@ class Settings(BaseSettings):
     scan_pids_limit: int = 128
     scan_timeout_seconds: int = 120
 
+    # Module 11 — pip-audit SCA scanner image, built locally from
+    # `docker/pip-audit.Dockerfile` (which itself pins its `python:3.12-slim`
+    # base by digest and `pip-audit` by exact version). Tag-only here,
+    # mirroring how `scan_git_image`/`scan_container_image` are configured.
+    scan_pip_audit_image: str = "pip-audit-scanner:local"
+
     # Module 10 — HMAC-SHA256 secret for verifying inbound GitHub webhook
     # deliveries. Nullable/fail-closed (D1): the app boots without it; the
     # signature verifier treats an unset secret as always-invalid, so every
