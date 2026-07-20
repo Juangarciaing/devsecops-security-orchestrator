@@ -518,6 +518,44 @@ def test_process_scan_task_marks_failed_on_pip_audit_genuine_error_with_no_retry
     assert len(fake_runner.calls) == 4
 
 
+def test_process_scan_task_marks_failed_on_sast_genuine_error_with_no_retry(
+    migrated_schema: None,
+) -> None:
+    """Module 11 D5 (PR2): `SastFailedError` must be classified the SAME as
+    `CheckoutFailedError`/`GitleaksFailedError`/`PipAuditFailedError` — a
+    single deterministic attempt straight to `failed`, bypassing Module 5's
+    5x transient retry/backoff loop entirely. Mirrors
+    `test_process_scan_task_marks_failed_on_gitleaks_genuine_error_with_no_retry`
+    exactly, swapping the scanner and its genuine-failure `RunResult` shape
+    (no `{` in stdout at all -> `SastFailedError` from `AstSastAdapter.parse()`,
+    D2)."""
+    from orchestrator.workers.tasks.process_scan import process_scan_task
+
+    task_id, run_id = asyncio.run(_seed_pending_task(scanner_type=ScannerType.SAST))
+
+    fake_runner = FakeContainerRunner()
+    fake_runner.script(
+        _CLONE_OK,
+        _REV_PARSE_OK,
+        RunResult(exit_code=1, stdout="", stderr="sast-scanner crashed", timed_out=False),
+    )
+    docker_client = MagicMock()
+
+    result = process_scan_task.apply(
+        args=(str(task_id),),
+        kwargs={"container_runner": fake_runner, "docker_client": docker_client},
+    )
+    result.get()
+
+    task, run, findings = asyncio.run(_load_state(task_id, run_id))
+    assert task.status == ScanTaskStatus.FAILED
+    assert task.error_message is not None
+    assert run.status == ScanRunStatus.FAILED
+    assert len(findings) == 0
+    # exactly 3 attempts (clone + rev-parse + sast-scan), never retried afterward
+    assert len(fake_runner.calls) == 3
+
+
 def test_process_scan_task_retries_transient_docker_error_then_completes(
     migrated_schema: None,
 ) -> None:

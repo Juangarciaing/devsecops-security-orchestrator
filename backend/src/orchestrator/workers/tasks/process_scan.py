@@ -15,13 +15,15 @@ is sync, Module 6 D3) and runs OUTSIDE any async DB session/event loop —
 `run_async` is called twice, before and after, never around it.
 
 ## Failure classification (D5)
-- `CheckoutFailedError` / `GitleaksFailedError` / `PipAuditFailedError`
-  (bad ref, private repo, a genuine non-{0,2} Gitleaks exit code, a
-  malformed/empty/timed-out pip-audit report, or a wall-clock timeout) are
-  DETERMINISTIC — a retry cannot fix them. These go straight to `failed`,
-  bypassing Module 5's retry/backoff machinery entirely (one attempt only).
-  (Module 11 D7: `PipAuditFailedError` added alongside the two pre-existing
-  Gitleaks/Checkout classifications — additive, backward-compatible.)
+- `CheckoutFailedError` / `GitleaksFailedError` / `PipAuditFailedError` /
+  `SastFailedError` (bad ref, private repo, a genuine non-{0,2} Gitleaks exit
+  code, a malformed/empty/timed-out pip-audit report, a missing-JSON/malformed/
+  timed-out sast-scanner report, or a wall-clock timeout) are DETERMINISTIC —
+  a retry cannot fix them. These go straight to `failed`, bypassing Module 5's
+  retry/backoff machinery entirely (one attempt only). (Module 11 D7:
+  `PipAuditFailedError` added alongside the two pre-existing Gitleaks/Checkout
+  classifications; Module 11 D5 (AST-SAST, PR2): `SastFailedError` added the
+  same way — additive, backward-compatible.)
 - Any OTHER exception raised while checking out/scanning (Docker-daemon
   blips, network errors, ...) is wrapped as `TransientScanError` and handed
   to the EXACT SAME retry/backoff loop Module 5 already built — this module
@@ -68,6 +70,7 @@ from orchestrator.infrastructure.db.repositories.scan_task_repository import (
     ScanTaskNotFoundError,
     SqlAlchemyScanTaskRepository,
 )
+from orchestrator.infrastructure.scanners.ast_sast_adapter import SastFailedError
 from orchestrator.infrastructure.scanners.gitleaks_adapter import GitleaksFailedError
 from orchestrator.infrastructure.scanners.pip_audit_adapter import PipAuditFailedError
 from orchestrator.infrastructure.scanners.registry import get_adapter
@@ -151,11 +154,12 @@ def _checkout_and_scan(
     `UnregisteredScannerError` (via `get_adapter`) for any `scanner_type`
     with no registration; `CheckoutFailedError` (deterministic, from
     `GitCheckout`), `GitleaksFailedError` (deterministic, from
-    `GitleaksAdapter.parse()`), or `PipAuditFailedError` (deterministic,
-    from `PipAuditAdapter.scan()`/`.parse()`, Module 11 D7) unchanged —
-    callers classify those as non-retryable (D5). Any OTHER exception
-    (including `UnregisteredScannerError`) is left to propagate to the
-    caller, which wraps it as `TransientScanError`.
+    `GitleaksAdapter.parse()`), `PipAuditFailedError` (deterministic,
+    from `PipAuditAdapter.scan()`/`.parse()`, Module 11 D7), or
+    `SastFailedError` (deterministic, from `AstSastAdapter.parse()`,
+    Module 11 D5, PR2) unchanged — callers classify those as non-retryable
+    (D5). Any OTHER exception (including `UnregisteredScannerError`) is left
+    to propagate to the caller, which wraps it as `TransientScanError`.
     """
     adapter = get_adapter(scanner_type, runner, settings)
     with GitCheckout(runner, docker_client, settings).checkout(clone_url, ref) as workspace:
@@ -245,7 +249,7 @@ def process_scan_task(
                 head_sha, findings = _checkout_and_scan(
                     clone_url, ref, task_id, scanner_type, runner, client, settings
                 )
-            except (CheckoutFailedError, GitleaksFailedError, PipAuditFailedError):
+            except (CheckoutFailedError, GitleaksFailedError, PipAuditFailedError, SastFailedError):
                 raise
             except Exception as exc:
                 # Docker-daemon/network blip, not a deterministic checkout/scan
@@ -260,7 +264,7 @@ def process_scan_task(
         finally:
             if docker_client is None:
                 client.close()
-    except (CheckoutFailedError, GitleaksFailedError, PipAuditFailedError) as exc:
+    except (CheckoutFailedError, GitleaksFailedError, PipAuditFailedError, SastFailedError) as exc:
         error_message = str(exc)
         logger.warning("scan_task %s failed deterministically: %s", task_id, error_message)
         run_async(lambda session: _mark_failed(session, task_id, error_message))
