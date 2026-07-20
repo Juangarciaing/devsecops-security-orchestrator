@@ -7,9 +7,8 @@ detection running in hardened, ephemeral containers, not a mock.
 
 Built as a portfolio-grade reference for Clean/Hexagonal architecture, async
 task orchestration, and secure-by-design container execution. Delivered in
-13 independently-shippable modules via spec-driven development; 10 are
-merged as of this README, with Module 11 partially landed (2 of 3 planned
-scanners).
+13 independently-shippable modules via spec-driven development; 11 are
+merged as of this README.
 
 ## What's actually implemented
 
@@ -18,17 +17,20 @@ scanners).
 - **Repository management** — register/list/update/soft-delete GitHub repos;
   identity is `(provider, owner, name)`, credentials are an opaque pointer
   (no secrets manager yet — public repos only for now).
-- **Real scan execution** — three scanners run in hardened, ephemeral sibling
+- **Real scan execution** — four scanners run in hardened, ephemeral sibling
   containers via a shared `ScannerAdapterPort` + registry (`ContainerRunnerPort`
   behind a bounded Docker-socket boundary — the worker holds the socket,
   scanner containers never do): [Gitleaks](https://github.com/gitleaks/gitleaks)
   (secrets), [pip-audit](https://github.com/pypa/pip-audit) (known-CVE Python
-  dependency scanning), and a pinned, self-built
-  [AST-based SAST tool](https://github.com/Juangarciaing/sast-scanner) (static
-  analysis for SQL injection, hardcoded secrets, weak crypto, and more).
-  Each addition proved the abstraction: one adapter, one registry entry, one
-  pinned Dockerfile — with any real (narrow) orchestration touch named
-  honestly rather than glossed over.
+  dependency scanning), a pinned, self-built
+  [AST-based SAST tool](https://github.com/Juangarciaing/sast-scanner) (custom
+  rule-based static analysis), and [Semgrep](https://semgrep.dev) (multi-language
+  pattern-based static analysis with community-maintained rulesets, rules baked
+  into the image at build time for fully offline, reproducible scans). Each
+  addition proved the abstraction: one adapter, one registry entry, one pinned
+  Dockerfile — with any real (narrow) orchestration touch (including, for
+  Semgrep, a first-of-its-kind schema migration to add its `ScannerType` enum
+  value) named honestly rather than glossed over.
 - **Async orchestration** — Celery + Redis; a scan is a `ScanRun` with one
   `ScanTask` per scanner, polled from the dashboard, retried with
   exponential backoff on transient failure.
@@ -45,10 +47,10 @@ scanners).
   login, repo list/detail, scan trigger with live status polling, findings
   table with suppression, role-aware UI.
 
-Not yet built: a fourth scanner slot (TruffleHog and/or Semgrep still under
-consideration), a proper secrets manager for private-repo credentials,
-real-time push (still polling), and the observability/Kubernetes-migration
-hardening pass — see `## Roadmap` below.
+Not yet built: a DAST scanner slot (TruffleHog and/or a URL-target scanner
+still under consideration), a proper secrets manager for private-repo
+credentials, real-time push (still polling), and the observability/
+Kubernetes-migration hardening pass — see `## Roadmap` below.
 
 ## Architecture
 
@@ -136,6 +138,6 @@ project SDD history for the full spec/design trail per module).
 | 8 | Results API | ✅ |
 | 9 | Dashboard MVP | ✅ |
 | 10 | Webhook handling (GitHub push) | ✅ |
-| 11 | More scanners (pip-audit ✅, AST-SAST ✅, TruffleHog/Semgrep pending) | ⏳ |
+| 11 | More scanners (pip-audit ✅, AST-SAST ✅, Semgrep ✅, DAST slot pending) | ⏳ |
 | 12 | Advanced dashboard features (trends, diffing, Checks API) | ⏳ |
 | 13 | Hardening & observability (OTel, Prometheus, k8s Jobs migration) | ⏳ |
