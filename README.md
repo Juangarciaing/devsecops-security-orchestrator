@@ -8,7 +8,8 @@ detection running in hardened, ephemeral containers, not a mock.
 Built as a portfolio-grade reference for Clean/Hexagonal architecture, async
 task orchestration, and secure-by-design container execution. Delivered in
 13 independently-shippable modules via spec-driven development; 10 are
-merged as of this README.
+merged as of this README, with Module 11 partially landed (2 of 3 planned
+scanners).
 
 ## What's actually implemented
 
@@ -17,12 +18,17 @@ merged as of this README.
 - **Repository management** — register/list/update/soft-delete GitHub repos;
   identity is `(provider, owner, name)`, credentials are an opaque pointer
   (no secrets manager yet — public repos only for now).
-- **Real scan execution** — [Gitleaks](https://github.com/gitleaks/gitleaks)
-  runs in an ephemeral, non-root, read-only, network-isolated, resource-limited
-  sibling container per scan (`ContainerRunnerPort` behind a bounded
-  Docker-socket boundary — the worker holds the socket, scanner containers
-  never do). A formal `ScannerAdapterPort` + registry means adding a second
-  scanner is one adapter + one registry entry, no orchestration change.
+- **Real scan execution** — three scanners run in hardened, ephemeral sibling
+  containers via a shared `ScannerAdapterPort` + registry (`ContainerRunnerPort`
+  behind a bounded Docker-socket boundary — the worker holds the socket,
+  scanner containers never do): [Gitleaks](https://github.com/gitleaks/gitleaks)
+  (secrets), [pip-audit](https://github.com/pypa/pip-audit) (known-CVE Python
+  dependency scanning), and a pinned, self-built
+  [AST-based SAST tool](https://github.com/Juangarciaing/sast-scanner) (static
+  analysis for SQL injection, hardcoded secrets, weak crypto, and more).
+  Each addition proved the abstraction: one adapter, one registry entry, one
+  pinned Dockerfile — with any real (narrow) orchestration touch named
+  honestly rather than glossed over.
 - **Async orchestration** — Celery + Redis; a scan is a `ScanRun` with one
   `ScanTask` per scanner, polled from the dashboard, retried with
   exponential backoff on transient failure.
@@ -39,10 +45,10 @@ merged as of this README.
   login, repo list/detail, scan trigger with live status polling, findings
   table with suppression, role-aware UI.
 
-Not yet built: more scanners (TruffleHog, pip-audit, SAST), a proper
-secrets manager for private-repo credentials, real-time push (still
-polling), and the observability/Kubernetes-migration hardening pass —
-see `## Roadmap` below.
+Not yet built: a fourth scanner slot (TruffleHog and/or Semgrep still under
+consideration), a proper secrets manager for private-repo credentials,
+real-time push (still polling), and the observability/Kubernetes-migration
+hardening pass — see `## Roadmap` below.
 
 ## Architecture
 
@@ -130,6 +136,6 @@ project SDD history for the full spec/design trail per module).
 | 8 | Results API | ✅ |
 | 9 | Dashboard MVP | ✅ |
 | 10 | Webhook handling (GitHub push) | ✅ |
-| 11 | More scanners (TruffleHog, pip-audit, SAST) | ⏳ |
+| 11 | More scanners (pip-audit ✅, AST-SAST ✅, TruffleHog/Semgrep pending) | ⏳ |
 | 12 | Advanced dashboard features (trends, diffing, Checks API) | ⏳ |
 | 13 | Hardening & observability (OTel, Prometheus, k8s Jobs migration) | ⏳ |
