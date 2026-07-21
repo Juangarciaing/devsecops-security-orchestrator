@@ -16,7 +16,7 @@ from orchestrator.application.use_cases.list_scan_findings import (
 )
 from orchestrator.domain.entities.finding import Finding
 from orchestrator.domain.entities.scan_run import ScanRun
-from orchestrator.domain.ports.finding_port import FindingPort, FindingTrendBucket
+from orchestrator.domain.ports.finding_port import FindingDiffSets, FindingPort, FindingTrendBucket
 from orchestrator.domain.ports.scan_run_port import ScanRunPort
 from orchestrator.domain.value_objects.enums import (
     FindingSeverity,
@@ -53,6 +53,9 @@ class _FakeScanRunRepository(ScanRunPort):
 
     async def list_paginated(self, limit: int, offset: int) -> list[ScanRun]:
         return list(self._by_id.values())[offset : offset + limit]
+
+    async def list_recent_completed(self, repository_id: uuid.UUID, limit: int) -> list[ScanRun]:
+        raise NotImplementedError  # pragma: no cover — unused in these tests
 
 
 class _FakeFindingRepository(FindingPort):
@@ -117,6 +120,11 @@ class _FakeFindingRepository(FindingPort):
         limit: int,
         offset: int,
     ) -> list[Finding]:
+        raise NotImplementedError  # pragma: no cover — unused in these tests
+
+    async def diff_between_runs(
+        self, repository_id: uuid.UUID, latest_run_id: uuid.UUID, baseline_run_id: uuid.UUID
+    ) -> FindingDiffSets:
         raise NotImplementedError  # pragma: no cover — unused in these tests
 
 

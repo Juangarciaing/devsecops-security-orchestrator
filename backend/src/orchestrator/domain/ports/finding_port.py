@@ -16,6 +16,27 @@ from orchestrator.domain.value_objects.enums import FindingSeverity, FindingStat
 
 
 @dataclass(frozen=True, slots=True)
+class FindingDiffSets:
+    """The three disjoint per-finding classification buckets returned by
+    `diff_between_runs` (Module 12b) — `latest`/`baseline` are always
+    adjacent completed `ScanRun`s (no run exists between them, per D1), so
+    membership reduces to exact `first_seen_scan_run_id`/`last_seen_scan_run_id`
+    ID-equality:
+
+    - `added`: `first_seen_scan_run_id == latest_run_id`.
+    - `resolved`: `last_seen_scan_run_id == baseline_run_id`.
+    - `carried`: `last_seen_scan_run_id == latest_run_id AND
+      first_seen_scan_run_id != latest_run_id`.
+
+    These three sets are structurally disjoint (see `FindingPort.diff_between_runs`).
+    """
+
+    added: list[Finding] = field(default_factory=list)
+    resolved: list[Finding] = field(default_factory=list)
+    carried: list[Finding] = field(default_factory=list)
+
+
+@dataclass(frozen=True, slots=True)
 class FindingTrendBucket:
     """One `ScanRun` bucket returned by `trend_counts_by_first_seen_run`
     (Module 12a) — the EXACT count of findings first observed on that run,
@@ -164,4 +185,24 @@ class FindingPort(ABC):
         severity`) — never an attempt to reconstruct what was open at any
         past point in time (that would require the explicitly-deferred
         per-run snapshot table).
+        """
+
+    @abstractmethod
+    async def diff_between_runs(
+        self, repository_id: uuid.UUID, latest_run_id: uuid.UUID, baseline_run_id: uuid.UUID
+    ) -> FindingDiffSets:
+        """Return the exact `added`/`resolved`/`carried` partition of
+        `repository_id`'s findings between `baseline_run_id` (older) and
+        `latest_run_id` (newer). Powers `GET /repositories/{id}/diff`
+        (Module 12b).
+
+        Callers MUST only pass adjacent completed runs (no completed run
+        exists strictly between them) — see `ScanRunPort.list_recent_completed`
+        and design D1. Given that adjacency, membership is pure ID-equality
+        (see `FindingDiffSets`); `repository_id` is a defensive/indexed scope
+        filter, not part of the classification logic itself.
+
+        A finding whose `last_seen_scan_run_id` predates `baseline_run_id`
+        (already gone before the delta window) belongs to none of the three
+        sets — implementations MUST NOT force it into one.
         """

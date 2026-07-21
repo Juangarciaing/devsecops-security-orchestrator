@@ -10,7 +10,7 @@ import pytest
 
 from orchestrator.application.use_cases.get_finding import FindingNotFoundError, get_finding
 from orchestrator.domain.entities.finding import Finding
-from orchestrator.domain.ports.finding_port import FindingPort, FindingTrendBucket
+from orchestrator.domain.ports.finding_port import FindingDiffSets, FindingPort, FindingTrendBucket
 from orchestrator.domain.value_objects.enums import (
     FindingSeverity,
     FindingStatus,
@@ -77,6 +77,11 @@ class _FakeFindingRepository(FindingPort):
         limit: int,
         offset: int,
     ) -> list[Finding]:
+        raise NotImplementedError  # pragma: no cover — unused in these tests
+
+    async def diff_between_runs(
+        self, repository_id: uuid.UUID, latest_run_id: uuid.UUID, baseline_run_id: uuid.UUID
+    ) -> FindingDiffSets:
         raise NotImplementedError  # pragma: no cover — unused in these tests
 
 

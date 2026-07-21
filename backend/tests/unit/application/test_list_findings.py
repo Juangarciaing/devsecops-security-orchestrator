@@ -10,7 +10,7 @@ from datetime import UTC, datetime
 
 from orchestrator.application.use_cases.list_findings import list_findings
 from orchestrator.domain.entities.finding import Finding
-from orchestrator.domain.ports.finding_port import FindingPort, FindingTrendBucket
+from orchestrator.domain.ports.finding_port import FindingDiffSets, FindingPort, FindingTrendBucket
 from orchestrator.domain.value_objects.enums import (
     FindingSeverity,
     FindingStatus,
@@ -86,6 +86,11 @@ class _FakeFindingRepository(FindingPort):
             }
         )
         return self._findings[offset : offset + limit]
+
+    async def diff_between_runs(
+        self, repository_id: uuid.UUID, latest_run_id: uuid.UUID, baseline_run_id: uuid.UUID
+    ) -> FindingDiffSets:
+        return FindingDiffSets()  # pragma: no cover — unused in these tests
 
 
 def _make_finding(**overrides: object) -> Finding:

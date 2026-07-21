@@ -746,3 +746,258 @@ def test_get_trends_member_and_admin_responses_are_byte_identical(migrated_schem
         assert member_response.json() == admin_response.json()
 
     asyncio.run(_run_with_client(scenario))
+
+
+# ---------------------------------------------------------------------------
+# GET /{id}/diff (Module 12b PR1)
+# ---------------------------------------------------------------------------
+
+
+async def _seed_completed_run_with_fingerprinted_findings(
+    sessionmaker: async_sessionmaker[AsyncSession],
+    repository_id: uuid.UUID,
+    *,
+    created_at: datetime,
+    fingerprints: tuple[str, ...],
+    commit_sha: str = "abc123",
+) -> uuid.UUID:
+    """Create one COMPLETED `ScanRun` + one `ScanTask` on `repository_id`,
+    then `bulk_upsert` one `Finding` per entry in `fingerprints` (letting
+    callers reuse the SAME fingerprint across two calls to simulate a
+    re-observed/carried finding, or a fingerprint absent from a later call
+    to simulate a resolved one). Returns the `scan_run_id`."""
+    async with sessionmaker() as session:
+        scan_run_repo = SqlAlchemyScanRunRepository(session)
+        run = await scan_run_repo.create(
+            ScanRun(
+                id=uuid.uuid4(),
+                repository_id=repository_id,
+                status=ScanRunStatus.COMPLETED,
+                trigger="manual",
+                commit_sha=commit_sha,
+                ref=commit_sha,
+                created_at=created_at,
+            )
+        )
+        await session.commit()
+        scan_run_id = run.id
+
+    async with sessionmaker() as session:
+        scan_task_repo = SqlAlchemyScanTaskRepository(session)
+        task = await scan_task_repo.create(
+            ScanTask(
+                id=uuid.uuid4(),
+                scan_run_id=scan_run_id,
+                scanner_type=ScannerType.SECRETS,
+                status=ScanTaskStatus.COMPLETED,
+            )
+        )
+        await session.commit()
+        scan_task_id = task.id
+
+    if fingerprints:
+        findings = [
+            Finding(
+                id=uuid.uuid4(),
+                scan_task_id=scan_task_id,
+                severity=FindingSeverity.HIGH,
+                rule_id="generic-api-key",
+                title="Hardcoded API key",
+                fingerprint=fingerprint,
+                created_at=created_at,
+                updated_at=created_at,
+                file_path="src/config.py",
+                line_number=7,
+                raw_evidence={"match": "AKIA..."},
+                snippet="API_KEY='AKIA...'",
+            )
+            for fingerprint in fingerprints
+        ]
+        async with sessionmaker() as session:
+            finding_repo = SqlAlchemyFindingRepository(session)
+            await finding_repo.bulk_upsert_findings(repository_id, scan_run_id, findings)
+            await session.commit()
+
+    return scan_run_id
+
+
+def test_get_diff_without_token_returns_401(migrated_schema: None) -> None:
+    async def scenario(
+        client: httpx.AsyncClient, _sessionmaker: async_sessionmaker[AsyncSession]
+    ) -> None:
+        response = await client.get(f"/api/v1/repositories/{uuid.uuid4()}/diff")
+
+        assert response.status_code == 401
+        assert response.headers["content-type"] == "application/problem+json"
+
+    asyncio.run(_run_with_client(scenario))
+
+
+def test_get_diff_missing_repository_returns_404(migrated_schema: None) -> None:
+    async def scenario(
+        client: httpx.AsyncClient, sessionmaker: async_sessionmaker[AsyncSession]
+    ) -> None:
+        member = await _seed_user(sessionmaker, "member-diff-404@example.com", UserRole.MEMBER)
+
+        response = await client.get(
+            f"/api/v1/repositories/{uuid.uuid4()}/diff", headers=_auth_header(member)
+        )
+
+        assert response.status_code == 404
+        assert response.headers["content-type"] == "application/problem+json"
+
+    asyncio.run(_run_with_client(scenario))
+
+
+def test_get_diff_inactive_repository_returns_404(migrated_schema: None) -> None:
+    async def scenario(
+        client: httpx.AsyncClient, sessionmaker: async_sessionmaker[AsyncSession]
+    ) -> None:
+        member = await _seed_user(sessionmaker, "member-diff-inactive@example.com", UserRole.MEMBER)
+        repo = await _seed_repository(
+            sessionmaker, "acme-diff-inactive", "widgets-diff-inactive", is_active=False
+        )
+
+        response = await client.get(
+            f"/api/v1/repositories/{repo.id}/diff", headers=_auth_header(member)
+        )
+
+        assert response.status_code == 404
+
+    asyncio.run(_run_with_client(scenario))
+
+
+def test_get_diff_zero_completed_runs_returns_null_runs_and_empty_sets(
+    migrated_schema: None,
+) -> None:
+    async def scenario(
+        client: httpx.AsyncClient, sessionmaker: async_sessionmaker[AsyncSession]
+    ) -> None:
+        member = await _seed_user(sessionmaker, "member-diff-empty@example.com", UserRole.MEMBER)
+        repo = await _seed_repository(sessionmaker, "acme-diff-empty", "widgets-diff-empty")
+
+        response = await client.get(
+            f"/api/v1/repositories/{repo.id}/diff", headers=_auth_header(member)
+        )
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["latest_run"] is None
+        assert body["baseline_run"] is None
+        assert body["added"] == []
+        assert body["resolved"] == []
+        assert body["carried"] == []
+
+    asyncio.run(_run_with_client(scenario))
+
+
+def test_get_diff_one_completed_run_baseline_null_all_added(migrated_schema: None) -> None:
+    """Spec Scenario: "First-ever scan"."""
+
+    async def scenario(
+        client: httpx.AsyncClient, sessionmaker: async_sessionmaker[AsyncSession]
+    ) -> None:
+        member = await _seed_user(sessionmaker, "member-diff-first@example.com", UserRole.MEMBER)
+        repo = await _seed_repository(sessionmaker, "acme-diff-first", "widgets-diff-first")
+
+        await _seed_completed_run_with_fingerprinted_findings(
+            sessionmaker,
+            repo.id,
+            created_at=datetime(2026, 1, 1),
+            fingerprints=("fp-first-1", "fp-first-2", "fp-first-3"),
+        )
+
+        response = await client.get(
+            f"/api/v1/repositories/{repo.id}/diff", headers=_auth_header(member)
+        )
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["baseline_run"] is None
+        assert body["latest_run"] is not None
+        assert len(body["added"]) == 3
+        assert body["resolved"] == []
+        assert body["carried"] == []
+
+    asyncio.run(_run_with_client(scenario))
+
+
+def test_get_diff_two_completed_runs_partitions_added_resolved_and_carried(
+    migrated_schema: None,
+) -> None:
+    async def scenario(
+        client: httpx.AsyncClient, sessionmaker: async_sessionmaker[AsyncSession]
+    ) -> None:
+        member = await _seed_user(
+            sessionmaker, "member-diff-partition@example.com", UserRole.MEMBER
+        )
+        repo = await _seed_repository(sessionmaker, "acme-diff-partition", "widgets-diff-partition")
+
+        await _seed_completed_run_with_fingerprinted_findings(
+            sessionmaker,
+            repo.id,
+            created_at=datetime(2026, 2, 1),
+            fingerprints=("fp-resolved", "fp-carried"),
+        )
+        await _seed_completed_run_with_fingerprinted_findings(
+            sessionmaker,
+            repo.id,
+            created_at=datetime(2026, 2, 2),
+            fingerprints=("fp-carried", "fp-added"),
+        )
+
+        response = await client.get(
+            f"/api/v1/repositories/{repo.id}/diff", headers=_auth_header(member)
+        )
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["latest_run"] is not None
+        assert body["baseline_run"] is not None
+        assert {f["fingerprint"] for f in body["added"]} == {"fp-added"}
+        assert {f["fingerprint"] for f in body["resolved"]} == {"fp-resolved"}
+        assert {f["fingerprint"] for f in body["carried"]} == {"fp-carried"}
+
+    asyncio.run(_run_with_client(scenario))
+
+
+def test_get_diff_member_sees_redacted_fields_admin_sees_full(migrated_schema: None) -> None:
+    """Spec Scenarios: "Member sees redacted diff" / "Admin sees full diff"."""
+
+    async def scenario(
+        client: httpx.AsyncClient, sessionmaker: async_sessionmaker[AsyncSession]
+    ) -> None:
+        member = await _seed_user(sessionmaker, "member-diff-redact@example.com", UserRole.MEMBER)
+        admin = await _seed_user(sessionmaker, "admin-diff-redact@example.com", UserRole.ADMIN)
+        repo = await _seed_repository(sessionmaker, "acme-diff-redact", "widgets-diff-redact")
+
+        await _seed_completed_run_with_fingerprinted_findings(
+            sessionmaker,
+            repo.id,
+            created_at=datetime(2026, 3, 1),
+            fingerprints=("fp-redact-added",),
+        )
+
+        member_response = await client.get(
+            f"/api/v1/repositories/{repo.id}/diff", headers=_auth_header(member)
+        )
+        admin_response = await client.get(
+            f"/api/v1/repositories/{repo.id}/diff", headers=_auth_header(admin)
+        )
+
+        assert member_response.status_code == 200
+        assert admin_response.status_code == 200
+
+        [member_finding] = member_response.json()["added"]
+        assert member_finding["raw_evidence"] is None
+        assert member_finding["snippet"] is None
+        assert member_finding["file_path"] is None
+        assert member_finding["line_number"] is None
+
+        [admin_finding] = admin_response.json()["added"]
+        assert admin_finding["raw_evidence"] == {"match": "AKIA..."}
+        assert admin_finding["snippet"] == "API_KEY='AKIA...'"
+        assert admin_finding["file_path"] == "src/config.py"
+        assert admin_finding["line_number"] == 7
+
+    asyncio.run(_run_with_client(scenario))

@@ -77,6 +77,24 @@ class SqlAlchemyScanRunRepository(ScanRunPort):
         await self._session.flush()
         return scan_run_to_entity(model)
 
+    async def list_recent_completed(self, repository_id: uuid.UUID, limit: int) -> list[ScanRun]:
+        """Powers `GET /repositories/{id}/diff` (Module 12b). `id` is a random
+        `uuid4` (never monotonic) — `created_at` is the real ordering key,
+        `id` is only a deterministic tiebreak, mirroring the `(created_at,
+        id)` convention already used elsewhere in this adapter/`FindingRepository`.
+        """
+        stmt = (
+            select(ScanRunModel)
+            .where(
+                ScanRunModel.repository_id == repository_id,
+                ScanRunModel.status == ScanRunStatus.COMPLETED,
+            )
+            .order_by(ScanRunModel.created_at.desc(), ScanRunModel.id.desc())
+            .limit(limit)
+        )
+        result = await self._session.execute(stmt)
+        return [scan_run_to_entity(model) for model in result.scalars().all()]
+
     async def update_commit_sha(self, scan_run_id: uuid.UUID, commit_sha: str) -> ScanRun:
         """Persist the resolved real HEAD SHA onto `ScanRun.commit_sha`.
 

@@ -14,7 +14,7 @@ from orchestrator.application.use_cases.get_repository import RepositoryNotFound
 from orchestrator.application.use_cases.get_repository_trends import get_repository_trends
 from orchestrator.domain.entities.code_repository import CodeRepository
 from orchestrator.domain.ports.code_repository_port import CodeRepositoryPort
-from orchestrator.domain.ports.finding_port import FindingPort, FindingTrendBucket
+from orchestrator.domain.ports.finding_port import FindingDiffSets, FindingPort, FindingTrendBucket
 from orchestrator.domain.value_objects.enums import (
     FindingSeverity,
     RepositoryProvider,
@@ -144,6 +144,11 @@ class _FakeFindingRepository(FindingPort):
     async def open_counts_by_severity(self, repository_id: uuid.UUID) -> dict[FindingSeverity, int]:
         self.open_calls.append(repository_id)
         return self._open_counts
+
+    async def diff_between_runs(
+        self, repository_id: uuid.UUID, latest_run_id: uuid.UUID, baseline_run_id: uuid.UUID
+    ) -> FindingDiffSets:
+        raise NotImplementedError  # pragma: no cover — unused in these tests
 
 
 def test_get_repository_trends_assembles_dto_from_port_buckets() -> None:

@@ -12,7 +12,7 @@ from sqlalchemy.dialects import postgresql
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from orchestrator.domain.entities.finding import Finding
-from orchestrator.domain.ports.finding_port import FindingPort, FindingTrendBucket
+from orchestrator.domain.ports.finding_port import FindingDiffSets, FindingPort, FindingTrendBucket
 from orchestrator.domain.value_objects.enums import (
     FindingSeverity,
     FindingStatus,
@@ -276,3 +276,47 @@ class SqlAlchemyFindingRepository(FindingPort):
         )
         result = await self._session.execute(stmt)
         return {severity: count for severity, count in result.all() if count}
+
+    async def diff_between_runs(
+        self, repository_id: uuid.UUID, latest_run_id: uuid.UUID, baseline_run_id: uuid.UUID
+    ) -> FindingDiffSets:
+        """Powers `GET /repositories/{id}/diff`. `latest_run_id`/
+        `baseline_run_id` MUST be adjacent completed runs (design D1) — given
+        that adjacency, membership is pure ID-equality (see `FindingDiffSets`
+        docstring); `repository_id` is a defensive/indexed scope filter.
+        """
+        added_stmt = (
+            select(FindingModel)
+            .where(
+                FindingModel.repository_id == repository_id,
+                FindingModel.first_seen_scan_run_id == latest_run_id,
+            )
+            .order_by(FindingModel.created_at.desc(), FindingModel.id)
+        )
+        resolved_stmt = (
+            select(FindingModel)
+            .where(
+                FindingModel.repository_id == repository_id,
+                FindingModel.last_seen_scan_run_id == baseline_run_id,
+            )
+            .order_by(FindingModel.created_at.desc(), FindingModel.id)
+        )
+        carried_stmt = (
+            select(FindingModel)
+            .where(
+                FindingModel.repository_id == repository_id,
+                FindingModel.last_seen_scan_run_id == latest_run_id,
+                FindingModel.first_seen_scan_run_id != latest_run_id,
+            )
+            .order_by(FindingModel.created_at.desc(), FindingModel.id)
+        )
+
+        added_result = await self._session.execute(added_stmt)
+        resolved_result = await self._session.execute(resolved_stmt)
+        carried_result = await self._session.execute(carried_stmt)
+
+        return FindingDiffSets(
+            added=[finding_to_entity(model) for model in added_result.scalars().all()],
+            resolved=[finding_to_entity(model) for model in resolved_result.scalars().all()],
+            carried=[finding_to_entity(model) for model in carried_result.scalars().all()],
+        )
