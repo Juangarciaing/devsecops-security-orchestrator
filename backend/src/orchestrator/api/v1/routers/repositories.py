@@ -7,8 +7,9 @@ requires `require_role(ADMIN)`.
 from __future__ import annotations
 
 import uuid
+from datetime import datetime
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from orchestrator.api.v1.dependencies.auth import get_current_user, require_role
@@ -19,11 +20,13 @@ from orchestrator.application.dto.code_repository import (
     CodeRepositoryRead,
     CodeRepositoryUpdate,
 )
+from orchestrator.application.dto.trends import RepositoryTrendsRead
 from orchestrator.application.use_cases.deactivate_repository import deactivate_repository
 from orchestrator.application.use_cases.get_repository import (
     RepositoryNotFoundError,
     get_repository,
 )
+from orchestrator.application.use_cases.get_repository_trends import get_repository_trends
 from orchestrator.application.use_cases.list_repositories import list_repositories
 from orchestrator.application.use_cases.register_repository import (
     DuplicateRepositoryIdentityError,
@@ -34,9 +37,12 @@ from orchestrator.application.use_cases.update_repository import (
     update_repository,
 )
 from orchestrator.domain.entities.user import User
-from orchestrator.domain.value_objects.enums import UserRole
+from orchestrator.domain.value_objects.enums import ScannerType, UserRole
 from orchestrator.infrastructure.db.repositories.code_repository_repository import (
     SqlAlchemyCodeRepositoryRepository,
+)
+from orchestrator.infrastructure.db.repositories.finding_repository import (
+    SqlAlchemyFindingRepository,
 )
 
 router = APIRouter(prefix="/api/v1/repositories", tags=["repositories"])
@@ -94,6 +100,37 @@ async def get_repository_endpoint(
     except RepositoryNotFoundError as exc:
         raise _not_found() from exc
     return CodeRepositoryRead.from_entity(repository)
+
+
+@router.get("/{repository_id}/trends", response_model=RepositoryTrendsRead)
+async def get_repository_trends_endpoint(
+    repository_id: uuid.UUID,
+    scanner_type: ScannerType | None = None,
+    date_from: datetime | None = None,
+    date_to: datetime | None = None,
+    limit: int = Query(default=100, ge=1, le=500),
+    _user: User = Depends(get_current_user),  # noqa: B008
+    session: AsyncSession = Depends(get_db_session),  # noqa: B008
+) -> RepositoryTrendsRead:
+    """Exact introduced-per-run (by severity) + current-open snapshot for
+    `repository_id`. No per-role redaction (design D3): aggregate severity
+    counts never carry `Finding.REDACTION_SENSITIVE_FIELDS`, so member and
+    admin callers receive identical bodies.
+    """
+    repository_port = SqlAlchemyCodeRepositoryRepository(session)
+    finding_port = SqlAlchemyFindingRepository(session)
+    try:
+        return await get_repository_trends(
+            repository_port,
+            finding_port,
+            repository_id,
+            scanner_type=scanner_type,
+            date_from=date_from,
+            date_to=date_to,
+            limit=limit,
+        )
+    except RepositoryNotFoundError as exc:
+        raise _not_found() from exc
 
 
 @router.patch("/{repository_id}", response_model=CodeRepositoryRead)

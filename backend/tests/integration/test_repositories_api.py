@@ -14,11 +14,30 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from orchestrator.api.main import create_app
 from orchestrator.api.v1.dependencies.db import get_db_session
 from orchestrator.domain.entities.code_repository import CodeRepository
+from orchestrator.domain.entities.finding import Finding
+from orchestrator.domain.entities.scan_run import ScanRun
+from orchestrator.domain.entities.scan_task import ScanTask
 from orchestrator.domain.entities.user import User
-from orchestrator.domain.value_objects.enums import RepositoryProvider, UserRole
+from orchestrator.domain.value_objects.enums import (
+    FindingSeverity,
+    RepositoryProvider,
+    ScannerType,
+    ScanRunStatus,
+    ScanTaskStatus,
+    UserRole,
+)
 from orchestrator.infrastructure.db.engine import resolve_database_url
 from orchestrator.infrastructure.db.repositories.code_repository_repository import (
     SqlAlchemyCodeRepositoryRepository,
+)
+from orchestrator.infrastructure.db.repositories.finding_repository import (
+    SqlAlchemyFindingRepository,
+)
+from orchestrator.infrastructure.db.repositories.scan_run_repository import (
+    SqlAlchemyScanRunRepository,
+)
+from orchestrator.infrastructure.db.repositories.scan_task_repository import (
+    SqlAlchemyScanTaskRepository,
 )
 from orchestrator.infrastructure.db.repositories.user_repository import SqlAlchemyUserRepository
 from orchestrator.infrastructure.security.jwt import create_access_token
@@ -104,6 +123,68 @@ async def _run_with_client(scenario: object) -> None:
             await scenario(client, sessionmaker)  # type: ignore[operator]
     finally:
         await engine.dispose()
+
+
+async def _seed_completed_scan_with_findings(
+    sessionmaker: async_sessionmaker[AsyncSession],
+    repository_id: uuid.UUID,
+    *,
+    created_at: datetime,
+    commit_sha: str = "abc123",
+    severities: tuple[FindingSeverity, ...] = (),
+) -> uuid.UUID:
+    """Create one COMPLETED `ScanRun` + one `ScanTask` on `repository_id`,
+    then `bulk_upsert` one `Finding` per entry in `severities` (all first-seen
+    on this run). Returns the `scan_run_id`."""
+    async with sessionmaker() as session:
+        scan_run_repo = SqlAlchemyScanRunRepository(session)
+        run = await scan_run_repo.create(
+            ScanRun(
+                id=uuid.uuid4(),
+                repository_id=repository_id,
+                status=ScanRunStatus.COMPLETED,
+                trigger="manual",
+                commit_sha=commit_sha,
+                ref=commit_sha,
+                created_at=created_at,
+            )
+        )
+        await session.commit()
+        scan_run_id = run.id
+
+    async with sessionmaker() as session:
+        scan_task_repo = SqlAlchemyScanTaskRepository(session)
+        task = await scan_task_repo.create(
+            ScanTask(
+                id=uuid.uuid4(),
+                scan_run_id=scan_run_id,
+                scanner_type=ScannerType.SECRETS,
+                status=ScanTaskStatus.COMPLETED,
+            )
+        )
+        await session.commit()
+        scan_task_id = task.id
+
+    if severities:
+        findings = [
+            Finding(
+                id=uuid.uuid4(),
+                scan_task_id=scan_task_id,
+                severity=severity,
+                rule_id="generic-api-key",
+                title="Hardcoded API key",
+                fingerprint=f"fp-{uuid.uuid4()}",
+                created_at=created_at,
+                updated_at=created_at,
+            )
+            for severity in severities
+        ]
+        async with sessionmaker() as session:
+            finding_repo = SqlAlchemyFindingRepository(session)
+            await finding_repo.bulk_upsert_findings(repository_id, scan_run_id, findings)
+            await session.commit()
+
+    return scan_run_id
 
 
 def _create_payload(owner: str = "acme", name: str = "widgets") -> dict[str, str]:
@@ -527,5 +608,141 @@ def test_delete_member_forbidden_returns_403(migrated_schema: None) -> None:
 
         assert response.status_code == 403
         assert response.headers["content-type"] == "application/problem+json"
+
+    asyncio.run(_run_with_client(scenario))
+
+
+# ---------------------------------------------------------------------------
+# GET /{id}/trends (Module 12a PR1)
+# ---------------------------------------------------------------------------
+
+
+def test_get_trends_without_token_returns_401(migrated_schema: None) -> None:
+    async def scenario(
+        client: httpx.AsyncClient, _sessionmaker: async_sessionmaker[AsyncSession]
+    ) -> None:
+        response = await client.get(f"/api/v1/repositories/{uuid.uuid4()}/trends")
+
+        assert response.status_code == 401
+        assert response.headers["content-type"] == "application/problem+json"
+
+    asyncio.run(_run_with_client(scenario))
+
+
+def test_get_trends_missing_repository_returns_404(migrated_schema: None) -> None:
+    async def scenario(
+        client: httpx.AsyncClient, sessionmaker: async_sessionmaker[AsyncSession]
+    ) -> None:
+        member = await _seed_user(sessionmaker, "member-trends-404@example.com", UserRole.MEMBER)
+
+        response = await client.get(
+            f"/api/v1/repositories/{uuid.uuid4()}/trends", headers=_auth_header(member)
+        )
+
+        assert response.status_code == 404
+        assert response.headers["content-type"] == "application/problem+json"
+
+    asyncio.run(_run_with_client(scenario))
+
+
+def test_get_trends_inactive_repository_returns_404(migrated_schema: None) -> None:
+    async def scenario(
+        client: httpx.AsyncClient, sessionmaker: async_sessionmaker[AsyncSession]
+    ) -> None:
+        member = await _seed_user(
+            sessionmaker, "member-trends-inactive@example.com", UserRole.MEMBER
+        )
+        repo = await _seed_repository(
+            sessionmaker, "acme-trends-inactive", "widgets-trends-inactive", is_active=False
+        )
+
+        response = await client.get(
+            f"/api/v1/repositories/{repo.id}/trends", headers=_auth_header(member)
+        )
+
+        assert response.status_code == 404
+
+    asyncio.run(_run_with_client(scenario))
+
+
+def test_get_trends_returns_points_and_current_open(migrated_schema: None) -> None:
+    async def scenario(
+        client: httpx.AsyncClient, sessionmaker: async_sessionmaker[AsyncSession]
+    ) -> None:
+        member = await _seed_user(sessionmaker, "member-trends-get@example.com", UserRole.MEMBER)
+        repo = await _seed_repository(sessionmaker, "acme-trends-get", "widgets-trends-get")
+
+        await _seed_completed_scan_with_findings(
+            sessionmaker, repo.id, created_at=datetime(2026, 1, 1), severities=()
+        )
+        await _seed_completed_scan_with_findings(
+            sessionmaker,
+            repo.id,
+            created_at=datetime(2026, 1, 2),
+            severities=(FindingSeverity.HIGH, FindingSeverity.HIGH),
+        )
+
+        response = await client.get(
+            f"/api/v1/repositories/{repo.id}/trends", headers=_auth_header(member)
+        )
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["repository_id"] == str(repo.id)
+        assert len(body["points"]) == 2
+        assert body["points"][0]["introduced"] == {}
+        assert body["points"][1]["introduced"] == {"high": 2}
+        assert body["current_open"] == {"high": 2}
+
+    asyncio.run(_run_with_client(scenario))
+
+
+def test_get_trends_empty_repository_returns_empty_points(migrated_schema: None) -> None:
+    async def scenario(
+        client: httpx.AsyncClient, sessionmaker: async_sessionmaker[AsyncSession]
+    ) -> None:
+        member = await _seed_user(sessionmaker, "member-trends-empty@example.com", UserRole.MEMBER)
+        repo = await _seed_repository(sessionmaker, "acme-trends-empty", "widgets-trends-empty")
+
+        response = await client.get(
+            f"/api/v1/repositories/{repo.id}/trends", headers=_auth_header(member)
+        )
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["points"] == []
+        assert body["current_open"] == {}
+
+    asyncio.run(_run_with_client(scenario))
+
+
+def test_get_trends_member_and_admin_responses_are_byte_identical(migrated_schema: None) -> None:
+    """Spec Scenario: "Member and admin see the same trend data" — no
+    `redact_finding_for_role` is ever applied to aggregate counts."""
+
+    async def scenario(
+        client: httpx.AsyncClient, sessionmaker: async_sessionmaker[AsyncSession]
+    ) -> None:
+        member = await _seed_user(sessionmaker, "member-trends-parity@example.com", UserRole.MEMBER)
+        admin = await _seed_user(sessionmaker, "admin-trends-parity@example.com", UserRole.ADMIN)
+        repo = await _seed_repository(sessionmaker, "acme-trends-parity", "widgets-trends-parity")
+
+        await _seed_completed_scan_with_findings(
+            sessionmaker,
+            repo.id,
+            created_at=datetime(2026, 1, 1),
+            severities=(FindingSeverity.CRITICAL,),
+        )
+
+        member_response = await client.get(
+            f"/api/v1/repositories/{repo.id}/trends", headers=_auth_header(member)
+        )
+        admin_response = await client.get(
+            f"/api/v1/repositories/{repo.id}/trends", headers=_auth_header(admin)
+        )
+
+        assert member_response.status_code == 200
+        assert admin_response.status_code == 200
+        assert member_response.json() == admin_response.json()
 
     asyncio.run(_run_with_client(scenario))

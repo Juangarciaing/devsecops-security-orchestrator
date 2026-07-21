@@ -10,7 +10,7 @@ from datetime import UTC, datetime
 
 from orchestrator.application.use_cases.list_findings import list_findings
 from orchestrator.domain.entities.finding import Finding
-from orchestrator.domain.ports.finding_port import FindingPort
+from orchestrator.domain.ports.finding_port import FindingPort, FindingTrendBucket
 from orchestrator.domain.value_objects.enums import (
     FindingSeverity,
     FindingStatus,
@@ -50,6 +50,20 @@ class _FakeFindingRepository(FindingPort):
         self, scan_run_id: uuid.UUID, limit: int, offset: int
     ) -> list[Finding]:
         return []  # pragma: no cover — unused in these tests
+
+    async def trend_counts_by_first_seen_run(
+        self,
+        repository_id: uuid.UUID,
+        *,
+        scanner_type: ScannerType | None = None,
+        date_from: object = None,
+        date_to: object = None,
+        limit: int = 100,
+    ) -> list[FindingTrendBucket]:
+        return []  # pragma: no cover — unused in these tests
+
+    async def open_counts_by_severity(self, repository_id: uuid.UUID) -> dict[FindingSeverity, int]:
+        return {}  # pragma: no cover — unused in these tests
 
     async def list_findings(
         self,

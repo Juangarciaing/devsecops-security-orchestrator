@@ -20,7 +20,7 @@ from orchestrator.application.use_cases.suppress_finding import suppress_finding
 from orchestrator.application.use_cases.unsuppress_finding import unsuppress_finding
 from orchestrator.domain.entities.finding import Finding
 from orchestrator.domain.entities.scan_run import ScanRun
-from orchestrator.domain.ports.finding_port import FindingPort
+from orchestrator.domain.ports.finding_port import FindingPort, FindingTrendBucket
 from orchestrator.domain.ports.scan_run_port import ScanRunPort
 from orchestrator.domain.value_objects.enums import (
     FindingSeverity,
@@ -95,6 +95,20 @@ class _FakeFindingRepository(FindingPort):
         self, scan_run_id: uuid.UUID, limit: int, offset: int
     ) -> list[Finding]:
         return self._by_scan_run.get(scan_run_id, [])[offset : offset + limit]
+
+    async def trend_counts_by_first_seen_run(
+        self,
+        repository_id: uuid.UUID,
+        *,
+        scanner_type: ScannerType | None = None,
+        date_from: object = None,
+        date_to: object = None,
+        limit: int = 100,
+    ) -> list[FindingTrendBucket]:
+        return []  # pragma: no cover — unused in these tests
+
+    async def open_counts_by_severity(self, repository_id: uuid.UUID) -> dict[FindingSeverity, int]:
+        return {}  # pragma: no cover — unused in these tests
 
     async def list_findings(
         self,

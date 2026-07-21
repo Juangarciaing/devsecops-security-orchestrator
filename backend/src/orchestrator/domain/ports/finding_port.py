@@ -8,9 +8,30 @@ from __future__ import annotations
 
 import uuid
 from abc import ABC, abstractmethod
+from dataclasses import dataclass, field
+from datetime import datetime
 
 from orchestrator.domain.entities.finding import Finding
 from orchestrator.domain.value_objects.enums import FindingSeverity, FindingStatus, ScannerType
+
+
+@dataclass(frozen=True, slots=True)
+class FindingTrendBucket:
+    """One `ScanRun` bucket returned by `trend_counts_by_first_seen_run`
+    (Module 12a) — the EXACT count of findings first observed on that run,
+    grouped by `severity`.
+
+    Emitted even for runs that introduced zero findings — in that case
+    `severity_counts` is an empty dict. Callers MUST NOT infer a run was
+    skipped/filtered from an empty dict; the bucket itself proves the run
+    exists and simply introduced nothing (or nothing matching an active
+    `scanner_type` filter).
+    """
+
+    scan_run_id: uuid.UUID
+    occurred_at: datetime
+    commit_sha: str
+    severity_counts: dict[FindingSeverity, int] = field(default_factory=dict)
 
 
 class FindingPort(ABC):
@@ -93,4 +114,54 @@ class FindingPort(ABC):
         has no denormalized scanner_type column); implementations MUST only
         perform that join when `scanner_type` is supplied. Powers
         `GET /findings` (Module 8 PR2).
+        """
+
+    @abstractmethod
+    async def trend_counts_by_first_seen_run(
+        self,
+        repository_id: uuid.UUID,
+        *,
+        scanner_type: ScannerType | None = None,
+        date_from: datetime | None = None,
+        date_to: datetime | None = None,
+        limit: int = 100,
+    ) -> list[FindingTrendBucket]:
+        """Return one `FindingTrendBucket` per completed `ScanRun` belonging to
+        `repository_id`, ordered by `ScanRun.created_at` ascending.
+
+        Each bucket carries the EXACT count of `Finding`s whose
+        `first_seen_scan_run_id` equals that run, grouped by `severity`.
+        `first_seen_scan_run_id` is stamped once at INSERT and never advanced
+        on upsert conflict (Module 7 D4), so this is a stable "introduced at
+        run R" key — NOT a historical "open as of run R" reconstruction (no
+        snapshot table exists or is added by this method).
+
+        Buckets MUST be emitted even for runs that introduced zero matching
+        findings (implementations MUST use a LEFT JOIN or equivalent — never
+        an INNER JOIN that would silently drop zero-finding runs), so the
+        series has no misleading gaps.
+
+        `scanner_type`, when supplied, narrows counted findings to only those
+        whose owning `ScanTask.scanner_type` matches — implementations MUST
+        apply this as part of the join condition that determines whether a
+        `Finding` matches a bucket, NOT as a post-join `WHERE` filter (a
+        `WHERE` filter would incorrectly drop the entire bucket/row for a run
+        that had ONLY non-matching findings, instead of correctly reporting
+        it as zero-matching).
+
+        `date_from`/`date_to` (both optional, inclusive), when supplied,
+        narrow to `ScanRun.created_at` within that range. `limit` caps the
+        number of DISTINCT scan runs returned (not the number of grouped
+        rows), default 100.
+        """
+
+    @abstractmethod
+    async def open_counts_by_severity(self, repository_id: uuid.UUID) -> dict[FindingSeverity, int]:
+        """Return the EXACT count of currently `FindingStatus.OPEN` findings
+        for `repository_id`, grouped by `severity`.
+
+        A present-moment snapshot query only (`WHERE status='open' GROUP BY
+        severity`) — never an attempt to reconstruct what was open at any
+        past point in time (that would require the explicitly-deferred
+        per-run snapshot table).
         """
