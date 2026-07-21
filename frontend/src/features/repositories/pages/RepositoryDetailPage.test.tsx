@@ -44,6 +44,13 @@ describe('RepositoryDetailPage', () => {
     server.use(
       http.get('*/api/v1/repositories/r1', () => HttpResponse.json(repo)),
       http.get('*/api/v1/scans', () => HttpResponse.json([])),
+      http.get('*/api/v1/repositories/r1/trends', () =>
+        HttpResponse.json({
+          repository_id: 'r1',
+          points: [],
+          current_open: {},
+        }),
+      ),
     )
     renderPage('r1')
 
@@ -52,6 +59,9 @@ describe('RepositoryDetailPage', () => {
       screen.getByRole('button', { name: /trigger scan/i }),
     ).toBeInTheDocument()
     expect(await screen.findByText(/no scans/i)).toBeInTheDocument()
+    expect(
+      await screen.findByText(/no completed scans yet/i),
+    ).toBeInTheDocument()
   })
 
   it('lists prior scans for the repository, filtered from the full scan list', async () => {
@@ -82,6 +92,13 @@ describe('RepositoryDetailPage', () => {
             completed_at: null,
           },
         ]),
+      ),
+      http.get('*/api/v1/repositories/r1/trends', () =>
+        HttpResponse.json({
+          repository_id: 'r1',
+          points: [],
+          current_open: {},
+        }),
       ),
     )
     renderPage('r1')

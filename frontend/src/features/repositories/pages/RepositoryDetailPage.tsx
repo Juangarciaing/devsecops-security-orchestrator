@@ -5,6 +5,8 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/shared/ui/card'
 import { ScanHistoryTable } from '@/features/scans/components/ScanHistoryTable'
 import { TriggerScanButton } from '@/features/scans/components/TriggerScanButton'
 import { useRepositoryScans } from '@/features/scans/queries'
+import { TrendsChart } from '@/features/trends/components/TrendsChart'
+import { useRepoTrends } from '@/features/trends/queries'
 import { DeleteRepositoryButton } from '../components/DeleteRepositoryButton'
 import { useRepository } from '../queries'
 
@@ -12,6 +14,7 @@ export function RepositoryDetailPage() {
   const { id } = useParams<{ id: string }>()
   const repositoryQuery = useRepository(id ?? '')
   const scansQuery = useRepositoryScans(id ?? '')
+  const trendsQuery = useRepoTrends(id ?? '')
 
   if (repositoryQuery.isPending) {
     return <p className="text-muted-foreground">Loading repository…</p>
@@ -62,6 +65,21 @@ export function RepositoryDetailPage() {
         ) : null}
         {scansQuery.isSuccess ? (
           <ScanHistoryTable scans={scansQuery.data} />
+        ) : null}
+      </div>
+
+      <div className="flex flex-col gap-2">
+        <h3 className="text-lg font-semibold">Finding trends</h3>
+        {trendsQuery.isPending ? (
+          <p className="text-muted-foreground">Loading trend data…</p>
+        ) : null}
+        {trendsQuery.isError ? (
+          <p role="alert" className="text-sm text-destructive">
+            Could not load trend data.
+          </p>
+        ) : null}
+        {trendsQuery.isSuccess ? (
+          <TrendsChart points={trendsQuery.data.points} />
         ) : null}
       </div>
     </div>
