@@ -7,7 +7,7 @@ detection running in hardened, ephemeral containers, not a mock.
 
 Built as a portfolio-grade reference for Clean/Hexagonal architecture, async
 task orchestration, and secure-by-design container execution. Delivered in
-13 independently-shippable modules via spec-driven development; 11 are
+13 independently-shippable modules via spec-driven development; 12 are
 merged as of this README.
 
 ## What's actually implemented
@@ -45,12 +45,22 @@ merged as of this README.
   GitHub doesn't hammer the endpoint with retries.
 - **Dashboard** — React 19 + TanStack Query + React Router + shadcn/ui:
   login, repo list/detail, scan trigger with live status polling, findings
-  table with suppression, role-aware UI.
+  table with suppression, role-aware UI. Repo detail also shows a per-repo
+  **trend chart** (finding counts by severity across scans, derived from
+  existing `first_seen`/`last_seen` data — no new snapshot table), a
+  **diff panel** (added/resolved/carried findings vs. the immediately-previous
+  scan, exact by construction since the baseline is always adjacent), and a
+  **policy-gate badge** (pass/fail quality gate — fails if any `CRITICAL`/
+  `HIGH` finding is open — a fixed global rule, no per-repo config yet).
 
 Not yet built: a DAST scanner slot (TruffleHog and/or a URL-target scanner
-still under consideration), a proper secrets manager for private-repo
-credentials, real-time push (still polling), and the observability/
-Kubernetes-migration hardening pass — see `## Roadmap` below.
+still under consideration), an *outbound* GitHub Checks API integration
+(posting scan results back to a PR/commit as a native GitHub check — blocked
+on the secrets manager below, since it needs GitHub App/installation-token
+auth this project doesn't have; the *internal* policy-gate equivalent is
+built, see above), a proper secrets manager for private-repo credentials,
+real-time push (still polling), and the observability/Kubernetes-migration
+hardening pass — see `## Roadmap` below.
 
 ## Architecture
 
@@ -139,5 +149,5 @@ project SDD history for the full spec/design trail per module).
 | 9 | Dashboard MVP | ✅ |
 | 10 | Webhook handling (GitHub push) | ✅ |
 | 11 | More scanners (pip-audit ✅, AST-SAST ✅, Semgrep ✅, DAST slot pending) | ⏳ |
-| 12 | Advanced dashboard features (trends, diffing, Checks API) | ⏳ |
+| 12 | Advanced dashboard (trends ✅, diffing ✅, internal policy gate ✅; outbound GitHub Checks API deferred) | ✅ |
 | 13 | Hardening & observability (OTel, Prometheus, k8s Jobs migration) | ⏳ |
