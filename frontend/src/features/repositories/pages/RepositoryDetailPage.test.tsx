@@ -61,6 +61,14 @@ describe('RepositoryDetailPage', () => {
           carried: [],
         }),
       ),
+      http.get('*/api/v1/repositories/r1/policy-check', () =>
+        HttpResponse.json({
+          repository_id: 'r1',
+          verdict: 'pass',
+          blocking_severities: ['critical', 'high'],
+          violating_counts: {},
+        }),
+      ),
     )
     renderPage('r1')
 
@@ -75,6 +83,7 @@ describe('RepositoryDetailPage', () => {
     expect(
       await screen.findByText(/not enough scan history/i),
     ).toBeInTheDocument()
+    expect(await screen.findByText(/pass/i)).toBeInTheDocument()
   })
 
   it('lists prior scans for the repository, filtered from the full scan list', async () => {
@@ -123,6 +132,14 @@ describe('RepositoryDetailPage', () => {
           carried: [],
         }),
       ),
+      http.get('*/api/v1/repositories/r1/policy-check', () =>
+        HttpResponse.json({
+          repository_id: 'r1',
+          verdict: 'pass',
+          blocking_severities: ['critical', 'high'],
+          violating_counts: {},
+        }),
+      ),
     )
     renderPage('r1')
 
@@ -161,6 +178,14 @@ describe('RepositoryDetailPage', () => {
           carried: [],
         }),
       ),
+      http.get('*/api/v1/repositories/r1/policy-check', () =>
+        HttpResponse.json({
+          repository_id: 'r1',
+          verdict: 'fail',
+          blocking_severities: ['critical', 'high'],
+          violating_counts: { critical: 2 },
+        }),
+      ),
     )
     renderPage('r1')
 
@@ -168,6 +193,7 @@ describe('RepositoryDetailPage', () => {
     expect(await screen.findByText('Added')).toBeInTheDocument()
     expect(screen.getByText('Resolved')).toBeInTheDocument()
     expect(screen.getByText('Carried')).toBeInTheDocument()
+    expect(await screen.findByText(/fail/i)).toBeInTheDocument()
   })
 
   it('shows a not-found message for a missing repository', async () => {

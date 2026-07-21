@@ -1001,3 +1001,163 @@ def test_get_diff_member_sees_redacted_fields_admin_sees_full(migrated_schema: N
         assert admin_finding["line_number"] == 7
 
     asyncio.run(_run_with_client(scenario))
+
+
+# ---------------------------------------------------------------------------
+# GET /{id}/policy-check (Module 12c PR1)
+# ---------------------------------------------------------------------------
+
+
+def test_get_policy_check_without_token_returns_401(migrated_schema: None) -> None:
+    async def scenario(
+        client: httpx.AsyncClient, _sessionmaker: async_sessionmaker[AsyncSession]
+    ) -> None:
+        response = await client.get(f"/api/v1/repositories/{uuid.uuid4()}/policy-check")
+
+        assert response.status_code == 401
+        assert response.headers["content-type"] == "application/problem+json"
+
+    asyncio.run(_run_with_client(scenario))
+
+
+def test_get_policy_check_missing_repository_returns_404(migrated_schema: None) -> None:
+    async def scenario(
+        client: httpx.AsyncClient, sessionmaker: async_sessionmaker[AsyncSession]
+    ) -> None:
+        member = await _seed_user(sessionmaker, "member-policy-404@example.com", UserRole.MEMBER)
+
+        response = await client.get(
+            f"/api/v1/repositories/{uuid.uuid4()}/policy-check", headers=_auth_header(member)
+        )
+
+        assert response.status_code == 404
+        assert response.headers["content-type"] == "application/problem+json"
+
+    asyncio.run(_run_with_client(scenario))
+
+
+def test_get_policy_check_inactive_repository_returns_404(migrated_schema: None) -> None:
+    async def scenario(
+        client: httpx.AsyncClient, sessionmaker: async_sessionmaker[AsyncSession]
+    ) -> None:
+        member = await _seed_user(
+            sessionmaker, "member-policy-inactive@example.com", UserRole.MEMBER
+        )
+        repo = await _seed_repository(
+            sessionmaker, "acme-policy-inactive", "widgets-policy-inactive", is_active=False
+        )
+
+        response = await client.get(
+            f"/api/v1/repositories/{repo.id}/policy-check", headers=_auth_header(member)
+        )
+
+        assert response.status_code == 404
+
+    asyncio.run(_run_with_client(scenario))
+
+
+def test_get_policy_check_fails_with_open_critical_findings(migrated_schema: None) -> None:
+    async def scenario(
+        client: httpx.AsyncClient, sessionmaker: async_sessionmaker[AsyncSession]
+    ) -> None:
+        member = await _seed_user(sessionmaker, "member-policy-fail@example.com", UserRole.MEMBER)
+        repo = await _seed_repository(sessionmaker, "acme-policy-fail", "widgets-policy-fail")
+
+        await _seed_completed_scan_with_findings(
+            sessionmaker,
+            repo.id,
+            created_at=datetime(2026, 1, 1),
+            severities=(FindingSeverity.CRITICAL, FindingSeverity.CRITICAL),
+        )
+
+        response = await client.get(
+            f"/api/v1/repositories/{repo.id}/policy-check", headers=_auth_header(member)
+        )
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["repository_id"] == str(repo.id)
+        assert body["verdict"] == "fail"
+        assert body["violating_counts"] == {"critical": 2}
+        assert body["blocking_severities"] == ["critical", "high"]
+
+    asyncio.run(_run_with_client(scenario))
+
+
+def test_get_policy_check_passes_with_only_medium_and_low_open(migrated_schema: None) -> None:
+    async def scenario(
+        client: httpx.AsyncClient, sessionmaker: async_sessionmaker[AsyncSession]
+    ) -> None:
+        member = await _seed_user(sessionmaker, "member-policy-pass@example.com", UserRole.MEMBER)
+        repo = await _seed_repository(sessionmaker, "acme-policy-pass", "widgets-policy-pass")
+
+        await _seed_completed_scan_with_findings(
+            sessionmaker,
+            repo.id,
+            created_at=datetime(2026, 1, 1),
+            severities=(FindingSeverity.MEDIUM, FindingSeverity.LOW, FindingSeverity.INFO),
+        )
+
+        response = await client.get(
+            f"/api/v1/repositories/{repo.id}/policy-check", headers=_auth_header(member)
+        )
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["verdict"] == "pass"
+        assert body["violating_counts"] == {}
+
+    asyncio.run(_run_with_client(scenario))
+
+
+def test_get_policy_check_no_scans_ever_returns_pass(migrated_schema: None) -> None:
+    async def scenario(
+        client: httpx.AsyncClient, sessionmaker: async_sessionmaker[AsyncSession]
+    ) -> None:
+        member = await _seed_user(sessionmaker, "member-policy-empty@example.com", UserRole.MEMBER)
+        repo = await _seed_repository(sessionmaker, "acme-policy-empty", "widgets-policy-empty")
+
+        response = await client.get(
+            f"/api/v1/repositories/{repo.id}/policy-check", headers=_auth_header(member)
+        )
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["verdict"] == "pass"
+        assert body["violating_counts"] == {}
+
+    asyncio.run(_run_with_client(scenario))
+
+
+def test_get_policy_check_member_and_admin_responses_are_byte_identical(
+    migrated_schema: None,
+) -> None:
+    """Spec Requirement "No Redaction (Role-Agnostic Response)" — member and
+    admin callers MUST receive byte-identical responses."""
+
+    async def scenario(
+        client: httpx.AsyncClient, sessionmaker: async_sessionmaker[AsyncSession]
+    ) -> None:
+        member = await _seed_user(sessionmaker, "member-policy-parity@example.com", UserRole.MEMBER)
+        admin = await _seed_user(sessionmaker, "admin-policy-parity@example.com", UserRole.ADMIN)
+        repo = await _seed_repository(sessionmaker, "acme-policy-parity", "widgets-policy-parity")
+
+        await _seed_completed_scan_with_findings(
+            sessionmaker,
+            repo.id,
+            created_at=datetime(2026, 1, 1),
+            severities=(FindingSeverity.HIGH,),
+        )
+
+        member_response = await client.get(
+            f"/api/v1/repositories/{repo.id}/policy-check", headers=_auth_header(member)
+        )
+        admin_response = await client.get(
+            f"/api/v1/repositories/{repo.id}/policy-check", headers=_auth_header(admin)
+        )
+
+        assert member_response.status_code == 200
+        assert admin_response.status_code == 200
+        assert member_response.json() == admin_response.json()
+
+    asyncio.run(_run_with_client(scenario))
