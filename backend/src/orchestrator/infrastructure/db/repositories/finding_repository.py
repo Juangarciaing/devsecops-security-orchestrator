@@ -5,16 +5,23 @@ the pattern established by `SqlAlchemyCodeRepositoryRepository`.
 from __future__ import annotations
 
 import uuid
+from datetime import datetime
 
 from sqlalchemy import func, select
 from sqlalchemy.dialects import postgresql
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from orchestrator.domain.entities.finding import Finding
-from orchestrator.domain.ports.finding_port import FindingPort
-from orchestrator.domain.value_objects.enums import FindingSeverity, FindingStatus, ScannerType
+from orchestrator.domain.ports.finding_port import FindingPort, FindingTrendBucket
+from orchestrator.domain.value_objects.enums import (
+    FindingSeverity,
+    FindingStatus,
+    ScannerType,
+    ScanRunStatus,
+)
 from orchestrator.infrastructure.db.mappers import finding_to_entity, finding_to_model
 from orchestrator.infrastructure.db.models.finding import FindingModel
+from orchestrator.infrastructure.db.models.scan_run import ScanRunModel
 from orchestrator.infrastructure.db.models.scan_task import ScanTaskModel
 
 
@@ -175,3 +182,97 @@ class SqlAlchemyFindingRepository(FindingPort):
         )
         result = await self._session.execute(stmt)
         return [finding_to_entity(model) for model in result.scalars().all()]
+
+    async def trend_counts_by_first_seen_run(
+        self,
+        repository_id: uuid.UUID,
+        *,
+        scanner_type: ScannerType | None = None,
+        date_from: datetime | None = None,
+        date_to: datetime | None = None,
+        limit: int = 100,
+    ) -> list[FindingTrendBucket]:
+        """Powers `GET /repositories/{id}/trends`. `limit` caps the number of
+        DISTINCT `ScanRun`s (via a run-id subquery selected FIRST) — never the
+        number of `(run, severity)` grouped rows a naive flat `LIMIT` on the
+        aggregated query would cap, which would let one severity-diverse run
+        silently consume the whole budget and truncate/drop later runs.
+
+        `scanner_type`, when supplied, is folded into the LEFT JOIN's `ON`
+        condition (a `scan_task_id IN (...)` subquery), never a post-join
+        `WHERE` — a `WHERE` filter would incorrectly drop the entire bucket
+        for a run whose only findings don't match, instead of correctly
+        reporting it as a zero-matching (but still present) bucket.
+        """
+        run_filter = [ScanRunModel.repository_id == repository_id]
+        run_filter.append(ScanRunModel.status == ScanRunStatus.COMPLETED)
+        if date_from is not None:
+            run_filter.append(ScanRunModel.created_at >= date_from)
+        if date_to is not None:
+            run_filter.append(ScanRunModel.created_at <= date_to)
+
+        run_ids_stmt = (
+            select(ScanRunModel.id)
+            .where(*run_filter)
+            .order_by(ScanRunModel.created_at, ScanRunModel.id)
+            .limit(limit)
+        )
+
+        finding_join_condition = FindingModel.first_seen_scan_run_id == ScanRunModel.id
+        if scanner_type is not None:
+            matching_task_ids = select(ScanTaskModel.id).where(
+                ScanTaskModel.scanner_type == scanner_type
+            )
+            finding_join_condition = finding_join_condition & FindingModel.scan_task_id.in_(
+                matching_task_ids
+            )
+
+        stmt = (
+            select(
+                ScanRunModel.id,
+                ScanRunModel.created_at,
+                ScanRunModel.commit_sha,
+                FindingModel.severity,
+                func.count(FindingModel.id),
+            )
+            .select_from(ScanRunModel)
+            .outerjoin(FindingModel, finding_join_condition)
+            .where(ScanRunModel.id.in_(run_ids_stmt))
+            .group_by(
+                ScanRunModel.id,
+                ScanRunModel.created_at,
+                ScanRunModel.commit_sha,
+                FindingModel.severity,
+            )
+            .order_by(ScanRunModel.created_at, ScanRunModel.id)
+        )
+        result = await self._session.execute(stmt)
+
+        buckets: dict[uuid.UUID, FindingTrendBucket] = {}
+        order: list[uuid.UUID] = []
+        for run_id, created_at, commit_sha, severity, count in result.all():
+            if run_id not in buckets:
+                buckets[run_id] = FindingTrendBucket(
+                    scan_run_id=run_id,
+                    occurred_at=created_at,
+                    commit_sha=commit_sha,
+                    severity_counts={},
+                )
+                order.append(run_id)
+            if severity is not None and count:
+                buckets[run_id].severity_counts[severity] = count
+        return [buckets[run_id] for run_id in order]
+
+    async def open_counts_by_severity(self, repository_id: uuid.UUID) -> dict[FindingSeverity, int]:
+        """Present-moment snapshot only — `WHERE status='open' GROUP BY
+        severity`. Never attempts historical reconstruction."""
+        stmt = (
+            select(FindingModel.severity, func.count(FindingModel.id))
+            .where(
+                FindingModel.repository_id == repository_id,
+                FindingModel.status == FindingStatus.OPEN,
+            )
+            .group_by(FindingModel.severity)
+        )
+        result = await self._session.execute(stmt)
+        return {severity: count for severity, count in result.all() if count}

@@ -617,3 +617,424 @@ async def _list_findings_combined_filters_and_scanner_type_join() -> None:
 
 def test_list_findings_combined_filters_and_scanner_type_join(migrated_schema: None) -> None:
     asyncio.run(_list_findings_combined_filters_and_scanner_type_join())
+
+
+# ---------------------------------------------------------------------------
+# `trend_counts_by_first_seen_run` / `open_counts_by_severity` (Module 12a PR1)
+# ---------------------------------------------------------------------------
+
+
+async def _seed_completed_run(
+    sessionmaker: async_sessionmaker[AsyncSession],
+    repository_id: uuid.UUID,
+    *,
+    created_at: datetime,
+    commit_sha: str = "abc123",
+) -> tuple[uuid.UUID, uuid.UUID]:
+    """Create one COMPLETED `ScanRun` (on `repository_id`) + one `ScanTask` on
+    it. Returns `(scan_run_id, scan_task_id)`."""
+    async with sessionmaker() as session:
+        scan_run_repo = SqlAlchemyScanRunRepository(session)
+        run = await scan_run_repo.create(
+            _make_scan_run(
+                repository_id,
+                status=ScanRunStatus.COMPLETED,
+                created_at=created_at,
+                commit_sha=commit_sha,
+            )
+        )
+        await session.commit()
+        scan_run_id = run.id
+
+    async with sessionmaker() as session:
+        scan_task_repo = SqlAlchemyScanTaskRepository(session)
+        task = await scan_task_repo.create(_make_scan_task(scan_run_id))
+        await session.commit()
+        scan_task_id = task.id
+
+    return scan_run_id, scan_task_id
+
+
+async def _trend_counts_three_runs_second_introduces_two_high_findings() -> None:
+    """Spec Scenario: "Trend series for a scanned repository" — 3 completed
+    scan runs, the 2nd introducing 2 HIGH findings -> 3 buckets in
+    chronological order, 2nd bucket's introduced severities = {HIGH: 2}."""
+    engine = create_async_engine(resolve_database_url())
+    sessionmaker = async_sessionmaker(engine, expire_on_commit=False)
+    try:
+        async with sessionmaker() as session:
+            code_repo = SqlAlchemyCodeRepositoryRepository(session)
+            repository = await code_repo.create(_make_repository())
+            await session.commit()
+            repository_id = repository.id
+
+        run1_id, _task1_id = await _seed_completed_run(
+            sessionmaker, repository_id, created_at=datetime(2026, 1, 1)
+        )
+        run2_id, task2_id = await _seed_completed_run(
+            sessionmaker, repository_id, created_at=datetime(2026, 1, 2)
+        )
+        run3_id, _task3_id = await _seed_completed_run(
+            sessionmaker, repository_id, created_at=datetime(2026, 1, 3)
+        )
+
+        findings = [
+            _make_finding(task2_id, fingerprint="fp-a", severity=FindingSeverity.HIGH),
+            _make_finding(task2_id, fingerprint="fp-b", severity=FindingSeverity.HIGH),
+        ]
+        async with sessionmaker() as session:
+            finding_repo = SqlAlchemyFindingRepository(session)
+            await finding_repo.bulk_upsert_findings(repository_id, run2_id, findings)
+            await session.commit()
+
+        async with sessionmaker() as session:
+            finding_repo = SqlAlchemyFindingRepository(session)
+            buckets = await finding_repo.trend_counts_by_first_seen_run(repository_id)
+
+        assert [b.scan_run_id for b in buckets] == [run1_id, run2_id, run3_id]
+        assert buckets[0].severity_counts == {}
+        assert buckets[1].severity_counts == {FindingSeverity.HIGH: 2}
+        assert buckets[2].severity_counts == {}
+    finally:
+        await engine.dispose()
+
+
+def test_trend_counts_three_runs_second_introduces_two_high_findings(
+    migrated_schema: None,
+) -> None:
+    asyncio.run(_trend_counts_three_runs_second_introduces_two_high_findings())
+
+
+async def _trend_counts_zero_completed_runs_returns_empty_list() -> None:
+    """Spec Scenario: "Repository with no completed scans" -> empty list."""
+    engine = create_async_engine(resolve_database_url())
+    sessionmaker = async_sessionmaker(engine, expire_on_commit=False)
+    try:
+        async with sessionmaker() as session:
+            code_repo = SqlAlchemyCodeRepositoryRepository(session)
+            repository = await code_repo.create(_make_repository())
+            await session.commit()
+            repository_id = repository.id
+
+        async with sessionmaker() as session:
+            finding_repo = SqlAlchemyFindingRepository(session)
+            buckets = await finding_repo.trend_counts_by_first_seen_run(repository_id)
+
+        assert buckets == []
+    finally:
+        await engine.dispose()
+
+
+def test_trend_counts_zero_completed_runs_returns_empty_list(migrated_schema: None) -> None:
+    asyncio.run(_trend_counts_zero_completed_runs_returns_empty_list())
+
+
+async def _trend_counts_reappeared_finding_stays_attributed_to_its_first_seen_run() -> None:
+    """Edge case (design's cheap-semantics ceiling): a finding introduced on
+    run1, ABSENT from run2's scan batch (a "gap"), then RE-OBSERVED on run3.
+    `first_seen_scan_run_id` never advances on conflict (Module 7 D4), so the
+    reappearance must NOT be double-counted as newly "introduced" on run3 —
+    it stays attributed to run1 only, and run3's bucket for that severity
+    stays at 0 even though the finding is once again present/open."""
+    engine = create_async_engine(resolve_database_url())
+    sessionmaker = async_sessionmaker(engine, expire_on_commit=False)
+    try:
+        async with sessionmaker() as session:
+            code_repo = SqlAlchemyCodeRepositoryRepository(session)
+            repository = await code_repo.create(_make_repository())
+            await session.commit()
+            repository_id = repository.id
+
+        run1_id, task1_id = await _seed_completed_run(
+            sessionmaker, repository_id, created_at=datetime(2026, 2, 1)
+        )
+        # run2: scanned, but this fingerprint is simply absent from its batch
+        # (no per-run membership table exists to record the gap — Module 7's
+        # dedup model is lossy by design for gaps).
+        run2_id, _task2_id = await _seed_completed_run(
+            sessionmaker, repository_id, created_at=datetime(2026, 2, 2)
+        )
+        run3_id, task3_id = await _seed_completed_run(
+            sessionmaker, repository_id, created_at=datetime(2026, 2, 3)
+        )
+
+        shared_fp = "fp-reappear"
+        async with sessionmaker() as session:
+            finding_repo = SqlAlchemyFindingRepository(session)
+            await finding_repo.bulk_upsert_findings(
+                repository_id,
+                run1_id,
+                [_make_finding(task1_id, fingerprint=shared_fp, severity=FindingSeverity.CRITICAL)],
+            )
+            await session.commit()
+
+        # run2's bulk_upsert batch simply never mentions `shared_fp` — this IS
+        # the "gap": no row-level state records that it went missing.
+
+        async with sessionmaker() as session:
+            finding_repo = SqlAlchemyFindingRepository(session)
+            await finding_repo.bulk_upsert_findings(
+                repository_id,
+                run3_id,
+                [_make_finding(task3_id, fingerprint=shared_fp, severity=FindingSeverity.CRITICAL)],
+            )
+            await session.commit()
+
+        async with sessionmaker() as session:
+            finding_repo = SqlAlchemyFindingRepository(session)
+            buckets = await finding_repo.trend_counts_by_first_seen_run(repository_id)
+            open_counts = await finding_repo.open_counts_by_severity(repository_id)
+
+        by_run = {b.scan_run_id: b.severity_counts for b in buckets}
+        assert by_run[run1_id] == {FindingSeverity.CRITICAL: 1}
+        assert by_run[run2_id] == {}
+        assert by_run[run3_id] == {}  # reappearance is NOT a new "introduced" event
+        # It IS still open right now — proves current_open is a real, separate
+        # present-moment snapshot, never a stand-in for a historical bucket.
+        assert open_counts == {FindingSeverity.CRITICAL: 1}
+    finally:
+        await engine.dispose()
+
+
+def test_trend_counts_reappeared_finding_stays_attributed_to_its_first_seen_run(
+    migrated_schema: None,
+) -> None:
+    asyncio.run(_trend_counts_reappeared_finding_stays_attributed_to_its_first_seen_run())
+
+
+async def _trend_counts_scanner_type_filter_narrows_introduced_counts() -> None:
+    """Spec Scenario: "Filtered by scanner_type" — findings introduced by
+    both SECRETS and SEMGREP scans on the SAME run; filtering by
+    `scanner_type=semgrep` narrows that bucket's counts to SEMGREP only,
+    WITHOUT dropping the bucket itself (LEFT JOIN semantics preserved)."""
+    engine = create_async_engine(resolve_database_url())
+    sessionmaker = async_sessionmaker(engine, expire_on_commit=False)
+    try:
+        async with sessionmaker() as session:
+            code_repo = SqlAlchemyCodeRepositoryRepository(session)
+            repository = await code_repo.create(_make_repository())
+            await session.commit()
+            repository_id = repository.id
+
+        async with sessionmaker() as session:
+            scan_run_repo = SqlAlchemyScanRunRepository(session)
+            run = await scan_run_repo.create(
+                _make_scan_run(
+                    repository_id, status=ScanRunStatus.COMPLETED, created_at=datetime(2026, 3, 1)
+                )
+            )
+            await session.commit()
+            run_id = run.id
+
+        async with sessionmaker() as session:
+            scan_task_repo = SqlAlchemyScanTaskRepository(session)
+            secrets_task = await scan_task_repo.create(
+                _make_scan_task(run_id, scanner_type=ScannerType.SECRETS)
+            )
+            semgrep_task = await scan_task_repo.create(
+                _make_scan_task(run_id, scanner_type=ScannerType.SEMGREP)
+            )
+            await session.commit()
+            secrets_task_id = secrets_task.id
+            semgrep_task_id = semgrep_task.id
+
+        async with sessionmaker() as session:
+            finding_repo = SqlAlchemyFindingRepository(session)
+            await finding_repo.bulk_upsert_findings(
+                repository_id,
+                run_id,
+                [
+                    _make_finding(
+                        secrets_task_id, fingerprint="fp-secrets", severity=FindingSeverity.HIGH
+                    ),
+                    _make_finding(
+                        semgrep_task_id, fingerprint="fp-semgrep", severity=FindingSeverity.HIGH
+                    ),
+                ],
+            )
+            await session.commit()
+
+        async with sessionmaker() as session:
+            finding_repo = SqlAlchemyFindingRepository(session)
+            unfiltered = await finding_repo.trend_counts_by_first_seen_run(repository_id)
+            semgrep_only = await finding_repo.trend_counts_by_first_seen_run(
+                repository_id, scanner_type=ScannerType.SEMGREP
+            )
+
+        assert unfiltered[0].severity_counts == {FindingSeverity.HIGH: 2}
+        # Bucket still present (LEFT JOIN preserved) but narrowed to 1.
+        assert len(semgrep_only) == 1
+        assert semgrep_only[0].scan_run_id == run_id
+        assert semgrep_only[0].severity_counts == {FindingSeverity.HIGH: 1}
+    finally:
+        await engine.dispose()
+
+
+def test_trend_counts_scanner_type_filter_narrows_introduced_counts(
+    migrated_schema: None,
+) -> None:
+    asyncio.run(_trend_counts_scanner_type_filter_narrows_introduced_counts())
+
+
+async def _trend_counts_scanner_type_filter_still_emits_empty_bucket_when_no_match() -> None:
+    """Narrower edge case than the above: a run whose ONLY finding does NOT
+    match the `scanner_type` filter must still appear as a bucket (count 0),
+    never silently dropped — proves the filter lives in the join's ON clause,
+    not a post-join WHERE that would eliminate the row (design's explicit
+    "in ON, not WHERE" constraint)."""
+    engine = create_async_engine(resolve_database_url())
+    sessionmaker = async_sessionmaker(engine, expire_on_commit=False)
+    try:
+        async with sessionmaker() as session:
+            code_repo = SqlAlchemyCodeRepositoryRepository(session)
+            repository = await code_repo.create(_make_repository())
+            await session.commit()
+            repository_id = repository.id
+
+        run_id, secrets_task_id = await _seed_completed_run(
+            sessionmaker, repository_id, created_at=datetime(2026, 4, 1)
+        )
+
+        async with sessionmaker() as session:
+            finding_repo = SqlAlchemyFindingRepository(session)
+            await finding_repo.bulk_upsert_findings(
+                repository_id,
+                run_id,
+                [_make_finding(secrets_task_id, fingerprint="fp-secrets-only")],
+            )
+            await session.commit()
+
+        async with sessionmaker() as session:
+            finding_repo = SqlAlchemyFindingRepository(session)
+            semgrep_only = await finding_repo.trend_counts_by_first_seen_run(
+                repository_id, scanner_type=ScannerType.SEMGREP
+            )
+
+        assert len(semgrep_only) == 1
+        assert semgrep_only[0].scan_run_id == run_id
+        assert semgrep_only[0].severity_counts == {}
+    finally:
+        await engine.dispose()
+
+
+def test_trend_counts_scanner_type_filter_still_emits_empty_bucket_when_no_match(
+    migrated_schema: None,
+) -> None:
+    asyncio.run(_trend_counts_scanner_type_filter_still_emits_empty_bucket_when_no_match())
+
+
+async def _trend_counts_limit_caps_distinct_scan_runs_not_grouped_rows() -> None:
+    """A run with 2 distinct severities produces 2 grouped rows for a SINGLE
+    run. `limit` MUST cap the number of DISTINCT scan runs returned, never the
+    number of (run, severity) grouped rows — otherwise a single busy run could
+    silently consume the entire limit budget and truncate/drop later runs."""
+    engine = create_async_engine(resolve_database_url())
+    sessionmaker = async_sessionmaker(engine, expire_on_commit=False)
+    try:
+        async with sessionmaker() as session:
+            code_repo = SqlAlchemyCodeRepositoryRepository(session)
+            repository = await code_repo.create(_make_repository())
+            await session.commit()
+            repository_id = repository.id
+
+        run1_id, task1_id = await _seed_completed_run(
+            sessionmaker, repository_id, created_at=datetime(2026, 5, 1)
+        )
+        run2_id, _task2_id = await _seed_completed_run(
+            sessionmaker, repository_id, created_at=datetime(2026, 5, 2)
+        )
+
+        # run1 alone introduces 2 DIFFERENT severities -> 2 grouped rows.
+        async with sessionmaker() as session:
+            finding_repo = SqlAlchemyFindingRepository(session)
+            await finding_repo.bulk_upsert_findings(
+                repository_id,
+                run1_id,
+                [
+                    _make_finding(task1_id, fingerprint="fp-high", severity=FindingSeverity.HIGH),
+                    _make_finding(task1_id, fingerprint="fp-low", severity=FindingSeverity.LOW),
+                ],
+            )
+            await session.commit()
+
+        async with sessionmaker() as session:
+            finding_repo = SqlAlchemyFindingRepository(session)
+            # limit=1 grouped ROW would only return part of run1's data if the
+            # limit applied to grouped rows; limit=1 scan RUN must return
+            # run1's COMPLETE bucket (both severities) and omit run2 entirely.
+            buckets = await finding_repo.trend_counts_by_first_seen_run(repository_id, limit=1)
+
+        assert len(buckets) == 1
+        assert buckets[0].scan_run_id == run1_id
+        assert buckets[0].severity_counts == {FindingSeverity.HIGH: 1, FindingSeverity.LOW: 1}
+    finally:
+        await engine.dispose()
+
+
+def test_trend_counts_limit_caps_distinct_scan_runs_not_grouped_rows(
+    migrated_schema: None,
+) -> None:
+    asyncio.run(_trend_counts_limit_caps_distinct_scan_runs_not_grouped_rows())
+
+
+async def _open_counts_by_severity_returns_exact_present_moment_snapshot() -> None:
+    """`open_counts_by_severity` is a plain present-moment snapshot
+    (`status=open` GROUP BY severity) — suppressed findings are excluded."""
+    engine = create_async_engine(resolve_database_url())
+    sessionmaker = async_sessionmaker(engine, expire_on_commit=False)
+    try:
+        async with sessionmaker() as session:
+            code_repo = SqlAlchemyCodeRepositoryRepository(session)
+            repository = await code_repo.create(_make_repository())
+            await session.commit()
+            repository_id = repository.id
+
+        run_id, task_id = await _seed_completed_run(
+            sessionmaker, repository_id, created_at=datetime(2026, 6, 1)
+        )
+
+        async with sessionmaker() as session:
+            finding_repo = SqlAlchemyFindingRepository(session)
+            await finding_repo.bulk_upsert_findings(
+                repository_id,
+                run_id,
+                [
+                    _make_finding(
+                        task_id, fingerprint="fp-open-high", severity=FindingSeverity.HIGH
+                    ),
+                    _make_finding(
+                        task_id, fingerprint="fp-open-high-2", severity=FindingSeverity.HIGH
+                    ),
+                    _make_finding(task_id, fingerprint="fp-open-low", severity=FindingSeverity.LOW),
+                ],
+            )
+            await session.commit()
+
+        # Suppress one HIGH finding directly (isolating this test from
+        # `update_status`'s own MissingGreenlet-fix coverage above).
+        async with sessionmaker() as session:
+            select_stmt = select(FindingModel.id).where(
+                FindingModel.repository_id == repository_id,
+                FindingModel.fingerprint == "fp-open-high-2",
+            )
+            suppressed_id = (await session.execute(select_stmt)).scalar_one()
+            await session.execute(
+                update(FindingModel)
+                .where(FindingModel.id == suppressed_id)
+                .values(status=FindingStatus.SUPPRESSED)
+            )
+            await session.commit()
+
+        async with sessionmaker() as session:
+            finding_repo = SqlAlchemyFindingRepository(session)
+            open_counts = await finding_repo.open_counts_by_severity(repository_id)
+
+        assert open_counts == {FindingSeverity.HIGH: 1, FindingSeverity.LOW: 1}
+    finally:
+        await engine.dispose()
+
+
+def test_open_counts_by_severity_returns_exact_present_moment_snapshot(
+    migrated_schema: None,
+) -> None:
+    asyncio.run(_open_counts_by_severity_returns_exact_present_moment_snapshot())

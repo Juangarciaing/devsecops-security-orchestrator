@@ -202,6 +202,22 @@ def test_finding_port_full_implementation_can_be_instantiated_and_used() -> None
         ) -> list[Finding]:
             return []
 
+        async def trend_counts_by_first_seen_run(
+            self,
+            repository_id: uuid.UUID,
+            *,
+            scanner_type: ScannerType | None = None,
+            date_from: object = None,
+            date_to: object = None,
+            limit: int = 100,
+        ) -> list[object]:
+            return []
+
+        async def open_counts_by_severity(
+            self, repository_id: uuid.UUID
+        ) -> dict[FindingSeverity, int]:
+            return {}
+
         async def list_findings(
             self,
             *,
@@ -238,6 +254,17 @@ def test_finding_port_full_implementation_can_be_instantiated_and_used() -> None
         assert repo.counted == [scan_run_id]
 
     asyncio.run(_run())
+
+
+def test_finding_port_declares_trend_aggregation_methods() -> None:
+    """Module 12a PR1: `trend_counts_by_first_seen_run` (exact introduced-per-run,
+    by severity) and `open_counts_by_severity` (exact current-open snapshot) are
+    the two new aggregation methods `FindingPort` gains — both derived from
+    EXISTING columns, no new snapshot table."""
+    assert "trend_counts_by_first_seen_run" in FindingPort.__abstractmethods__
+    assert "open_counts_by_severity" in FindingPort.__abstractmethods__
+    assert inspect.iscoroutinefunction(FindingPort.trend_counts_by_first_seen_run)
+    assert inspect.iscoroutinefunction(FindingPort.open_counts_by_severity)
 
 
 def test_finding_port_declares_list_by_last_seen_scan_run_and_list_findings() -> None:
@@ -288,6 +315,22 @@ def test_finding_port_list_methods_full_implementation_can_be_instantiated_and_u
         ) -> list[Finding]:
             self.scan_run_list_calls.append((scan_run_id, limit, offset))
             return []
+
+        async def trend_counts_by_first_seen_run(
+            self,
+            repository_id: uuid.UUID,
+            *,
+            scanner_type: ScannerType | None = None,
+            date_from: object = None,
+            date_to: object = None,
+            limit: int = 100,
+        ) -> list[object]:
+            return []
+
+        async def open_counts_by_severity(
+            self, repository_id: uuid.UUID
+        ) -> dict[FindingSeverity, int]:
+            return {}
 
         async def list_findings(
             self,
