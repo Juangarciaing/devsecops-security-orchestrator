@@ -3,6 +3,7 @@ import { isAxiosError } from 'axios'
 import { Badge } from '@/shared/ui/badge'
 import { Card, CardContent, CardHeader, CardTitle } from '@/shared/ui/card'
 import { DiffPanel } from '@/features/diffing/components/DiffPanel'
+import { PolicyGateBadge } from '@/features/policy/components/PolicyGateBadge'
 import { ScanHistoryTable } from '@/features/scans/components/ScanHistoryTable'
 import { TriggerScanButton } from '@/features/scans/components/TriggerScanButton'
 import { useRepositoryScans } from '@/features/scans/queries'
@@ -41,7 +42,10 @@ export function RepositoryDetailPage() {
           <CardTitle>
             {repository.owner}/{repository.name}
           </CardTitle>
-          <Badge variant="outline">{repository.provider}</Badge>
+          <div className="flex items-center gap-2">
+            <Badge variant="outline">{repository.provider}</Badge>
+            <PolicyGateBadge repositoryId={repository.id} />
+          </div>
         </CardHeader>
         <CardContent className="flex items-center justify-between gap-4">
           <span className="text-sm text-muted-foreground">

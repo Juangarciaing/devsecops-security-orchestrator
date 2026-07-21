@@ -21,8 +21,12 @@ from orchestrator.application.dto.code_repository import (
     CodeRepositoryUpdate,
 )
 from orchestrator.application.dto.diff import RepositoryDiffRead
+from orchestrator.application.dto.policy import RepositoryPolicyRead
 from orchestrator.application.dto.trends import RepositoryTrendsRead
 from orchestrator.application.use_cases.deactivate_repository import deactivate_repository
+from orchestrator.application.use_cases.evaluate_repository_policy import (
+    evaluate_repository_policy,
+)
 from orchestrator.application.use_cases.get_repository import (
     RepositoryNotFoundError,
     get_repository,
@@ -158,6 +162,26 @@ async def get_repository_diff_endpoint(
         return await get_repository_diff(
             repository_port, scan_run_port, finding_port, repository_id, user.role
         )
+    except RepositoryNotFoundError as exc:
+        raise _not_found() from exc
+
+
+@router.get("/{repository_id}/policy-check", response_model=RepositoryPolicyRead)
+async def get_repository_policy_check_endpoint(
+    repository_id: uuid.UUID,
+    _user: User = Depends(get_current_user),  # noqa: B008
+    session: AsyncSession = Depends(get_db_session),  # noqa: B008
+) -> RepositoryPolicyRead:
+    """Pure pass/fail quality-gate verdict for `repository_id` — a fixed
+    global `{CRITICAL, HIGH}` blocking-severity threshold over
+    `FindingPort.open_counts_by_severity` (Module 12a). No per-role
+    redaction (design D3): the body carries only counts, never finding
+    bodies, so member and admin callers receive byte-identical responses.
+    """
+    repository_port = SqlAlchemyCodeRepositoryRepository(session)
+    finding_port = SqlAlchemyFindingRepository(session)
+    try:
+        return await evaluate_repository_policy(repository_port, finding_port, repository_id)
     except RepositoryNotFoundError as exc:
         raise _not_found() from exc
 
