@@ -39,3 +39,19 @@ class ScanRunPort(ABC):
         Powers `GET /scans` (design deviation #7: the list endpoint was never
         paginated before this module).
         """
+
+    @abstractmethod
+    async def list_recent_completed(self, repository_id: uuid.UUID, limit: int) -> list[ScanRun]:
+        """Return up to `limit` `ScanRun`s for `repository_id` with
+        `status == ScanRunStatus.COMPLETED`, ordered `created_at DESC, id DESC`.
+
+        Powers `GET /repositories/{id}/diff` (Module 12b): the diff's
+        `latest`/`baseline` runs are the first two entries of
+        `list_recent_completed(repository_id, limit=2)`.
+
+        `id` is a random `uuid4` (Module 2), never monotonic — `created_at`
+        (server `now()`) is the real ordering key; `id` is only a
+        deterministic tiebreak for the astronomically unlikely case of two
+        runs sharing the same `created_at`, mirroring the `(created_at, id)`
+        convention already used by `list_by_last_seen_scan_run`/`list_findings`.
+        """

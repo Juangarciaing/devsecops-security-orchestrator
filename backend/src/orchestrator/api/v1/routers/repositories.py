@@ -20,12 +20,14 @@ from orchestrator.application.dto.code_repository import (
     CodeRepositoryRead,
     CodeRepositoryUpdate,
 )
+from orchestrator.application.dto.diff import RepositoryDiffRead
 from orchestrator.application.dto.trends import RepositoryTrendsRead
 from orchestrator.application.use_cases.deactivate_repository import deactivate_repository
 from orchestrator.application.use_cases.get_repository import (
     RepositoryNotFoundError,
     get_repository,
 )
+from orchestrator.application.use_cases.get_repository_diff import get_repository_diff
 from orchestrator.application.use_cases.get_repository_trends import get_repository_trends
 from orchestrator.application.use_cases.list_repositories import list_repositories
 from orchestrator.application.use_cases.register_repository import (
@@ -43,6 +45,9 @@ from orchestrator.infrastructure.db.repositories.code_repository_repository impo
 )
 from orchestrator.infrastructure.db.repositories.finding_repository import (
     SqlAlchemyFindingRepository,
+)
+from orchestrator.infrastructure.db.repositories.scan_run_repository import (
+    SqlAlchemyScanRunRepository,
 )
 
 router = APIRouter(prefix="/api/v1/repositories", tags=["repositories"])
@@ -128,6 +133,30 @@ async def get_repository_trends_endpoint(
             date_from=date_from,
             date_to=date_to,
             limit=limit,
+        )
+    except RepositoryNotFoundError as exc:
+        raise _not_found() from exc
+
+
+@router.get("/{repository_id}/diff", response_model=RepositoryDiffRead)
+async def get_repository_diff_endpoint(
+    repository_id: uuid.UUID,
+    user: User = Depends(get_current_user),  # noqa: B008
+    session: AsyncSession = Depends(get_db_session),  # noqa: B008
+) -> RepositoryDiffRead:
+    """Exact ADDED/RESOLVED/CARRIED finding partition between `repository_id`'s
+    latest completed `ScanRun` and the run immediately before it — always
+    latest-vs-immediately-previous, no baseline-override parameter (design
+    D1: a non-adjacent baseline would reintroduce the gap-loss this feature
+    exists to avoid). Unlike `/trends`, every returned finding is redacted
+    per the caller's `role` (design's per-finding redaction requirement).
+    """
+    repository_port = SqlAlchemyCodeRepositoryRepository(session)
+    scan_run_port = SqlAlchemyScanRunRepository(session)
+    finding_port = SqlAlchemyFindingRepository(session)
+    try:
+        return await get_repository_diff(
+            repository_port, scan_run_port, finding_port, repository_id, user.role
         )
     except RepositoryNotFoundError as exc:
         raise _not_found() from exc

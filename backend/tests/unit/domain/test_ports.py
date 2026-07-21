@@ -13,7 +13,7 @@ from pathlib import Path
 
 from orchestrator.domain.ports.api_key_port import ApiKeyPort
 from orchestrator.domain.ports.code_repository_port import CodeRepositoryPort
-from orchestrator.domain.ports.finding_port import FindingPort
+from orchestrator.domain.ports.finding_port import FindingDiffSets, FindingPort
 from orchestrator.domain.ports.scan_run_port import ScanRunPort
 from orchestrator.domain.ports.scan_task_port import ScanTaskPort
 from orchestrator.domain.ports.user_port import UserPort
@@ -95,6 +95,13 @@ def test_scan_run_port_declares_list_paginated() -> None:
     the list endpoint was never paginated before this module)."""
     assert "list_paginated" in ScanRunPort.__abstractmethods__
     assert inspect.iscoroutinefunction(ScanRunPort.list_paginated)
+
+
+def test_scan_run_port_declares_list_recent_completed() -> None:
+    """Module 12b PR1: `ScanRunPort` gains `list_recent_completed` — powers
+    `GET /repositories/{id}/diff`'s latest/baseline run selection."""
+    assert "list_recent_completed" in ScanRunPort.__abstractmethods__
+    assert inspect.iscoroutinefunction(ScanRunPort.list_recent_completed)
 
 
 def test_scanner_adapter_port_is_a_framework_free_abc_with_scan_parse_supports() -> None:
@@ -230,6 +237,11 @@ def test_finding_port_full_implementation_can_be_instantiated_and_used() -> None
         ) -> list[Finding]:
             return []
 
+        async def diff_between_runs(
+            self, repository_id: uuid.UUID, latest_run_id: uuid.UUID, baseline_run_id: uuid.UUID
+        ) -> FindingDiffSets:
+            return FindingDiffSets()
+
     async def _run() -> None:
         repo = _FakeFindingRepository()
         repository_id = uuid.uuid4()
@@ -254,6 +266,13 @@ def test_finding_port_full_implementation_can_be_instantiated_and_used() -> None
         assert repo.counted == [scan_run_id]
 
     asyncio.run(_run())
+
+
+def test_finding_port_declares_diff_between_runs() -> None:
+    """Module 12b PR1: `FindingPort` gains `diff_between_runs` — powers
+    `GET /repositories/{id}/diff`'s exact ADDED/RESOLVED/CARRIED partition."""
+    assert "diff_between_runs" in FindingPort.__abstractmethods__
+    assert inspect.iscoroutinefunction(FindingPort.diff_between_runs)
 
 
 def test_finding_port_declares_trend_aggregation_methods() -> None:
@@ -353,6 +372,11 @@ def test_finding_port_list_methods_full_implementation_can_be_instantiated_and_u
                 }
             )
             return []
+
+        async def diff_between_runs(
+            self, repository_id: uuid.UUID, latest_run_id: uuid.UUID, baseline_run_id: uuid.UUID
+        ) -> FindingDiffSets:
+            return FindingDiffSets()
 
     async def _run() -> None:
         repo = _FakeFindingRepository()

@@ -1038,3 +1038,256 @@ def test_open_counts_by_severity_returns_exact_present_moment_snapshot(
     migrated_schema: None,
 ) -> None:
     asyncio.run(_open_counts_by_severity_returns_exact_present_moment_snapshot())
+
+
+# ---------------------------------------------------------------------------
+# `diff_between_runs` (Module 12b PR1)
+# ---------------------------------------------------------------------------
+
+
+async def _diff_between_runs_partitions_added_resolved_and_carried_exactly() -> None:
+    """Spec Scenarios: "Added/Resolved/Carried finding". Seeds an adjacent
+    baseline + latest completed run pair:
+
+    - `fp-added`: first_seen == latest -> ADDED only.
+    - `fp-resolved`: first_seen == baseline, last_seen == baseline (never
+      re-observed on latest) -> RESOLVED only.
+    - `fp-carried`: first_seen == baseline, last_seen == latest (re-observed
+      on latest, introduced before it) -> CARRIED only.
+
+    Proves the three returned sets are pairwise disjoint (not merely
+    asserted in prose) by checking id-set intersections are empty.
+    """
+    engine = create_async_engine(resolve_database_url())
+    sessionmaker = async_sessionmaker(engine, expire_on_commit=False)
+    try:
+        async with sessionmaker() as session:
+            code_repo = SqlAlchemyCodeRepositoryRepository(session)
+            repository = await code_repo.create(_make_repository())
+            await session.commit()
+            repository_id = repository.id
+
+        baseline_id, baseline_task_id = await _seed_completed_run(
+            sessionmaker, repository_id, created_at=datetime(2026, 7, 1)
+        )
+        latest_id, latest_task_id = await _seed_completed_run(
+            sessionmaker, repository_id, created_at=datetime(2026, 7, 2)
+        )
+
+        # fp-resolved and fp-carried both introduced at baseline.
+        async with sessionmaker() as session:
+            finding_repo = SqlAlchemyFindingRepository(session)
+            await finding_repo.bulk_upsert_findings(
+                repository_id,
+                baseline_id,
+                [
+                    _make_finding(baseline_task_id, fingerprint="fp-resolved"),
+                    _make_finding(baseline_task_id, fingerprint="fp-carried"),
+                ],
+            )
+            await session.commit()
+
+        # Latest run re-observes fp-carried (advances last_seen) and
+        # introduces a brand-new fp-added. fp-resolved is simply absent from
+        # this batch -> its last_seen stays pinned at baseline.
+        async with sessionmaker() as session:
+            finding_repo = SqlAlchemyFindingRepository(session)
+            await finding_repo.bulk_upsert_findings(
+                repository_id,
+                latest_id,
+                [
+                    _make_finding(latest_task_id, fingerprint="fp-carried"),
+                    _make_finding(latest_task_id, fingerprint="fp-added"),
+                ],
+            )
+            await session.commit()
+
+        async with sessionmaker() as session:
+            finding_repo = SqlAlchemyFindingRepository(session)
+            diff = await finding_repo.diff_between_runs(repository_id, latest_id, baseline_id)
+
+        added_fps = {f.fingerprint for f in diff.added}
+        resolved_fps = {f.fingerprint for f in diff.resolved}
+        carried_fps = {f.fingerprint for f in diff.carried}
+
+        assert added_fps == {"fp-added"}
+        assert resolved_fps == {"fp-resolved"}
+        assert carried_fps == {"fp-carried"}
+
+        # Disjointness proof: pairwise intersections on id, not just fingerprint.
+        added_ids = {f.id for f in diff.added}
+        resolved_ids = {f.id for f in diff.resolved}
+        carried_ids = {f.id for f in diff.carried}
+        assert added_ids & resolved_ids == set()
+        assert added_ids & carried_ids == set()
+        assert resolved_ids & carried_ids == set()
+    finally:
+        await engine.dispose()
+
+
+def test_diff_between_runs_partitions_added_resolved_and_carried_exactly(
+    migrated_schema: None,
+) -> None:
+    asyncio.run(_diff_between_runs_partitions_added_resolved_and_carried_exactly())
+
+
+async def _diff_between_runs_reobserved_finding_lands_in_carried_never_added() -> None:
+    """A finding whose `first_seen_scan_run_id` is stable at baseline (never
+    advances on conflict, Module 7 D4) must classify as CARRIED — never
+    ADDED — even though it was just re-upserted on the latest run."""
+    engine = create_async_engine(resolve_database_url())
+    sessionmaker = async_sessionmaker(engine, expire_on_commit=False)
+    try:
+        async with sessionmaker() as session:
+            code_repo = SqlAlchemyCodeRepositoryRepository(session)
+            repository = await code_repo.create(_make_repository())
+            await session.commit()
+            repository_id = repository.id
+
+        baseline_id, baseline_task_id = await _seed_completed_run(
+            sessionmaker, repository_id, created_at=datetime(2026, 7, 5)
+        )
+        latest_id, latest_task_id = await _seed_completed_run(
+            sessionmaker, repository_id, created_at=datetime(2026, 7, 6)
+        )
+
+        async with sessionmaker() as session:
+            finding_repo = SqlAlchemyFindingRepository(session)
+            await finding_repo.bulk_upsert_findings(
+                repository_id,
+                baseline_id,
+                [_make_finding(baseline_task_id, fingerprint="fp-reobserved")],
+            )
+            await session.commit()
+
+        async with sessionmaker() as session:
+            finding_repo = SqlAlchemyFindingRepository(session)
+            await finding_repo.bulk_upsert_findings(
+                repository_id,
+                latest_id,
+                [_make_finding(latest_task_id, fingerprint="fp-reobserved")],
+            )
+            await session.commit()
+
+        async with sessionmaker() as session:
+            finding_repo = SqlAlchemyFindingRepository(session)
+            diff = await finding_repo.diff_between_runs(repository_id, latest_id, baseline_id)
+
+        assert {f.fingerprint for f in diff.carried} == {"fp-reobserved"}
+        assert diff.added == []
+        assert diff.resolved == []
+    finally:
+        await engine.dispose()
+
+
+def test_diff_between_runs_reobserved_finding_lands_in_carried_never_added(
+    migrated_schema: None,
+) -> None:
+    asyncio.run(_diff_between_runs_reobserved_finding_lands_in_carried_never_added())
+
+
+async def _diff_between_runs_latest_zero_findings_added_and_carried_empty_resolved_populated() -> (
+    None
+):
+    """Spec Scenario: "Latest run found nothing" — baseline has open
+    findings, latest introduces nothing -> `resolved` lists the baseline
+    findings, `added`/`carried` are empty."""
+    engine = create_async_engine(resolve_database_url())
+    sessionmaker = async_sessionmaker(engine, expire_on_commit=False)
+    try:
+        async with sessionmaker() as session:
+            code_repo = SqlAlchemyCodeRepositoryRepository(session)
+            repository = await code_repo.create(_make_repository())
+            await session.commit()
+            repository_id = repository.id
+
+        baseline_id, baseline_task_id = await _seed_completed_run(
+            sessionmaker, repository_id, created_at=datetime(2026, 7, 8)
+        )
+        latest_id, _latest_task_id = await _seed_completed_run(
+            sessionmaker, repository_id, created_at=datetime(2026, 7, 9)
+        )
+
+        async with sessionmaker() as session:
+            finding_repo = SqlAlchemyFindingRepository(session)
+            await finding_repo.bulk_upsert_findings(
+                repository_id,
+                baseline_id,
+                [
+                    _make_finding(baseline_task_id, fingerprint="fp-baseline-1"),
+                    _make_finding(baseline_task_id, fingerprint="fp-baseline-2"),
+                ],
+            )
+            await session.commit()
+
+        async with sessionmaker() as session:
+            finding_repo = SqlAlchemyFindingRepository(session)
+            diff = await finding_repo.diff_between_runs(repository_id, latest_id, baseline_id)
+
+        assert {f.fingerprint for f in diff.resolved} == {"fp-baseline-1", "fp-baseline-2"}
+        assert diff.added == []
+        assert diff.carried == []
+    finally:
+        await engine.dispose()
+
+
+def test_diff_between_runs_latest_zero_findings_added_and_carried_empty_resolved_populated(
+    migrated_schema: None,
+) -> None:
+    asyncio.run(
+        _diff_between_runs_latest_zero_findings_added_and_carried_empty_resolved_populated()
+    )
+
+
+async def _diff_between_runs_excludes_finding_resolved_before_baseline() -> None:
+    """A finding whose `last_seen_scan_run_id` predates `baseline_id` (already
+    gone before the delta window) MUST appear in none of the three sets —
+    never forced into RESOLVED/CARRIED/ADDED."""
+    engine = create_async_engine(resolve_database_url())
+    sessionmaker = async_sessionmaker(engine, expire_on_commit=False)
+    try:
+        async with sessionmaker() as session:
+            code_repo = SqlAlchemyCodeRepositoryRepository(session)
+            repository = await code_repo.create(_make_repository())
+            await session.commit()
+            repository_id = repository.id
+
+        ancient_id, ancient_task_id = await _seed_completed_run(
+            sessionmaker, repository_id, created_at=datetime(2026, 7, 1)
+        )
+        baseline_id, _baseline_task_id = await _seed_completed_run(
+            sessionmaker, repository_id, created_at=datetime(2026, 7, 2)
+        )
+        latest_id, _latest_task_id = await _seed_completed_run(
+            sessionmaker, repository_id, created_at=datetime(2026, 7, 3)
+        )
+
+        # This finding's last_seen is pinned at the ancient run (predates
+        # baseline) — it vanished before the diff's window even opened.
+        async with sessionmaker() as session:
+            finding_repo = SqlAlchemyFindingRepository(session)
+            await finding_repo.bulk_upsert_findings(
+                repository_id,
+                ancient_id,
+                [_make_finding(ancient_task_id, fingerprint="fp-long-gone")],
+            )
+            await session.commit()
+
+        async with sessionmaker() as session:
+            finding_repo = SqlAlchemyFindingRepository(session)
+            diff = await finding_repo.diff_between_runs(repository_id, latest_id, baseline_id)
+
+        all_fps = (
+            {f.fingerprint for f in diff.added}
+            | {f.fingerprint for f in diff.resolved}
+            | {f.fingerprint for f in diff.carried}
+        )
+        assert "fp-long-gone" not in all_fps
+    finally:
+        await engine.dispose()
+
+
+def test_diff_between_runs_excludes_finding_resolved_before_baseline(
+    migrated_schema: None,
+) -> None:
+    asyncio.run(_diff_between_runs_excludes_finding_resolved_before_baseline())

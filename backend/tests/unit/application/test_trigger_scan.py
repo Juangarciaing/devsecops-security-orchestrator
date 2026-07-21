@@ -97,6 +97,9 @@ class _FakeScanRunRepository(ScanRunPort):
         ordered = sorted(self._by_id.values(), key=lambda r: r.created_at, reverse=True)
         return ordered[offset : offset + limit]
 
+    async def list_recent_completed(self, repository_id: uuid.UUID, limit: int) -> list[ScanRun]:
+        return []  # pragma: no cover — unused in these tests
+
 
 class _FakeScanTaskRepository(ScanTaskPort):
     def __init__(self) -> None:

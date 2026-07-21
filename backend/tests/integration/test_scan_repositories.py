@@ -334,6 +334,156 @@ def test_scan_run_update_commit_sha_raises_not_found_for_missing_id(
 
 
 # ---------------------------------------------------------------------------
+# `list_recent_completed` (Module 12b PR1)
+# ---------------------------------------------------------------------------
+
+
+async def _list_recent_completed_returns_two_most_recent_ordered_created_at_desc_id_desc() -> None:
+    engine = create_async_engine(resolve_database_url())
+    sessionmaker = async_sessionmaker(engine, expire_on_commit=False)
+    try:
+        async with sessionmaker() as session:
+            code_repo = SqlAlchemyCodeRepositoryRepository(session)
+            repository = await code_repo.create(_make_repository())
+            await session.commit()
+            repository_id = repository.id
+
+        run_ids: list[uuid.UUID] = []
+        for i in range(3):
+            async with sessionmaker() as session:
+                scan_run_repo = SqlAlchemyScanRunRepository(session)
+                created = await scan_run_repo.create(
+                    _make_scan_run(
+                        repository_id,
+                        status=ScanRunStatus.COMPLETED,
+                        commit_sha=f"diff-{i}",
+                        ref=f"diff-{i}",
+                        created_at=datetime(2026, 7, 1 + i),
+                    )
+                )
+                await session.commit()
+                run_ids.append(created.id)
+
+        async with sessionmaker() as session:
+            scan_run_repo = SqlAlchemyScanRunRepository(session)
+            recent = await scan_run_repo.list_recent_completed(repository_id, limit=2)
+
+        assert [r.id for r in recent] == [run_ids[2], run_ids[1]]
+    finally:
+        await engine.dispose()
+
+
+def test_list_recent_completed_returns_two_most_recent_ordered_created_at_desc_id_desc(
+    migrated_schema: None,
+) -> None:
+    asyncio.run(_list_recent_completed_returns_two_most_recent_ordered_created_at_desc_id_desc())
+
+
+async def _list_recent_completed_excludes_non_completed_runs() -> None:
+    engine = create_async_engine(resolve_database_url())
+    sessionmaker = async_sessionmaker(engine, expire_on_commit=False)
+    try:
+        async with sessionmaker() as session:
+            code_repo = SqlAlchemyCodeRepositoryRepository(session)
+            repository = await code_repo.create(_make_repository())
+            await session.commit()
+            repository_id = repository.id
+
+        async with sessionmaker() as session:
+            scan_run_repo = SqlAlchemyScanRunRepository(session)
+            completed = await scan_run_repo.create(
+                _make_scan_run(
+                    repository_id,
+                    status=ScanRunStatus.COMPLETED,
+                    commit_sha="completed-only",
+                    ref="completed-only",
+                    created_at=datetime(2026, 7, 10),
+                )
+            )
+            await scan_run_repo.create(
+                _make_scan_run(
+                    repository_id,
+                    status=ScanRunStatus.PENDING,
+                    commit_sha="still-pending",
+                    ref="still-pending",
+                    created_at=datetime(2026, 7, 11),
+                )
+            )
+            await scan_run_repo.create(
+                _make_scan_run(
+                    repository_id,
+                    status=ScanRunStatus.FAILED,
+                    commit_sha="failed-run",
+                    ref="failed-run",
+                    created_at=datetime(2026, 7, 12),
+                )
+            )
+            await session.commit()
+            completed_id = completed.id
+
+        async with sessionmaker() as session:
+            scan_run_repo = SqlAlchemyScanRunRepository(session)
+            recent = await scan_run_repo.list_recent_completed(repository_id, limit=5)
+
+        assert [r.id for r in recent] == [completed_id]
+    finally:
+        await engine.dispose()
+
+
+def test_list_recent_completed_excludes_non_completed_runs(migrated_schema: None) -> None:
+    asyncio.run(_list_recent_completed_excludes_non_completed_runs())
+
+
+async def _list_recent_completed_scoped_to_repository() -> None:
+    """Defensive `repository_id` scoping — a completed run on a DIFFERENT
+    repository must never leak into this repo's recent-completed list."""
+    engine = create_async_engine(resolve_database_url())
+    sessionmaker = async_sessionmaker(engine, expire_on_commit=False)
+    try:
+        async with sessionmaker() as session:
+            code_repo = SqlAlchemyCodeRepositoryRepository(session)
+            repo_a = await code_repo.create(_make_repository(owner="acme-diff-a"))
+            repo_b = await code_repo.create(_make_repository(owner="acme-diff-b"))
+            await session.commit()
+            repo_a_id, repo_b_id = repo_a.id, repo_b.id
+
+        async with sessionmaker() as session:
+            scan_run_repo = SqlAlchemyScanRunRepository(session)
+            run_a = await scan_run_repo.create(
+                _make_scan_run(
+                    repo_a_id,
+                    status=ScanRunStatus.COMPLETED,
+                    commit_sha="repo-a",
+                    ref="repo-a",
+                    created_at=datetime(2026, 7, 20),
+                )
+            )
+            await scan_run_repo.create(
+                _make_scan_run(
+                    repo_b_id,
+                    status=ScanRunStatus.COMPLETED,
+                    commit_sha="repo-b",
+                    ref="repo-b",
+                    created_at=datetime(2026, 7, 21),
+                )
+            )
+            await session.commit()
+            run_a_id = run_a.id
+
+        async with sessionmaker() as session:
+            scan_run_repo = SqlAlchemyScanRunRepository(session)
+            recent = await scan_run_repo.list_recent_completed(repo_a_id, limit=5)
+
+        assert [r.id for r in recent] == [run_a_id]
+    finally:
+        await engine.dispose()
+
+
+def test_list_recent_completed_scoped_to_repository(migrated_schema: None) -> None:
+    asyncio.run(_list_recent_completed_scoped_to_repository())
+
+
+# ---------------------------------------------------------------------------
 # SqlAlchemyScanTaskRepository
 # ---------------------------------------------------------------------------
 

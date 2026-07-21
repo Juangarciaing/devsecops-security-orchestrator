@@ -48,6 +48,9 @@ class _FakeScanRunRepository(ScanRunPort):
     async def list_paginated(self, limit: int, offset: int) -> list[ScanRun]:
         return list(self._by_id.values())[offset : offset + limit]
 
+    async def list_recent_completed(self, repository_id: uuid.UUID, limit: int) -> list[ScanRun]:
+        return []  # pragma: no cover — unused in these tests
+
 
 class _FakeScanTaskRepository(ScanTaskPort):
     def __init__(self) -> None:
