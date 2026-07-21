@@ -118,6 +118,27 @@ def test_settings_github_webhook_secret_can_be_overridden(
     assert settings.github_webhook_secret == "a-real-secret"
 
 
+def test_settings_otel_exporter_otlp_endpoint_defaults_to_off(valid_env: None) -> None:
+    """Module 13a D1: empty endpoint (the default) means tracing is fully off —
+    no exporter, zero behavior change to the existing request/task pipeline."""
+    settings = Settings(_env_file=None)
+
+    assert settings.otel_exporter_otlp_endpoint == ""
+    assert settings.otel_service_name == "orchestrator"
+
+
+def test_settings_otel_exporter_otlp_endpoint_can_be_overridden(
+    monkeypatch: pytest.MonkeyPatch, valid_env: None
+) -> None:
+    monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://jaeger:4317")
+    monkeypatch.setenv("OTEL_SERVICE_NAME", "orchestrator-api")
+
+    settings = Settings(_env_file=None)
+
+    assert settings.otel_exporter_otlp_endpoint == "http://jaeger:4317"
+    assert settings.otel_service_name == "orchestrator-api"
+
+
 def test_settings_scan_container_values_can_be_overridden(
     monkeypatch: pytest.MonkeyPatch, valid_env: None
 ) -> None:

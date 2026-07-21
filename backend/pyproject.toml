@@ -16,6 +16,11 @@ dependencies = [
     "celery[redis]>=5.4",
     "flower>=2.0",
     "docker>=7.1",
+    "opentelemetry-api>=1.44",
+    "opentelemetry-sdk>=1.44",
+    "opentelemetry-exporter-otlp-proto-grpc>=1.44",
+    "opentelemetry-instrumentation-fastapi>=0.65b0",
+    "opentelemetry-instrumentation-celery>=0.65b0",
 ]
 
 [dependency-groups]
@@ -59,4 +64,8 @@ plugins = ["pydantic.mypy"]
 
 [[tool.mypy.overrides]]
 module = ["celery.*", "kombu.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["opentelemetry.instrumentation.*"]
 ignore_missing_imports = true
