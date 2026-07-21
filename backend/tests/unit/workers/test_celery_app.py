@@ -12,9 +12,25 @@ import importlib
 import os
 import subprocess
 import sys
+from collections.abc import Iterator
 from types import ModuleType
+from unittest.mock import patch
 
 import pytest
+
+
+@pytest.fixture(autouse=True)
+def _clear_worker_process_init_receivers() -> Iterator[None]:
+    """Every test in this module reloads `celery_app`, and the module
+    re-registers its `worker_process_init` handler at import time — without
+    resetting the signal's receiver list between tests, repeated reloads
+    would accumulate duplicate handlers and any test that `.send()`s the
+    signal would observe N stale calls instead of exactly one."""
+    from celery.signals import worker_process_init
+
+    worker_process_init.receivers = []
+    yield
+    worker_process_init.receivers = []
 
 
 def _import_celery_app(monkeypatch: pytest.MonkeyPatch) -> ModuleType:
@@ -122,6 +138,61 @@ def test_worker_process_registers_process_scan_task_without_manual_import() -> N
     )
 
     assert result.returncode == 0, result.stderr
+
+
+def test_importing_celery_app_does_not_configure_tracing(
+    monkeypatch: pytest.MonkeyPatch, valid_env: None
+) -> None:
+    """Module 13a D2 (fork-safety regression guard): merely importing
+    `celery_app` (module-import time, i.e. the pre-fork parent process) MUST
+    NOT initialize tracing — that would hand every forked worker child a
+    broken, pre-fork-inherited exporter/thread. Tracing init is deferred to
+    the `worker_process_init` signal, which fires per-child AFTER the fork."""
+    monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://jaeger:4317")
+
+    # Patch the ORIGIN module's functions, not `celery_app`'s imported alias:
+    # `_import_celery_app` may `importlib.reload` the module, which re-runs
+    # its top-level `from ...tracing import configure_tracing` statement —
+    # that fresh `from import` re-binds whatever the origin module's
+    # attribute currently is, so patching the origin here survives reload.
+    with (
+        patch(
+            "orchestrator.infrastructure.observability.tracing.configure_tracing"
+        ) as mock_configure,
+        patch(
+            "orchestrator.infrastructure.observability.tracing.instrument_celery"
+        ) as mock_instrument,
+    ):
+        _import_celery_app(monkeypatch)
+
+        mock_configure.assert_not_called()
+        mock_instrument.assert_not_called()
+
+
+def test_worker_process_init_signal_configures_tracing_and_instruments_celery(
+    monkeypatch: pytest.MonkeyPatch, valid_env: None
+) -> None:
+    """Module 13a D2: the `worker_process_init` handler — fired in EACH
+    forked worker child, never in the pre-fork parent — is what actually
+    performs per-process tracing init."""
+    from celery.signals import worker_process_init
+
+    monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://jaeger:4317")
+
+    with (
+        patch(
+            "orchestrator.infrastructure.observability.tracing.configure_tracing"
+        ) as mock_configure,
+        patch(
+            "orchestrator.infrastructure.observability.tracing.instrument_celery"
+        ) as mock_instrument,
+    ):
+        _import_celery_app(monkeypatch)
+
+        worker_process_init.send(sender=None)
+
+        mock_configure.assert_called_once_with("orchestrator-worker")
+        mock_instrument.assert_called_once()
 
 
 def test_webhook_queue_is_declared_but_no_task_is_routed_to_it(

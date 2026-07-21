@@ -27,9 +27,11 @@ discards every real message with `Received unregistered task of type
 from __future__ import annotations
 
 from celery import Celery
+from celery.signals import worker_process_init
 from kombu import Queue
 
 from orchestrator.infrastructure.config.settings import get_settings
+from orchestrator.infrastructure.observability.tracing import configure_tracing, instrument_celery
 
 _settings = get_settings()
 
@@ -48,3 +50,14 @@ celery_app.conf.task_default_queue = "scan"
 celery_app.conf.task_routes = {
     "orchestrator.workers.tasks.process_scan.process_scan_task": {"queue": "scan"},
 }
+
+
+@worker_process_init.connect  # type: ignore[untyped-decorator]
+def _init_worker_tracing(**_kwargs: object) -> None:
+    """Module 13a D2 — fork-safety. `worker_process_init` fires in EACH
+    forked worker child, AFTER the fork completes, never in the pre-fork
+    parent process (unlike a module-import-time call, which would run once
+    in the parent and hand every child a broken, fork-inherited exporter
+    thread/gRPC channel). Deliberately NOT called at module import scope."""
+    configure_tracing("orchestrator-worker")
+    instrument_celery()
