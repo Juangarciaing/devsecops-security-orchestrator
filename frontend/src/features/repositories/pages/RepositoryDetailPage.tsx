@@ -2,6 +2,7 @@ import { useParams } from 'react-router'
 import { isAxiosError } from 'axios'
 import { Badge } from '@/shared/ui/badge'
 import { Card, CardContent, CardHeader, CardTitle } from '@/shared/ui/card'
+import { DiffPanel } from '@/features/diffing/components/DiffPanel'
 import { ScanHistoryTable } from '@/features/scans/components/ScanHistoryTable'
 import { TriggerScanButton } from '@/features/scans/components/TriggerScanButton'
 import { useRepositoryScans } from '@/features/scans/queries'
@@ -81,6 +82,11 @@ export function RepositoryDetailPage() {
         {trendsQuery.isSuccess ? (
           <TrendsChart points={trendsQuery.data.points} />
         ) : null}
+      </div>
+
+      <div className="flex flex-col gap-2">
+        <h3 className="text-lg font-semibold">Scan diff</h3>
+        <DiffPanel repositoryId={repository.id} />
       </div>
     </div>
   )

@@ -51,6 +51,16 @@ describe('RepositoryDetailPage', () => {
           current_open: {},
         }),
       ),
+      http.get('*/api/v1/repositories/r1/diff', () =>
+        HttpResponse.json({
+          repository_id: 'r1',
+          latest_run: null,
+          baseline_run: null,
+          added: [],
+          resolved: [],
+          carried: [],
+        }),
+      ),
     )
     renderPage('r1')
 
@@ -61,6 +71,9 @@ describe('RepositoryDetailPage', () => {
     expect(await screen.findByText(/no scans/i)).toBeInTheDocument()
     expect(
       await screen.findByText(/no completed scans yet/i),
+    ).toBeInTheDocument()
+    expect(
+      await screen.findByText(/not enough scan history/i),
     ).toBeInTheDocument()
   })
 
@@ -100,6 +113,16 @@ describe('RepositoryDetailPage', () => {
           current_open: {},
         }),
       ),
+      http.get('*/api/v1/repositories/r1/diff', () =>
+        HttpResponse.json({
+          repository_id: 'r1',
+          latest_run: null,
+          baseline_run: null,
+          added: [],
+          resolved: [],
+          carried: [],
+        }),
+      ),
     )
     renderPage('r1')
 
@@ -107,6 +130,44 @@ describe('RepositoryDetailPage', () => {
       'href',
       '/scans/s1',
     )
+  })
+
+  it('shows the diff panel sections once a baseline exists', async () => {
+    server.use(
+      http.get('*/api/v1/repositories/r1', () => HttpResponse.json(repo)),
+      http.get('*/api/v1/scans', () => HttpResponse.json([])),
+      http.get('*/api/v1/repositories/r1/trends', () =>
+        HttpResponse.json({
+          repository_id: 'r1',
+          points: [],
+          current_open: {},
+        }),
+      ),
+      http.get('*/api/v1/repositories/r1/diff', () =>
+        HttpResponse.json({
+          repository_id: 'r1',
+          latest_run: {
+            scan_run_id: 's2',
+            occurred_at: '2026-01-02T00:00:00Z',
+            commit_sha: 'def5678',
+          },
+          baseline_run: {
+            scan_run_id: 's1',
+            occurred_at: '2026-01-01T00:00:00Z',
+            commit_sha: 'abc123',
+          },
+          added: [],
+          resolved: [],
+          carried: [],
+        }),
+      ),
+    )
+    renderPage('r1')
+
+    expect(await screen.findByText('Scan diff')).toBeInTheDocument()
+    expect(await screen.findByText('Added')).toBeInTheDocument()
+    expect(screen.getByText('Resolved')).toBeInTheDocument()
+    expect(screen.getByText('Carried')).toBeInTheDocument()
   })
 
   it('shows a not-found message for a missing repository', async () => {
