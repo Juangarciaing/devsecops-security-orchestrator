@@ -8,6 +8,8 @@ level and fire on a genuine request, not just present in source.
 
 from __future__ import annotations
 
+from unittest.mock import patch
+
 import pytest
 from fastapi.testclient import TestClient
 from pydantic import BaseModel
@@ -105,3 +107,20 @@ def test_create_app_allows_configured_cors_origin(
         },
     )
     assert "access-control-allow-origin" not in other_origin_response.headers
+
+
+def test_create_app_wires_tracing_bootstrap_at_factory_time(valid_env: None) -> None:
+    """Module 13a task 2.3/2.4: `create_app()` MUST call the tracing bootstrap
+    (configure the API's own provider, then instrument Celery-producer spans
+    and the FastAPI app itself) so a fresh app instance always attempts
+    tracing setup — each call is a no-op when tracing is disabled (D1)."""
+    with (
+        patch("orchestrator.api.main.configure_tracing") as mock_configure,
+        patch("orchestrator.api.main.instrument_celery") as mock_instrument_celery,
+        patch("orchestrator.api.main.instrument_fastapi") as mock_instrument_fastapi,
+    ):
+        app = create_app()
+
+    mock_configure.assert_called_once_with("orchestrator-api")
+    mock_instrument_celery.assert_called_once()
+    mock_instrument_fastapi.assert_called_once_with(app)

@@ -19,11 +19,25 @@ from orchestrator.api.v1.routers.scans import router as scans_router
 from orchestrator.api.v1.routers.users import router as users_router
 from orchestrator.api.v1.routers.webhooks import router as webhooks_router
 from orchestrator.infrastructure.config.settings import get_settings
+from orchestrator.infrastructure.observability.tracing import (
+    configure_tracing,
+    instrument_celery,
+    instrument_fastapi,
+)
 
 
 def create_app() -> FastAPI:
     app = FastAPI(title="DevSecOps Security Orchestrator", version="0.1.0")
     register_exception_handlers(app)
+
+    # Module 13a — off by default (D1); each call below is a no-op unless
+    # `OTEL_EXPORTER_OTLP_ENDPOINT` is set. `configure_tracing` sets up this
+    # process's own TracerProvider/exporter; `instrument_celery` wires
+    # producer-side trace-context propagation into enqueued tasks;
+    # `instrument_fastapi` adds server spans for inbound requests.
+    configure_tracing("orchestrator-api")
+    instrument_celery()
+    instrument_fastapi(app)
 
     # Opt-in only (D: settings.cors_allowed_origins) — an unconfigured
     # deployment adds no middleware and gets no CORS headers at all.
