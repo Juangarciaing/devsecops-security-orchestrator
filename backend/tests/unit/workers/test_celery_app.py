@@ -195,6 +195,29 @@ def test_worker_process_init_signal_configures_tracing_and_instruments_celery(
         mock_instrument.assert_called_once()
 
 
+def test_worker_process_init_combines_otel_service_name_setting_with_worker_suffix(
+    monkeypatch: pytest.MonkeyPatch, valid_env: None
+) -> None:
+    """Review WARNING: `Settings.otel_service_name` was dead config — this
+    call site hardcoded the literal `"orchestrator-worker"` regardless of
+    the setting. `configure_tracing` must receive the configured service
+    name combined with a `-worker` role suffix, so changing
+    `OTEL_SERVICE_NAME` actually changes the name reaching Jaeger's service
+    list."""
+    from celery.signals import worker_process_init
+
+    monkeypatch.setenv("OTEL_SERVICE_NAME", "custom-service")
+
+    with patch(
+        "orchestrator.infrastructure.observability.tracing.configure_tracing"
+    ) as mock_configure:
+        _import_celery_app(monkeypatch)
+
+        worker_process_init.send(sender=None)
+
+        mock_configure.assert_called_once_with("custom-service-worker")
+
+
 def test_webhook_queue_is_declared_but_no_task_is_routed_to_it(
     monkeypatch: pytest.MonkeyPatch, valid_env: None
 ) -> None:

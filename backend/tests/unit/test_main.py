@@ -124,3 +124,19 @@ def test_create_app_wires_tracing_bootstrap_at_factory_time(valid_env: None) -> 
     mock_configure.assert_called_once_with("orchestrator-api")
     mock_instrument_celery.assert_called_once()
     mock_instrument_fastapi.assert_called_once_with(app)
+
+
+def test_create_app_combines_otel_service_name_setting_with_api_suffix(
+    valid_env: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Review WARNING: `Settings.otel_service_name` was dead config — this
+    call site hardcoded the literal `"orchestrator-api"` regardless of the
+    setting. `configure_tracing` must receive the configured service name
+    combined with an `-api` role suffix, so changing `OTEL_SERVICE_NAME`
+    actually changes the name reaching Jaeger's service list."""
+    monkeypatch.setenv("OTEL_SERVICE_NAME", "custom-service")
+
+    with patch("orchestrator.api.main.configure_tracing") as mock_configure:
+        create_app()
+
+    mock_configure.assert_called_once_with("custom-service-api")

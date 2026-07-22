@@ -52,7 +52,14 @@ def configure_tracing(service_name: str) -> bool:
     resource = Resource.create(
         {SERVICE_NAME: service_name, "deployment.environment": settings.environment}
     )
-    provider = TracerProvider(resource=resource, sampler=ParentBased(ALWAYS_ON))
+    # `shutdown_on_exit=False`: the SDK default (`True`) registers an
+    # `atexit` handler that can block process exit up to 30s (the
+    # `BatchSpanProcessor` default flush/shutdown timeout) if the OTLP
+    # endpoint is unreachable at shutdown — tracing must never block a
+    # graceful SIGTERM past normal container stop-grace periods.
+    provider = TracerProvider(
+        resource=resource, sampler=ParentBased(ALWAYS_ON), shutdown_on_exit=False
+    )
     provider.add_span_processor(
         BatchSpanProcessor(
             OTLPSpanExporter(endpoint=settings.otel_exporter_otlp_endpoint, insecure=True)

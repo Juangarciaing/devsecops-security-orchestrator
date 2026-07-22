@@ -35,7 +35,7 @@ def create_app() -> FastAPI:
     # process's own TracerProvider/exporter; `instrument_celery` wires
     # producer-side trace-context propagation into enqueued tasks;
     # `instrument_fastapi` adds server spans for inbound requests.
-    configure_tracing("orchestrator-api")
+    configure_tracing(f"{get_settings().otel_service_name}-api")
     instrument_celery()
     instrument_fastapi(app)
 

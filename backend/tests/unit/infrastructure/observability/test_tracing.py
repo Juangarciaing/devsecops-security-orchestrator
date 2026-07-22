@@ -12,7 +12,6 @@ from __future__ import annotations
 from unittest.mock import MagicMock, patch
 
 import pytest
-from opentelemetry.sdk.trace import TracerProvider
 
 from orchestrator.infrastructure.config.settings import get_settings
 from orchestrator.infrastructure.observability import tracing
@@ -21,7 +20,13 @@ from orchestrator.infrastructure.observability import tracing
 @pytest.fixture(autouse=True)
 def _reset_tracing_module_state() -> None:
     """`configure_tracing` is idempotency-guarded by a module-level flag —
-    reset it between tests so each test observes a fresh gate check."""
+    reset it between tests so each test observes a fresh gate check. Every
+    test below that exercises the enabled path mocks `TracerProvider`,
+    `BatchSpanProcessor`, `OTLPSpanExporter`, and `trace` construction, so no
+    real background export thread or process-wide OTel global is ever
+    created here — there is nothing further to tear down (a real
+    `BatchSpanProcessor` targeting an unreachable endpoint would otherwise
+    leak a live daemon export thread for the rest of the pytest session)."""
     tracing._configured = False
 
 
@@ -41,30 +46,79 @@ def test_configure_tracing_sets_a_tracer_provider_when_endpoint_set(
     monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://jaeger:4317")
     get_settings.cache_clear()
 
-    result = tracing.configure_tracing("orchestrator-api")
+    with (
+        patch(
+            "orchestrator.infrastructure.observability.tracing.TracerProvider"
+        ) as mock_provider_cls,
+        patch("orchestrator.infrastructure.observability.tracing.BatchSpanProcessor"),
+        patch("orchestrator.infrastructure.observability.tracing.OTLPSpanExporter"),
+        patch("orchestrator.infrastructure.observability.tracing.trace") as mock_trace,
+    ):
+        result = tracing.configure_tracing("orchestrator-api")
 
     assert result is True
-    from opentelemetry import trace as otel_trace
-
-    assert isinstance(otel_trace.get_tracer_provider(), TracerProvider)
+    mock_trace.set_tracer_provider.assert_called_once_with(mock_provider_cls.return_value)
 
 
-def test_configure_tracing_is_idempotent_across_repeated_calls(
+def test_configure_tracing_disables_shutdown_on_exit(
     monkeypatch: pytest.MonkeyPatch, valid_env: None
 ) -> None:
+    """Review WARNING: the OTel SDK's `TracerProvider` default
+    `shutdown_on_exit=True` registers an `atexit` handler that can block
+    process exit up to 30s (`BatchSpanProcessor`'s default flush/shutdown
+    timeout) if the OTLP endpoint is unreachable at shutdown — tracing must
+    never block a graceful SIGTERM past normal container stop-grace
+    periods."""
     monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://jaeger:4317")
     get_settings.cache_clear()
 
-    first_result = tracing.configure_tracing("orchestrator-api")
-    from opentelemetry import trace as otel_trace
+    with (
+        patch(
+            "orchestrator.infrastructure.observability.tracing.TracerProvider"
+        ) as mock_provider_cls,
+        patch("orchestrator.infrastructure.observability.tracing.BatchSpanProcessor"),
+        patch("orchestrator.infrastructure.observability.tracing.OTLPSpanExporter"),
+        patch("orchestrator.infrastructure.observability.tracing.trace"),
+    ):
+        tracing.configure_tracing("orchestrator-api")
 
-    provider_after_first_call = otel_trace.get_tracer_provider()
+    _, kwargs = mock_provider_cls.call_args
+    assert kwargs["shutdown_on_exit"] is False
 
-    second_result = tracing.configure_tracing("orchestrator-api")
+
+def test_configure_tracing_only_constructs_the_provider_once_across_repeated_calls(
+    monkeypatch: pytest.MonkeyPatch, valid_env: None
+) -> None:
+    """Guards THIS module's own `if _configured: return True` guard — not
+    OTel's unrelated process-wide `set_tracer_provider` set-once semantics
+    (which silently keeps the first-ever provider on a second call and
+    would therefore pass even if this module's own guard were deleted).
+    Asserting the construction call count is what actually proves the
+    second `configure_tracing()` call short-circuits before doing any
+    work."""
+    monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://jaeger:4317")
+    get_settings.cache_clear()
+
+    with (
+        patch(
+            "orchestrator.infrastructure.observability.tracing.TracerProvider"
+        ) as mock_provider_cls,
+        patch(
+            "orchestrator.infrastructure.observability.tracing.BatchSpanProcessor"
+        ) as mock_processor_cls,
+        patch(
+            "orchestrator.infrastructure.observability.tracing.OTLPSpanExporter"
+        ) as mock_exporter_cls,
+        patch("orchestrator.infrastructure.observability.tracing.trace"),
+    ):
+        first_result = tracing.configure_tracing("orchestrator-api")
+        second_result = tracing.configure_tracing("orchestrator-api")
 
     assert first_result is True
     assert second_result is True
-    assert otel_trace.get_tracer_provider() is provider_after_first_call
+    mock_provider_cls.assert_called_once()
+    mock_processor_cls.assert_called_once()
+    mock_exporter_cls.assert_called_once()
 
 
 def test_instrument_fastapi_is_a_noop_when_endpoint_unset(valid_env: None) -> None:

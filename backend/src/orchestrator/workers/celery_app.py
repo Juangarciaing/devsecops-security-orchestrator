@@ -59,5 +59,5 @@ def _init_worker_tracing(**_kwargs: object) -> None:
     parent process (unlike a module-import-time call, which would run once
     in the parent and hand every child a broken, fork-inherited exporter
     thread/gRPC channel). Deliberately NOT called at module import scope."""
-    configure_tracing("orchestrator-worker")
+    configure_tracing(f"{_settings.otel_service_name}-worker")
     instrument_celery()
