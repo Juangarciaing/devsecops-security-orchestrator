@@ -27,11 +27,15 @@ discards every real message with `Received unregistered task of type
 from __future__ import annotations
 
 from celery import Celery
-from celery.signals import worker_process_init
+from celery.signals import worker_process_init, worker_process_shutdown
 from kombu import Queue
 
 from orchestrator.infrastructure.config.settings import get_settings
-from orchestrator.infrastructure.observability.tracing import configure_tracing, instrument_celery
+from orchestrator.infrastructure.observability.tracing import (
+    configure_tracing,
+    instrument_celery,
+    shutdown_tracing,
+)
 
 _settings = get_settings()
 
@@ -61,3 +65,15 @@ def _init_worker_tracing(**_kwargs: object) -> None:
     thread/gRPC channel). Deliberately NOT called at module import scope."""
     configure_tracing(f"{_settings.otel_service_name}-worker")
     instrument_celery()
+
+
+@worker_process_shutdown.connect  # type: ignore[untyped-decorator]
+def _shutdown_worker_tracing(**_kwargs: object) -> None:
+    """Module 13a follow-up — counterpart to `_init_worker_tracing`:
+    `worker_process_shutdown` fires in EACH forked worker child on graceful
+    shutdown (worker restart, rolling deploy), and is what flushes any spans
+    buffered but not yet exported — the gap left by removing the SDK's
+    `atexit`-based flush (`shutdown_on_exit=False`). `shutdown_tracing()` is
+    bounded (~2s) and a safe no-op when this worker process never configured
+    tracing."""
+    shutdown_tracing()

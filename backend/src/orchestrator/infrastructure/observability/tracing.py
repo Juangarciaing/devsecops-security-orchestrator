@@ -33,6 +33,12 @@ from orchestrator.infrastructure.config.settings import get_settings
 
 _configured = False
 
+# Bounded flush timeout (ms) for `shutdown_tracing` — must stay short enough
+# that a graceful SIGTERM/rolling-deploy/worker-restart never blocks past
+# normal container stop-grace periods, even if the OTLP endpoint is
+# completely unreachable at shutdown time.
+_SHUTDOWN_FLUSH_TIMEOUT_MILLIS = 2000
+
 
 def configure_tracing(service_name: str) -> bool:
     """Initialize a `TracerProvider` + OTLP-gRPC exporter for this process.
@@ -81,3 +87,30 @@ def instrument_celery() -> None:
     across the API -> worker boundary). No-op when disabled."""
     if get_settings().otel_exporter_otlp_endpoint:
         CeleryInstrumentor().instrument()  # type: ignore[no-untyped-call]
+
+
+def shutdown_tracing() -> None:
+    """Flush any buffered-but-unexported spans on graceful shutdown.
+
+    Review follow-up: disabling the SDK's `atexit`-based flush
+    (`shutdown_on_exit=False` above) fixed the unreachable-endpoint blocking
+    risk, but left NO compensating flush hook — every graceful shutdown
+    (SIGTERM, rolling deploy, worker restart) was silently dropping whatever
+    spans were buffered but not yet exported, even when the OTLP endpoint
+    was perfectly reachable. This restores an explicit flush, bounded to
+    `_SHUTDOWN_FLUSH_TIMEOUT_MILLIS` (2s) so it can never reintroduce the
+    original blocking-shutdown risk even if the endpoint is unreachable.
+
+    Guarded by the same `_configured` check as the rest of this module: a
+    safe no-op when tracing was never configured (the off-by-default case)
+    — no attempt to flush, no exception.
+    """
+    if not _configured:
+        return
+    # `trace.get_tracer_provider()`'s return type is the OTel API's abstract
+    # `TracerProvider`, which has no `force_flush` — only the SDK's concrete
+    # implementation (which `configure_tracing` always installs before
+    # `_configured` is set `True`) does.
+    trace.get_tracer_provider().force_flush(  # type: ignore[attr-defined]
+        timeout_millis=_SHUTDOWN_FLUSH_TIMEOUT_MILLIS
+    )

@@ -140,3 +140,20 @@ def test_create_app_combines_otel_service_name_setting_with_api_suffix(
         create_app()
 
     mock_configure.assert_called_once_with("custom-service-api")
+
+
+def test_create_app_flushes_tracing_on_graceful_shutdown(valid_env: None) -> None:
+    """Review follow-up: removing the SDK's `atexit`-based flush
+    (`shutdown_on_exit=False`) left no compensating flush hook — every
+    graceful shutdown (SIGTERM, rolling deploy) was silently dropping
+    buffered spans, even when the OTLP endpoint was reachable. FastAPI's
+    lifespan shutdown phase must call `shutdown_tracing()` explicitly."""
+    app = create_app()
+
+    with (
+        patch("orchestrator.api.main.shutdown_tracing") as mock_shutdown,
+        TestClient(app),
+    ):
+        pass
+
+    mock_shutdown.assert_called_once()

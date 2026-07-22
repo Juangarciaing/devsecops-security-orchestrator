@@ -7,6 +7,9 @@ relying on a module-level singleton.
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -23,11 +26,22 @@ from orchestrator.infrastructure.observability.tracing import (
     configure_tracing,
     instrument_celery,
     instrument_fastapi,
+    shutdown_tracing,
 )
 
 
+@asynccontextmanager
+async def _lifespan(_app: FastAPI) -> AsyncIterator[None]:
+    """Module 13a follow-up: FastAPI's shutdown phase is the only hook that
+    fires on every graceful stop (SIGTERM, rolling deploy) — `shutdown_tracing`
+    flushes buffered-but-unexported spans there and is itself a bounded
+    (~2s), safe no-op when tracing was never configured."""
+    yield
+    shutdown_tracing()
+
+
 def create_app() -> FastAPI:
-    app = FastAPI(title="DevSecOps Security Orchestrator", version="0.1.0")
+    app = FastAPI(title="DevSecOps Security Orchestrator", version="0.1.0", lifespan=_lifespan)
     register_exception_handlers(app)
 
     # Module 13a — off by default (D1); each call below is a no-op unless

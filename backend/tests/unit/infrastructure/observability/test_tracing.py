@@ -171,3 +171,35 @@ def test_instrument_celery_instruments_when_endpoint_set(
         tracing.instrument_celery()
 
     mock_instrumentor.return_value.instrument.assert_called_once()
+
+
+def test_shutdown_tracing_is_a_noop_when_not_configured(valid_env: None) -> None:
+    """Review follow-up: `shutdown_tracing` must be a safe no-op when tracing
+    was never configured (the off-by-default case) — no attempt to flush,
+    no exception."""
+    get_settings.cache_clear()
+
+    with patch("orchestrator.infrastructure.observability.tracing.trace") as mock_trace:
+        tracing.shutdown_tracing()
+
+    mock_trace.get_tracer_provider.assert_not_called()
+
+
+def test_shutdown_tracing_flushes_the_active_provider_with_a_bounded_timeout(
+    monkeypatch: pytest.MonkeyPatch, valid_env: None
+) -> None:
+    """Review follow-up: removing the SDK's `atexit`-based flush left no
+    compensating hook, silently dropping buffered spans on every graceful
+    shutdown even when the OTLP endpoint was reachable. `shutdown_tracing`
+    must force-flush the active provider, bounded to 2000ms so it can never
+    reintroduce the original blocking-shutdown risk if the endpoint is
+    unreachable."""
+    monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://jaeger:4317")
+    get_settings.cache_clear()
+    tracing._configured = True
+
+    with patch("orchestrator.infrastructure.observability.tracing.trace") as mock_trace:
+        tracing.shutdown_tracing()
+
+    mock_provider = mock_trace.get_tracer_provider.return_value
+    mock_provider.force_flush.assert_called_once_with(timeout_millis=2000)

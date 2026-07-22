@@ -22,15 +22,18 @@ import pytest
 @pytest.fixture(autouse=True)
 def _clear_worker_process_init_receivers() -> Iterator[None]:
     """Every test in this module reloads `celery_app`, and the module
-    re-registers its `worker_process_init` handler at import time — without
-    resetting the signal's receiver list between tests, repeated reloads
-    would accumulate duplicate handlers and any test that `.send()`s the
-    signal would observe N stale calls instead of exactly one."""
-    from celery.signals import worker_process_init
+    re-registers its `worker_process_init`/`worker_process_shutdown` handlers
+    at import time — without resetting each signal's receiver list between
+    tests, repeated reloads would accumulate duplicate handlers and any test
+    that `.send()`s a signal would observe N stale calls instead of exactly
+    one."""
+    from celery.signals import worker_process_init, worker_process_shutdown
 
     worker_process_init.receivers = []
+    worker_process_shutdown.receivers = []
     yield
     worker_process_init.receivers = []
+    worker_process_shutdown.receivers = []
 
 
 def _import_celery_app(monkeypatch: pytest.MonkeyPatch) -> ModuleType:
@@ -216,6 +219,28 @@ def test_worker_process_init_combines_otel_service_name_setting_with_worker_suff
         worker_process_init.send(sender=None)
 
         mock_configure.assert_called_once_with("custom-service-worker")
+
+
+def test_worker_process_shutdown_signal_flushes_tracing(
+    monkeypatch: pytest.MonkeyPatch, valid_env: None
+) -> None:
+    """Module 13a follow-up — counterpart to `worker_process_init`:
+    `worker_process_shutdown` fires in EACH forked worker child on graceful
+    shutdown (worker restart, rolling deploy) and must flush any spans
+    buffered but not yet exported, the gap left by removing the SDK's
+    `atexit`-based flush."""
+    from celery.signals import worker_process_shutdown
+
+    monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://jaeger:4317")
+
+    with patch(
+        "orchestrator.infrastructure.observability.tracing.shutdown_tracing"
+    ) as mock_shutdown:
+        _import_celery_app(monkeypatch)
+
+        worker_process_shutdown.send(sender=None)
+
+        mock_shutdown.assert_called_once()
 
 
 def test_webhook_queue_is_declared_but_no_task_is_routed_to_it(
