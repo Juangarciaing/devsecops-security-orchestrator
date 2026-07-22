@@ -73,6 +73,16 @@ class Settings(BaseSettings):
     # delivery is 401-audited rather than accepted unverified.
     github_webhook_secret: str | None = None
 
+    # Module 13a — OpenTelemetry distributed tracing. Opt-in via presence
+    # (D1): an empty (the default) endpoint means tracing is fully off — no
+    # TracerProvider is set, no exporter/thread/socket is created, and the
+    # existing request/task pipeline is byte-for-byte unchanged. Mirrors the
+    # `cors_allowed_origins`/`github_webhook_secret` opt-in-via-presence
+    # precedent; neither field is required, so tracing can never block
+    # application startup.
+    otel_exporter_otlp_endpoint: str = ""
+    otel_service_name: str = "orchestrator"
+
 
 @lru_cache
 def get_settings() -> Settings:

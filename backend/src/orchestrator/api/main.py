@@ -7,6 +7,9 @@ relying on a module-level singleton.
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -19,11 +22,40 @@ from orchestrator.api.v1.routers.scans import router as scans_router
 from orchestrator.api.v1.routers.users import router as users_router
 from orchestrator.api.v1.routers.webhooks import router as webhooks_router
 from orchestrator.infrastructure.config.settings import get_settings
+from orchestrator.infrastructure.observability.tracing import (
+    configure_tracing,
+    instrument_celery,
+    instrument_fastapi,
+    shutdown_tracing,
+)
+
+
+@asynccontextmanager
+async def _lifespan(_app: FastAPI) -> AsyncIterator[None]:
+    """Module 13a follow-up: FastAPI's shutdown phase is the only hook that
+    fires on every graceful stop (SIGTERM, rolling deploy) — `shutdown_tracing`
+    flushes buffered-but-unexported spans there. It is a safe no-op when
+    tracing was never configured; when configured, how long its flush can
+    block on an unreachable OTLP endpoint is bounded by the `OTLPSpanExporter`
+    constructor-level `timeout` set in `tracing.configure_tracing` (~2s), not
+    by any argument to `force_flush()` itself — see
+    `infrastructure/observability/tracing.py` for why."""
+    yield
+    shutdown_tracing()
 
 
 def create_app() -> FastAPI:
-    app = FastAPI(title="DevSecOps Security Orchestrator", version="0.1.0")
+    app = FastAPI(title="DevSecOps Security Orchestrator", version="0.1.0", lifespan=_lifespan)
     register_exception_handlers(app)
+
+    # Module 13a — off by default (D1); each call below is a no-op unless
+    # `OTEL_EXPORTER_OTLP_ENDPOINT` is set. `configure_tracing` sets up this
+    # process's own TracerProvider/exporter; `instrument_celery` wires
+    # producer-side trace-context propagation into enqueued tasks;
+    # `instrument_fastapi` adds server spans for inbound requests.
+    configure_tracing(f"{get_settings().otel_service_name}-api")
+    instrument_celery()
+    instrument_fastapi(app)
 
     # Opt-in only (D: settings.cors_allowed_origins) — an unconfigured
     # deployment adds no middleware and gets no CORS headers at all.

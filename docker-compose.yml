@@ -34,6 +34,11 @@ services:
     restart: unless-stopped
     env_file:
       - .env
+    environment:
+      # Module 13a — off by default (empty ⇒ zero exporter, zero behavior
+      # change). Opt in by setting this in `.env` to the `jaeger` service's
+      # OTLP-gRPC address (`http://jaeger:4317`).
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
     ports:
       - "${BACKEND_PORT:-8000}:8000"
     depends_on:
@@ -61,6 +66,11 @@ services:
     restart: unless-stopped
     env_file:
       - .env
+    environment:
+      # Module 13a — same off-by-default opt-in as `backend` above; the
+      # worker's TracerProvider/exporter is initialized per forked child
+      # process via a `worker_process_init` handler (fork-safety, D2).
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
     command: ["celery", "-A", "orchestrator.workers.celery_app", "worker", "-Q", "scan", "-l", "info"]
     # Module 6: the worker orchestrates SIBLING scanner/init containers via
     # the `docker` Python SDK — it is the ONLY service that gets the Docker
@@ -89,6 +99,21 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+
+  jaeger:
+    # Module 13a — self-hosted OTLP trace collector + UI. Always present in
+    # the stack (harmless when unused); the `backend`/`worker` services'
+    # OTEL_EXPORTER_OTLP_ENDPOINT default is empty, so a fresh `docker
+    # compose up` with no `.env` opt-in exhibits zero tracing behavior even
+    # though this service is running. Digest confirmed at apply time via
+    # `docker buildx imagetools inspect jaegertracing/all-in-one:1.62.0`.
+    image: "jaegertracing/all-in-one:1.62.0@sha256:836e9b69c88afbedf7683ea7162e179de63b1f981662e83f5ebb68badadc710f"
+    restart: unless-stopped
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+    ports:
+      - "16686:16686" # Jaeger UI
+      - "4317:4317" # OTLP gRPC receiver
 
   frontend:
     build:
