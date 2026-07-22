@@ -74,6 +74,10 @@ def _shutdown_worker_tracing(**_kwargs: object) -> None:
     shutdown (worker restart, rolling deploy), and is what flushes any spans
     buffered but not yet exported — the gap left by removing the SDK's
     `atexit`-based flush (`shutdown_on_exit=False`). `shutdown_tracing()` is
-    bounded (~2s) and a safe no-op when this worker process never configured
-    tracing."""
+    a safe no-op when this worker process never configured tracing; when
+    configured, how long its flush can block on an unreachable OTLP endpoint
+    is bounded by the `OTLPSpanExporter` constructor-level `timeout` set in
+    `tracing.configure_tracing` (~2s), not by any argument to
+    `force_flush()` itself — see `infrastructure/observability/tracing.py`
+    for why."""
     shutdown_tracing()

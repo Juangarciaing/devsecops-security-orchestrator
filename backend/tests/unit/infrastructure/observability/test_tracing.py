@@ -86,6 +86,32 @@ def test_configure_tracing_disables_shutdown_on_exit(
     assert kwargs["shutdown_on_exit"] is False
 
 
+def test_configure_tracing_sets_a_bounded_timeout_on_the_otlp_exporter(
+    monkeypatch: pytest.MonkeyPatch, valid_env: None
+) -> None:
+    """Review follow-up: `BatchSpanProcessor.force_flush()` silently ignores
+    its `timeout_millis` argument in `opentelemetry-sdk==1.44.0` (upstream
+    bug, see `tracing._OTLP_EXPORTER_TIMEOUT_SECONDS`'s docstring) — the
+    real bound on how long a shutdown-time flush can block against an
+    unreachable OTLP endpoint is the exporter's own constructor-level
+    `timeout` (seconds), so `configure_tracing` must pass it explicitly."""
+    monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://jaeger:4317")
+    get_settings.cache_clear()
+
+    with (
+        patch("orchestrator.infrastructure.observability.tracing.TracerProvider"),
+        patch("orchestrator.infrastructure.observability.tracing.BatchSpanProcessor"),
+        patch(
+            "orchestrator.infrastructure.observability.tracing.OTLPSpanExporter"
+        ) as mock_exporter_cls,
+        patch("orchestrator.infrastructure.observability.tracing.trace"),
+    ):
+        tracing.configure_tracing("orchestrator-api")
+
+    _, kwargs = mock_exporter_cls.call_args
+    assert kwargs["timeout"] == tracing._OTLP_EXPORTER_TIMEOUT_SECONDS
+
+
 def test_configure_tracing_only_constructs_the_provider_once_across_repeated_calls(
     monkeypatch: pytest.MonkeyPatch, valid_env: None
 ) -> None:
@@ -185,15 +211,20 @@ def test_shutdown_tracing_is_a_noop_when_not_configured(valid_env: None) -> None
     mock_trace.get_tracer_provider.assert_not_called()
 
 
-def test_shutdown_tracing_flushes_the_active_provider_with_a_bounded_timeout(
+def test_shutdown_tracing_flushes_the_active_provider(
     monkeypatch: pytest.MonkeyPatch, valid_env: None
 ) -> None:
     """Review follow-up: removing the SDK's `atexit`-based flush left no
     compensating hook, silently dropping buffered spans on every graceful
     shutdown even when the OTLP endpoint was reachable. `shutdown_tracing`
-    must force-flush the active provider, bounded to 2000ms so it can never
-    reintroduce the original blocking-shutdown risk if the endpoint is
-    unreachable."""
+    must force-flush the active provider.
+
+    Called bare (no `timeout_millis` kwarg) deliberately:
+    `BatchSpanProcessor.force_flush()` silently ignores that argument in
+    `opentelemetry-sdk==1.44.0` (see `tracing._OTLP_EXPORTER_TIMEOUT_SECONDS`'s
+    docstring) — the real bound against an unreachable endpoint comes from
+    the `OTLPSpanExporter` constructor-level `timeout` asserted in
+    `test_configure_tracing_sets_a_bounded_timeout_on_the_otlp_exporter`."""
     monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://jaeger:4317")
     get_settings.cache_clear()
     tracing._configured = True
@@ -202,4 +233,4 @@ def test_shutdown_tracing_flushes_the_active_provider_with_a_bounded_timeout(
         tracing.shutdown_tracing()
 
     mock_provider = mock_trace.get_tracer_provider.return_value
-    mock_provider.force_flush.assert_called_once_with(timeout_millis=2000)
+    mock_provider.force_flush.assert_called_once_with()

@@ -34,8 +34,12 @@ from orchestrator.infrastructure.observability.tracing import (
 async def _lifespan(_app: FastAPI) -> AsyncIterator[None]:
     """Module 13a follow-up: FastAPI's shutdown phase is the only hook that
     fires on every graceful stop (SIGTERM, rolling deploy) — `shutdown_tracing`
-    flushes buffered-but-unexported spans there and is itself a bounded
-    (~2s), safe no-op when tracing was never configured."""
+    flushes buffered-but-unexported spans there. It is a safe no-op when
+    tracing was never configured; when configured, how long its flush can
+    block on an unreachable OTLP endpoint is bounded by the `OTLPSpanExporter`
+    constructor-level `timeout` set in `tracing.configure_tracing` (~2s), not
+    by any argument to `force_flush()` itself — see
+    `infrastructure/observability/tracing.py` for why."""
     yield
     shutdown_tracing()
 

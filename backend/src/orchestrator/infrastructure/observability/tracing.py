@@ -33,11 +33,22 @@ from orchestrator.infrastructure.config.settings import get_settings
 
 _configured = False
 
-# Bounded flush timeout (ms) for `shutdown_tracing` — must stay short enough
-# that a graceful SIGTERM/rolling-deploy/worker-restart never blocks past
-# normal container stop-grace periods, even if the OTLP endpoint is
-# completely unreachable at shutdown time.
-_SHUTDOWN_FLUSH_TIMEOUT_MILLIS = 2000
+# Bounded per-export timeout (seconds) passed to `OTLPSpanExporter` itself —
+# this is what actually bounds how long a graceful SIGTERM/rolling-deploy/
+# worker-restart can block on `shutdown_tracing()`'s `force_flush()` if the
+# OTLP endpoint is completely unreachable at shutdown time.
+#
+# NOT `force_flush(timeout_millis=...)`: as of `opentelemetry-sdk==1.44.0`,
+# `BatchSpanProcessor`/`BatchProcessor.force_flush()` silently ignores its
+# `timeout_millis` argument entirely (see
+# `opentelemetry.sdk._shared_internal.BatchProcessor.force_flush`, which
+# never reads the parameter) — an upstream bug tracked at
+# https://github.com/open-telemetry/opentelemetry-python/issues/4568
+# ("TODO: Fix force flush so the timeout is used"). The exporter's own
+# constructor-level `timeout` (seconds, not milliseconds) is what actually
+# bounds each export attempt's blocking gRPC call, so that is the layer this
+# module must configure.
+_OTLP_EXPORTER_TIMEOUT_SECONDS = 2
 
 
 def configure_tracing(service_name: str) -> bool:
@@ -68,7 +79,11 @@ def configure_tracing(service_name: str) -> bool:
     )
     provider.add_span_processor(
         BatchSpanProcessor(
-            OTLPSpanExporter(endpoint=settings.otel_exporter_otlp_endpoint, insecure=True)
+            OTLPSpanExporter(
+                endpoint=settings.otel_exporter_otlp_endpoint,
+                insecure=True,
+                timeout=_OTLP_EXPORTER_TIMEOUT_SECONDS,
+            )
         )
     )
     trace.set_tracer_provider(provider)
@@ -97,9 +112,17 @@ def shutdown_tracing() -> None:
     risk, but left NO compensating flush hook — every graceful shutdown
     (SIGTERM, rolling deploy, worker restart) was silently dropping whatever
     spans were buffered but not yet exported, even when the OTLP endpoint
-    was perfectly reachable. This restores an explicit flush, bounded to
-    `_SHUTDOWN_FLUSH_TIMEOUT_MILLIS` (2s) so it can never reintroduce the
-    original blocking-shutdown risk even if the endpoint is unreachable.
+    was perfectly reachable. This restores an explicit flush.
+
+    The bound on how long that flush can block if the OTLP endpoint is
+    unreachable comes from `OTLPSpanExporter`'s own constructor-level
+    `timeout=_OTLP_EXPORTER_TIMEOUT_SECONDS` set in `configure_tracing`
+    above — NOT from a `force_flush(timeout_millis=...)` argument here.
+    `force_flush()` is called bare (no timeout kwarg) deliberately: as of
+    `opentelemetry-sdk==1.44.0`, `BatchSpanProcessor.force_flush()` silently
+    ignores its `timeout_millis` argument (upstream bug, see
+    `_OTLP_EXPORTER_TIMEOUT_SECONDS`'s docstring above for the tracking
+    issue), so passing one here would be dead, misleading code.
 
     Guarded by the same `_configured` check as the rest of this module: a
     safe no-op when tracing was never configured (the off-by-default case)
@@ -111,6 +134,4 @@ def shutdown_tracing() -> None:
     # `TracerProvider`, which has no `force_flush` — only the SDK's concrete
     # implementation (which `configure_tracing` always installs before
     # `_configured` is set `True`) does.
-    trace.get_tracer_provider().force_flush(  # type: ignore[attr-defined]
-        timeout_millis=_SHUTDOWN_FLUSH_TIMEOUT_MILLIS
-    )
+    trace.get_tracer_provider().force_flush()  # type: ignore[attr-defined]
