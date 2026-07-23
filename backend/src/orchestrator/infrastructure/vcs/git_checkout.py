@@ -18,6 +18,8 @@ from dataclasses import dataclass, field
 from types import TracebackType
 from typing import TYPE_CHECKING
 
+from opentelemetry import trace
+
 from orchestrator.domain.ports.container_runner_port import ContainerRunnerPort, ResourceLimits
 
 if TYPE_CHECKING:
@@ -107,60 +109,66 @@ class GitCheckout:
         error propagates; the ORIGINAL exception type is re-raised
         unchanged so transient Docker-daemon errors stay distinguishable
         from deterministic checkout failures (D5).
+
+        Module 13a: one `git.checkout` span wraps clone + rev-parse. Never
+        carries `clone_url`/`ref` as attributes (threat matrix: either may
+        embed a credential or a secret branch name).
         """
-        volume_name = f"scan-{uuid.uuid4().hex}"
-        self._docker_client.volumes.create(name=volume_name)
+        tracer = trace.get_tracer(__name__)
+        with tracer.start_as_current_span("git.checkout"):
+            volume_name = f"scan-{uuid.uuid4().hex}"
+            self._docker_client.volumes.create(name=volume_name)
 
-        try:
-            self._prepare_volume_permissions(volume_name)
-            limits = self._resource_limits()
+            try:
+                self._prepare_volume_permissions(volume_name)
+                limits = self._resource_limits()
 
-            clone_result = self._runner.run(
-                image=self._settings.scan_git_image,
-                command=[
-                    "clone",
-                    "--depth",
-                    "1",
-                    "--single-branch",
-                    "--branch",
-                    ref,
-                    clone_url,
-                    _CHECKOUT_DIR,
-                ],
-                volume_name=volume_name,
-                mount_path=_WORKSPACE_MOUNT_PATH,
-                read_only_mount=False,
-                network_disabled=False,
-                limits=limits,
-                timeout_seconds=self._settings.scan_timeout_seconds,
-            )
-            if clone_result.exit_code != 0:
-                if _looks_like_auth_failure(clone_result.stderr):
-                    raise CheckoutFailedError(_CREDENTIAL_RESOLUTION_NOT_IMPLEMENTED)
-                raise CheckoutFailedError(
-                    f"git clone failed (exit {clone_result.exit_code}): {clone_result.stderr}"
+                clone_result = self._runner.run(
+                    image=self._settings.scan_git_image,
+                    command=[
+                        "clone",
+                        "--depth",
+                        "1",
+                        "--single-branch",
+                        "--branch",
+                        ref,
+                        clone_url,
+                        _CHECKOUT_DIR,
+                    ],
+                    volume_name=volume_name,
+                    mount_path=_WORKSPACE_MOUNT_PATH,
+                    read_only_mount=False,
+                    network_disabled=False,
+                    limits=limits,
+                    timeout_seconds=self._settings.scan_timeout_seconds,
                 )
+                if clone_result.exit_code != 0:
+                    if _looks_like_auth_failure(clone_result.stderr):
+                        raise CheckoutFailedError(_CREDENTIAL_RESOLUTION_NOT_IMPLEMENTED)
+                    raise CheckoutFailedError(
+                        f"git clone failed (exit {clone_result.exit_code}): {clone_result.stderr}"
+                    )
 
-            rev_parse_result = self._runner.run(
-                image=self._settings.scan_git_image,
-                command=["-C", _CHECKOUT_DIR, "rev-parse", "HEAD"],
-                volume_name=volume_name,
-                mount_path=_WORKSPACE_MOUNT_PATH,
-                read_only_mount=False,
-                network_disabled=False,
-                limits=limits,
-                timeout_seconds=self._settings.scan_timeout_seconds,
-            )
-            if rev_parse_result.exit_code != 0:
-                raise CheckoutFailedError(
-                    f"git rev-parse HEAD failed (exit {rev_parse_result.exit_code}): "
-                    f"{rev_parse_result.stderr}"
+                rev_parse_result = self._runner.run(
+                    image=self._settings.scan_git_image,
+                    command=["-C", _CHECKOUT_DIR, "rev-parse", "HEAD"],
+                    volume_name=volume_name,
+                    mount_path=_WORKSPACE_MOUNT_PATH,
+                    read_only_mount=False,
+                    network_disabled=False,
+                    limits=limits,
+                    timeout_seconds=self._settings.scan_timeout_seconds,
                 )
+                if rev_parse_result.exit_code != 0:
+                    raise CheckoutFailedError(
+                        f"git rev-parse HEAD failed (exit {rev_parse_result.exit_code}): "
+                        f"{rev_parse_result.stderr}"
+                    )
 
-            head_sha = rev_parse_result.stdout.strip()
-        except Exception:
-            self._docker_client.volumes.get(volume_name).remove(force=True)
-            raise
+                head_sha = rev_parse_result.stdout.strip()
+            except Exception:
+                self._docker_client.volumes.get(volume_name).remove(force=True)
+                raise
 
         return Workspace(
             volume_name=volume_name, head_sha=head_sha, _docker_client=self._docker_client

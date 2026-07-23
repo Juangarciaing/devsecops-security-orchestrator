@@ -12,6 +12,7 @@ from unittest.mock import MagicMock
 
 import pytest
 import requests.exceptions
+from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
 from orchestrator.domain.ports.container_runner_port import ResourceLimits
 from orchestrator.infrastructure.container.docker_container_runner import DockerContainerRunner
@@ -375,3 +376,107 @@ def test_docker_container_runner_defaults_to_docker_from_env(
     runner = DockerContainerRunner()
 
     assert runner._client is sentinel_client
+
+
+def test_run_emits_a_container_run_span_with_success_attributes(
+    span_exporter: InMemorySpanExporter,
+) -> None:
+    client, container = _make_mock_client()
+    container.wait.return_value = {"StatusCode": 0}
+    runner = DockerContainerRunner(client=client)
+
+    runner.run(
+        image="ghcr.io/gitleaks/gitleaks:v8.30.1",
+        command=["dir", "/checkout/checkout"],
+        volume_name="scan-1",
+        mount_path="/checkout",
+        read_only_mount=True,
+        network_disabled=True,
+        limits=_LIMITS,
+        timeout_seconds=120,
+    )
+
+    spans = span_exporter.get_finished_spans()
+    assert len(spans) == 1
+    span = spans[0]
+    assert span.name == "container.run"
+    assert span.attributes is not None
+    assert span.attributes["image"] == "ghcr.io/gitleaks/gitleaks:v8.30.1"
+    assert span.attributes["exit_code"] == 0
+    assert span.attributes["timed_out"] is False
+    assert span.attributes["network_disabled"] is True
+    assert isinstance(span.attributes["duration_ms"], float)
+
+
+def test_run_emits_a_container_run_span_with_non_zero_exit_code_attributes(
+    span_exporter: InMemorySpanExporter,
+) -> None:
+    client, container = _make_mock_client()
+    container.wait.return_value = {"StatusCode": 1}
+    runner = DockerContainerRunner(client=client)
+
+    runner.run(
+        image="ghcr.io/gitleaks/gitleaks:v8.30.1",
+        command=["dir", "/checkout/checkout"],
+        volume_name="scan-1",
+        mount_path="/checkout",
+        read_only_mount=True,
+        network_disabled=True,
+        limits=_LIMITS,
+        timeout_seconds=120,
+    )
+
+    span = span_exporter.get_finished_spans()[0]
+    assert span.attributes is not None
+    assert span.attributes["exit_code"] == 1
+    assert span.attributes["timed_out"] is False
+
+
+def test_run_emits_a_container_run_span_with_timed_out_attributes(
+    span_exporter: InMemorySpanExporter,
+) -> None:
+    client, container = _make_mock_client()
+    container.wait.side_effect = requests.exceptions.ReadTimeout("timed out")
+    runner = DockerContainerRunner(client=client)
+
+    runner.run(
+        image="ghcr.io/gitleaks/gitleaks:v8.30.1",
+        command=["dir", "/checkout/checkout"],
+        volume_name="scan-1",
+        mount_path="/checkout",
+        read_only_mount=True,
+        network_disabled=True,
+        limits=_LIMITS,
+        timeout_seconds=5,
+    )
+
+    span = span_exporter.get_finished_spans()[0]
+    assert span.attributes is not None
+    assert span.attributes["exit_code"] == -1
+    assert span.attributes["timed_out"] is True
+
+
+def test_run_never_injects_trace_context_into_the_launched_container(
+    span_exporter: InMemorySpanExporter,
+) -> None:
+    """Negative test (spec: "Span Coverage Stops at Container Launch/Exit"):
+    no span or trace context may originate from inside the container process
+    itself — instrumentation stops at launch/exit, so `containers.run(...)`
+    must never receive an injected `environment`/traceparent kwarg."""
+    client, _container = _make_mock_client()
+    runner = DockerContainerRunner(client=client)
+
+    runner.run(
+        image="ghcr.io/gitleaks/gitleaks:v8.30.1",
+        command=["dir", "/checkout/checkout"],
+        volume_name="scan-1",
+        mount_path="/checkout",
+        read_only_mount=True,
+        network_disabled=True,
+        limits=_LIMITS,
+        timeout_seconds=120,
+    )
+
+    call_kwargs: dict[str, Any] = client.containers.run.call_args.kwargs
+    assert "environment" not in call_kwargs
+    assert len(span_exporter.get_finished_spans()) == 1  # exactly one span, not a per-line trace

@@ -51,6 +51,7 @@ import docker
 from celery import Task
 from celery.exceptions import MaxRetriesExceededError
 from celery.utils.log import get_task_logger
+from opentelemetry import trace
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from orchestrator.domain.entities.finding import Finding
@@ -244,34 +245,46 @@ def process_scan_task(
     settings = get_settings()
     client = docker_client if docker_client is not None else docker.from_env()
     runner = container_runner if container_runner is not None else DockerContainerRunner(client)
+    tracer = trace.get_tracer(__name__)
 
     try:
         try:
-            clone_url, ref, scan_run_id, repository_id, scanner_type = run_async(
-                lambda session: _load_and_start(session, task_id)
-            )
-            try:
-                head_sha, findings = _checkout_and_scan(
-                    clone_url, ref, task_id, scanner_type, runner, client, settings
+            with tracer.start_as_current_span("scan.load_and_start"):
+                clone_url, ref, scan_run_id, repository_id, scanner_type = run_async(
+                    lambda session: _load_and_start(session, task_id)
                 )
-            except (
-                CheckoutFailedError,
-                GitleaksFailedError,
-                PipAuditFailedError,
-                SastFailedError,
-                SemgrepFailedError,
-            ):
-                raise
-            except Exception as exc:
-                # Docker-daemon/network blip, not a deterministic checkout/scan
-                # failure (D5) — hand off to Module 5's existing retry/backoff.
-                raise TransientScanError(str(exc)) from exc
 
-            run_async(
-                lambda session: _complete_scan(
-                    session, task_id, scan_run_id, repository_id, head_sha, findings
+            with tracer.start_as_current_span("scan.checkout_and_scan") as checkout_span:
+                # Module 13a threat matrix: `scanner_type` only — NEVER
+                # `clone_url`/`ref` (may embed credentials/branch secrets).
+                checkout_span.set_attribute("scanner_type", scanner_type.value)
+                try:
+                    head_sha, findings = _checkout_and_scan(
+                        clone_url, ref, task_id, scanner_type, runner, client, settings
+                    )
+                except (
+                    CheckoutFailedError,
+                    GitleaksFailedError,
+                    PipAuditFailedError,
+                    SastFailedError,
+                    SemgrepFailedError,
+                ):
+                    raise
+                except Exception as exc:
+                    # Docker-daemon/network blip, not a deterministic checkout/scan
+                    # failure (D5) — hand off to Module 5's existing retry/backoff.
+                    raise TransientScanError(str(exc)) from exc
+
+            with tracer.start_as_current_span("scan.write_back") as write_back_span:
+                write_back_span.set_attribute("db.system", "postgresql")
+                write_back_span.set_attribute("findings.count", len(findings))
+                write_back_span.set_attribute("repository.id", str(repository_id))
+                write_back_span.set_attribute("scan_run.id", str(scan_run_id))
+                run_async(
+                    lambda session: _complete_scan(
+                        session, task_id, scan_run_id, repository_id, head_sha, findings
+                    )
                 )
-            )
         finally:
             if docker_client is None:
                 client.close()
