@@ -53,14 +53,21 @@ merged as of this README.
   **policy-gate badge** (pass/fail quality gate — fails if any `CRITICAL`/
   `HIGH` finding is open — a fixed global rule, no per-repo config yet).
 
+- **Distributed tracing (Module 13a)** — OpenTelemetry spans correlate a scan
+  across process boundaries: API request → Celery enqueue → worker task →
+  scanner-container execution → Postgres write-back, exported over OTLP/gRPC
+  to a self-hosted Jaeger instance. **Off by default** — no exporter, no
+  network call, zero behavior change until `OTEL_EXPORTER_OTLP_ENDPOINT` is
+  explicitly set (see "Distributed tracing" below).
+
 Not yet built: a DAST scanner slot (TruffleHog and/or a URL-target scanner
 still under consideration), an *outbound* GitHub Checks API integration
 (posting scan results back to a PR/commit as a native GitHub check — blocked
 on the secrets manager below, since it needs GitHub App/installation-token
 auth this project doesn't have; the *internal* policy-gate equivalent is
 built, see above), a proper secrets manager for private-repo credentials,
-real-time push (still polling), and the observability/Kubernetes-migration
-hardening pass — see `## Roadmap` below.
+real-time push (still polling), Prometheus metrics (Module 13b), and the
+k8s-Jobs migration (Module 13c) — see `## Roadmap` below.
 
 ## Architecture
 
@@ -116,6 +123,34 @@ curl -s localhost:8000/health          # {"status":"ok"}
 curl -s localhost:8000/health/ready    # 200 once postgres+redis are reachable
 ```
 
+### Distributed tracing (Module 13a)
+
+The stack always runs a `jaeger` service (`jaegertracing/all-in-one`, UI on
+`:16686`, OTLP-gRPC receiver on `:4317`) — but tracing itself is **opt-in**:
+`backend`/`worker` read `OTEL_EXPORTER_OTLP_ENDPOINT` from `.env`, and its
+default is empty, so a fresh `docker compose up` exports zero spans even
+though Jaeger is running. Opt in by adding one line to `.env`:
+
+```bash
+OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:4317
+```
+
+Then `docker compose up`, trigger a scan, and open `http://localhost:16686`
+— one trace spans the HTTP request (`orchestrator-api`), the Celery task
+(`orchestrator-worker`), the `git.checkout` + per-scanner `container.run`
+child spans, and the `scan.write_back` Postgres hop. Trace-context
+propagation across the API→Celery boundary is automatic
+(`opentelemetry-instrumentation-celery`); span shape (names, nesting,
+attributes) is verified in CI via `InMemorySpanExporter` — no live Jaeger
+required for tests. Delivered in two PRs: PR1 (bootstrap — settings,
+`TracerProvider`/OTLP-gRPC exporter, FastAPI/Celery auto-instrumentation,
+Celery fork-safety via `worker_process_init`, the `jaeger` compose service)
+and PR2 (manual phase spans on the scan task lifecycle, `container.run`/
+`git.checkout` spans, a hexagonal-layering guard proving `domain/`/
+`application/` stay import-free of `opentelemetry`, this section). Metrics
+(Module 13b) and the k8s-Jobs migration (Module 13c) are separate,
+not-yet-built modules.
+
 ## Tests
 
 ```bash
@@ -150,4 +185,4 @@ project SDD history for the full spec/design trail per module).
 | 10 | Webhook handling (GitHub push) | ✅ |
 | 11 | More scanners (pip-audit ✅, AST-SAST ✅, Semgrep ✅, DAST slot pending) | ⏳ |
 | 12 | Advanced dashboard (trends ✅, diffing ✅, internal policy gate ✅; outbound GitHub Checks API deferred) | ✅ |
-| 13 | Hardening & observability (OTel, Prometheus, k8s Jobs migration) | ⏳ |
+| 13 | Hardening & observability (13a: OTel distributed tracing ✅; 13b: Prometheus metrics pending; 13c: k8s Jobs migration pending) | ⏳ |
