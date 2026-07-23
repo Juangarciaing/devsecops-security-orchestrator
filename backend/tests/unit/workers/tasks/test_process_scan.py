@@ -148,7 +148,11 @@ def test_no_span_ever_carries_clone_url_ref_or_raw_finding_content(
     _run_task(monkeypatch)
 
     disallowed_keys = {"clone_url", "ref"}
-    for span in span_exporter.get_finished_spans():
+    finished_spans = span_exporter.get_finished_spans()
+    assert finished_spans, (
+        "Expected process_scan_task to emit spans for the sensitive-attribute audit"
+    )
+    for span in finished_spans:
         for key, value in (span.attributes or {}).items():
             assert key not in disallowed_keys
             if isinstance(value, str):
