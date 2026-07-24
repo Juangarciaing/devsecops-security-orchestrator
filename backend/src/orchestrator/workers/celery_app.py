@@ -31,6 +31,10 @@ from celery.signals import worker_process_init, worker_process_shutdown
 from kombu import Queue
 
 from orchestrator.infrastructure.config.settings import get_settings
+from orchestrator.infrastructure.observability.metrics import (
+    start_worker_heartbeat,
+    stop_worker_heartbeat,
+)
 from orchestrator.infrastructure.observability.tracing import (
     configure_tracing,
     instrument_celery,
@@ -65,6 +69,7 @@ def _init_worker_tracing(**_kwargs: object) -> None:
     thread/gRPC channel). Deliberately NOT called at module import scope."""
     configure_tracing(f"{_settings.otel_service_name}-worker")
     instrument_celery()
+    start_worker_heartbeat()
 
 
 @worker_process_shutdown.connect  # type: ignore[untyped-decorator]
@@ -80,4 +85,7 @@ def _shutdown_worker_tracing(**_kwargs: object) -> None:
     `tracing.configure_tracing` (~2s), not by any argument to
     `force_flush()` itself — see `infrastructure/observability/tracing.py`
     for why."""
-    shutdown_tracing()
+    try:
+        shutdown_tracing()
+    finally:
+        stop_worker_heartbeat()

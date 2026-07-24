@@ -256,3 +256,21 @@ def test_webhook_queue_is_declared_but_no_task_is_routed_to_it(
 
     routed_queues = {route["queue"] for route in module.celery_app.conf.task_routes.values()}
     assert "webhook" not in routed_queues
+
+
+def test_worker_process_signals_start_and_stop_metrics_heartbeat(
+    monkeypatch: pytest.MonkeyPatch, valid_env: None
+) -> None:
+    from celery.signals import worker_process_init, worker_process_shutdown
+
+    with (
+        patch("orchestrator.infrastructure.observability.metrics.start_worker_heartbeat") as start,
+        patch("orchestrator.infrastructure.observability.metrics.stop_worker_heartbeat") as stop,
+    ):
+        _import_celery_app(monkeypatch)
+
+        worker_process_init.send(sender=None)
+        worker_process_shutdown.send(sender=None)
+
+    start.assert_called_once()
+    stop.assert_called_once()

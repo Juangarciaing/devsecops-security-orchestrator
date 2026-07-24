@@ -53,6 +53,11 @@ def _is_wait_read_timeout(exc: requests.exceptions.ConnectionError) -> bool:
     return any(isinstance(arg, urllib3.exceptions.ReadTimeoutError) for arg in exc.args)
 
 
+def container_metric_outcome(*, timed_out: bool) -> str:
+    """Map container completion to the finite metric outcome taxonomy."""
+    return "timeout" if timed_out else "success"
+
+
 class DockerContainerRunner(ContainerRunnerPort):
     """Sync `ContainerRunnerPort` adapter over the `docker` SDK (Module 6 D3).
 
@@ -133,5 +138,10 @@ class DockerContainerRunner(ContainerRunnerPort):
             span.set_attribute("exit_code", exit_code)
             span.set_attribute("timed_out", timed_out)
             span.set_attribute("duration_ms", duration_ms)
+            from orchestrator.infrastructure.observability.metrics import record_container_duration
+
+            record_container_duration(
+                container_metric_outcome(timed_out=timed_out), duration_ms / 1000
+            )
 
         return RunResult(exit_code=exit_code, stdout=stdout, stderr=stderr, timed_out=timed_out)
