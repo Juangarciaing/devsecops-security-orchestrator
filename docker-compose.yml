@@ -39,20 +39,28 @@ services:
       # change). Opt in by setting this in `.env` to the `jaeger` service's
       # OTLP-gRPC address (`http://jaeger:4317`).
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
-    ports:
-      - "${BACKEND_PORT:-8000}:8000"
+      PROMETHEUS_MULTIPROC_DIR: /prometheus
+    command: ["uvicorn", "orchestrator.api.main:create_app", "--factory", "--host", "172.30.0.10", "--port", "8000"]
+    volumes:
+      - metrics-data:/prometheus
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
+      metrics-init:
+        condition: service_completed_successfully
+    networks:
+      application:
+      observability:
+        ipv4_address: 172.30.0.10
     healthcheck:
       test:
         [
           "CMD",
           "python",
           "-c",
-          "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=2)",
+            "import urllib.request; urllib.request.urlopen('http://172.30.0.10:8000/health', timeout=2)",
         ]
       interval: 10s
       timeout: 5s
@@ -71,6 +79,7 @@ services:
       # worker's TracerProvider/exporter is initialized per forked child
       # process via a `worker_process_init` handler (fork-safety, D2).
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+      PROMETHEUS_MULTIPROC_DIR: /prometheus
     command: ["celery", "-A", "orchestrator.workers.celery_app", "worker", "-Q", "scan", "-l", "info"]
     # Module 6: the worker orchestrates SIBLING scanner/init containers via
     # the `docker` Python SDK — it is the ONLY service that gets the Docker
@@ -94,11 +103,77 @@ services:
       - "${DOCKER_GID:-999}"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
+      - metrics-data:/prometheus
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
+      metrics-init:
+        condition: service_completed_successfully
+    networks:
+      application:
+
+  metrics-init:
+    image: alpine:3.22
+    command: ["sh", "-c", "test -f /prometheus/.initialized || (rm -rf /prometheus/* && chmod 0777 /prometheus && touch /prometheus/.initialized)"]
+    volumes:
+      - metrics-data:/prometheus
+    network_mode: none
+
+  proxy:
+    image: nginx:1.29-alpine
+    restart: unless-stopped
+    ports:
+      - "${BACKEND_PORT:-8000}:8080"
+    volumes:
+      - ./docker/metrics-proxy.nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks:
+      application:
+      observability:
+
+  worker-metrics:
+    build:
+      context: .
+      dockerfile: docker/backend.Dockerfile
+    restart: unless-stopped
+    profiles: ["observability"]
+    command: ["python", "-m", "orchestrator.infrastructure.observability.worker_metrics_exporter"]
+    environment:
+      PROMETHEUS_MULTIPROC_DIR: /prometheus
+    volumes:
+      - metrics-data:/prometheus
+    pid: service:worker
+    depends_on:
+      worker:
+        condition: service_started
+      metrics-init:
+        condition: service_completed_successfully
+    networks:
+      observability:
+
+  prometheus:
+    image: prom/prometheus:v3.8.1
+    restart: unless-stopped
+    profiles: ["observability"]
+    command: ["--config.file=/etc/prometheus/prometheus.yml", "--storage.tsdb.path=/tmp/prometheus"]
+    volumes:
+      - ./docker/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    depends_on:
+      backend:
+        condition: service_healthy
+      worker-metrics:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://localhost:9090/-/ready"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    networks:
+      observability:
 
   jaeger:
     # Module 13a — self-hosted OTLP trace collector + UI. Always present in
@@ -146,3 +221,12 @@ services:
 volumes:
   pgdata:
   redisdata:
+  metrics-data:
+
+networks:
+  application:
+  observability:
+    internal: true
+    ipam:
+      config:
+        - subnet: 172.30.0.0/24

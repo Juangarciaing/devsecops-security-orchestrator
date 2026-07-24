@@ -59,6 +59,9 @@ merged as of this README.
   to a self-hosted Jaeger instance. **Off by default** — no exporter, no
   network call, zero behavior change until `OTEL_EXPORTER_OTLP_ENDPOINT` is
   explicitly set (see "Distributed tracing" below).
+- **Prometheus metrics (Module 13b)** — bounded scan-health counters and
+  histograms are available through an isolated, opt-in internal scrape path
+  (see "Prometheus metrics" below).
 
 Not yet built: a DAST scanner slot (TruffleHog and/or a URL-target scanner
 still under consideration), an *outbound* GitHub Checks API integration
@@ -66,8 +69,8 @@ still under consideration), an *outbound* GitHub Checks API integration
 on the secrets manager below, since it needs GitHub App/installation-token
 auth this project doesn't have; the *internal* policy-gate equivalent is
 built, see above), a proper secrets manager for private-repo credentials,
-real-time push (still polling), Prometheus metrics (Module 13b), and the
-k8s-Jobs migration (Module 13c) — see `## Roadmap` below.
+real-time push (still polling), and the k8s-Jobs migration (Module 13c) — see
+`## Roadmap` below.
 
 ## Architecture
 
@@ -151,6 +154,36 @@ and PR2 (manual phase spans on the scan task lifecycle, `container.run`/
 (Module 13b) and the k8s-Jobs migration (Module 13c) are separate,
 not-yet-built modules.
 
+### Prometheus metrics (Module 13b)
+
+Prometheus is opt-in and internal-only. Start the disposable scrape topology
+with `docker compose --profile observability up -d`; the normal `docker compose
+up -d` flow does not start Prometheus or the worker exporter. The public API
+continues through `http://localhost:8000`, where `/metrics` returns `404`.
+Prometheus alone reaches the API exporter (`172.30.0.10:8000/metrics`) and the
+worker exporter on the private `observability` network. Prometheus has no host
+port and stores TSDB data in `/tmp`, so it has no persistent volume.
+
+| Metric family | Labels / interpretation |
+|---|---|
+| `orchestrator_api_requests_total` | `method`, route template, `status_class`; excludes `/metrics`. |
+| `orchestrator_scan_accepted_total` / `orchestrator_scan_started_total` | `queue`, `scanner_type`; **accepted − started** is the intentionally coarse backlog signal. |
+| Retry and terminal counters | Fixed scanner/outcome/failure-category taxonomies; a retry is not terminal failure. |
+| Scan/scanner/container histograms | Seconds; terminal `outcome` and bounded `scanner_type` where applicable. |
+| Findings and worker processes | Committed findings by scanner; live prefork-worker count. |
+
+Never use repository, scan/run/task, user, container, URL, ref, SHA, path,
+exception, evidence, finding content, or credentials as a label. This slice
+does not add Grafana, alerts, SLOs, retention policy, Kubernetes discovery,
+remote write, or OpenTelemetry Metrics.
+
+**Proof and rollback.** Confirm `/api/v1/targets` shows both scrape targets
+`up`, then exercise success, retry, and terminal-failure scans and inspect the
+counter/histogram deltas. Confirm host `/metrics` is `404` and an application
+network container cannot resolve the private API exporter. If the topology must
+be removed, revert the Compose/proxy/Prometheus/exporter assets as one unit;
+the base API, worker health endpoints, and Module 13a tracing remain intact.
+
 ## Tests
 
 ```bash
@@ -185,4 +218,4 @@ project SDD history for the full spec/design trail per module).
 | 10 | Webhook handling (GitHub push) | ✅ |
 | 11 | More scanners (pip-audit ✅, AST-SAST ✅, Semgrep ✅, DAST slot pending) | ⏳ |
 | 12 | Advanced dashboard (trends ✅, diffing ✅, internal policy gate ✅; outbound GitHub Checks API deferred) | ✅ |
-| 13 | Hardening & observability (13a: OTel distributed tracing ✅; 13b: Prometheus metrics pending; 13c: k8s Jobs migration pending) | ⏳ |
+| 13 | Hardening & observability (13a: OTel distributed tracing ✅; 13b: Prometheus metrics ✅; 13c: k8s Jobs migration pending) | ⏳ |
