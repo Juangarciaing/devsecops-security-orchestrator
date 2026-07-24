@@ -16,7 +16,7 @@ services:
         "orchestrator.api.main:create_app",
         "--factory",
         "--host",
-        "0.0.0.0",
+        "172.30.0.10",
         "--port",
         "8000",
         "--reload",
