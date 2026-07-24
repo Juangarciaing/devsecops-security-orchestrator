@@ -11,6 +11,7 @@ from __future__ import annotations
 from unittest.mock import MagicMock
 
 import pytest
+from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
 from orchestrator.domain.ports.container_runner_port import RunResult
 from orchestrator.infrastructure.config.settings import Settings
@@ -282,6 +283,45 @@ def test_checkout_removes_volume_and_reraises_when_runner_raises_unexpectedly() 
         checkout.checkout(_CLONE_URL, _REF)
 
     docker_client.volumes.get.return_value.remove.assert_called_once_with(force=True)
+
+
+def test_checkout_emits_a_git_checkout_span_wrapping_clone_and_rev_parse(
+    span_exporter: InMemorySpanExporter,
+) -> None:
+    fake_runner = FakeContainerRunner()
+    fake_runner.script(
+        RunResult(exit_code=0, stdout="", stderr="", timed_out=False),
+        RunResult(exit_code=0, stdout="deadbeef1234\n", stderr="", timed_out=False),
+    )
+    docker_client = MagicMock()
+    checkout = GitCheckout(runner=fake_runner, docker_client=docker_client, settings=_settings())
+
+    checkout.checkout(_CLONE_URL, _REF)
+
+    spans = span_exporter.get_finished_spans()
+    assert len(spans) == 1
+    span = spans[0]
+    assert span.name == "git.checkout"
+    # Threat matrix: never carry clone_url/ref as attributes (either may
+    # embed a credential or a secret branch name).
+    assert not (span.attributes or {})
+
+
+def test_checkout_emits_a_git_checkout_span_even_on_clone_failure(
+    span_exporter: InMemorySpanExporter,
+) -> None:
+    fake_runner = FakeContainerRunner()
+    fake_runner.script(
+        RunResult(exit_code=128, stdout="", stderr="fatal: bad ref", timed_out=False)
+    )
+    docker_client = MagicMock()
+    checkout = GitCheckout(runner=fake_runner, docker_client=docker_client, settings=_settings())
+
+    with pytest.raises(CheckoutFailedError):
+        checkout.checkout(_CLONE_URL, "bad-ref")
+
+    spans = span_exporter.get_finished_spans()
+    assert [span.name for span in spans] == ["git.checkout"]
 
 
 def test_workspace_context_manager_removes_volume_on_exit() -> None:

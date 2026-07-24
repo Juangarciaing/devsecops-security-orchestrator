@@ -9,11 +9,13 @@ Ephemeral Container Execution").
 
 from __future__ import annotations
 
+import time
 from typing import TYPE_CHECKING
 
 import docker
 import requests.exceptions
 import urllib3.exceptions
+from opentelemetry import trace
 
 from orchestrator.domain.ports.container_runner_port import (
     ContainerRunnerPort,
@@ -75,40 +77,61 @@ class DockerContainerRunner(ContainerRunnerPort):
         timeout_seconds: int,
         tmp_exec: bool = False,
     ) -> RunResult:
-        container = self._client.containers.run(
-            image=image,
-            command=command,
-            volumes={volume_name: {"bind": mount_path, "mode": "ro" if read_only_mount else "rw"}},
-            user=_NONROOT_USER,
-            read_only=True,
-            cap_drop=["ALL"],
-            security_opt=["no-new-privileges"],
-            network_mode="none" if network_disabled else None,
-            mem_limit=f"{limits.memory_mb}m",
-            nano_cpus=limits.nano_cpus,
-            pids_limit=limits.pids_limit,
-            tmpfs={"/tmp": _TMPFS_MOUNT_OPTS_EXEC if tmp_exec else _TMPFS_MOUNT_OPTS},
-            detach=True,
-        )
-        try:
-            timed_out = False
-            try:
-                wait_result = container.wait(timeout=timeout_seconds)
-                exit_code = int(wait_result["StatusCode"])
-            except requests.exceptions.ReadTimeout:
-                timed_out = True
-                exit_code = -1
-                container.kill()
-            except requests.exceptions.ConnectionError as exc:
-                if not _is_wait_read_timeout(exc):
-                    raise
-                timed_out = True
-                exit_code = -1
-                container.kill()
+        """One `container.run` span covers this call's entire launch-to-exit
+        lifetime — the deepest point of instrumentation for the scanning step
+        (spec: "Span Coverage Stops at Container Launch/Exit"). Instrumentation
+        NEVER reaches inside the launched container: no trace-context/env var
+        is ever injected into `containers.run(...)`'s kwargs above, so no span
+        or trace context can originate from the third-party scanner CLI
+        process running inside it.
+        """
+        tracer = trace.get_tracer(__name__)
+        with tracer.start_as_current_span("container.run") as span:
+            span.set_attribute("image", image)
+            span.set_attribute("network_disabled", network_disabled)
 
-            stdout = container.logs(stdout=True, stderr=False).decode("utf-8", errors="replace")
-            stderr = container.logs(stdout=False, stderr=True).decode("utf-8", errors="replace")
-        finally:
-            container.remove(force=True)
+            start = time.monotonic()
+            container = self._client.containers.run(
+                image=image,
+                command=command,
+                volumes={
+                    volume_name: {"bind": mount_path, "mode": "ro" if read_only_mount else "rw"}
+                },
+                user=_NONROOT_USER,
+                read_only=True,
+                cap_drop=["ALL"],
+                security_opt=["no-new-privileges"],
+                network_mode="none" if network_disabled else None,
+                mem_limit=f"{limits.memory_mb}m",
+                nano_cpus=limits.nano_cpus,
+                pids_limit=limits.pids_limit,
+                tmpfs={"/tmp": _TMPFS_MOUNT_OPTS_EXEC if tmp_exec else _TMPFS_MOUNT_OPTS},
+                detach=True,
+            )
+            try:
+                timed_out = False
+                try:
+                    wait_result = container.wait(timeout=timeout_seconds)
+                    exit_code = int(wait_result["StatusCode"])
+                except requests.exceptions.ReadTimeout:
+                    timed_out = True
+                    exit_code = -1
+                    container.kill()
+                except requests.exceptions.ConnectionError as exc:
+                    if not _is_wait_read_timeout(exc):
+                        raise
+                    timed_out = True
+                    exit_code = -1
+                    container.kill()
+
+                stdout = container.logs(stdout=True, stderr=False).decode("utf-8", errors="replace")
+                stderr = container.logs(stdout=False, stderr=True).decode("utf-8", errors="replace")
+            finally:
+                container.remove(force=True)
+
+            duration_ms = (time.monotonic() - start) * 1000
+            span.set_attribute("exit_code", exit_code)
+            span.set_attribute("timed_out", timed_out)
+            span.set_attribute("duration_ms", duration_ms)
 
         return RunResult(exit_code=exit_code, stdout=stdout, stderr=stderr, timed_out=timed_out)
