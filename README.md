@@ -150,9 +150,9 @@ required for tests. Delivered in two PRs: PR1 (bootstrap — settings,
 Celery fork-safety via `worker_process_init`, the `jaeger` compose service)
 and PR2 (manual phase spans on the scan task lifecycle, `container.run`/
 `git.checkout` spans, a hexagonal-layering guard proving `domain/`/
-`application/` stay import-free of `opentelemetry`, this section). Metrics
-(Module 13b) and the k8s-Jobs migration (Module 13c) are separate,
-not-yet-built modules.
+`application/` stay import-free of `opentelemetry`, this section). Prometheus
+metrics (Module 13b) are documented below; the k8s-Jobs migration (Module 13c)
+remains a separate, not-yet-built module.
 
 ### Prometheus metrics (Module 13b)
 
