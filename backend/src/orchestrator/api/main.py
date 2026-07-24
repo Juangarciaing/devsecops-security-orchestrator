@@ -10,8 +10,9 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.middleware.base import RequestResponseEndpoint
 
 from orchestrator.api.v1.errors.problem import register_exception_handlers
 from orchestrator.api.v1.routers.auth import router as auth_router
@@ -22,6 +23,10 @@ from orchestrator.api.v1.routers.scans import router as scans_router
 from orchestrator.api.v1.routers.users import router as users_router
 from orchestrator.api.v1.routers.webhooks import router as webhooks_router
 from orchestrator.infrastructure.config.settings import get_settings
+from orchestrator.infrastructure.observability.metrics import (
+    record_api_request,
+    render_api_metrics,
+)
 from orchestrator.infrastructure.observability.tracing import (
     configure_tracing,
     instrument_celery,
@@ -56,6 +61,20 @@ def create_app() -> FastAPI:
     configure_tracing(f"{get_settings().otel_service_name}-api")
     instrument_celery()
     instrument_fastapi(app)
+
+    @app.middleware("http")
+    async def account_request(request: Request, call_next: RequestResponseEndpoint) -> Response:
+        response = await call_next(request)
+        route = request.scope.get("route")
+        route_template = getattr(route, "path", "unmatched")
+        if route_template != "/metrics":
+            record_api_request(request.method, route_template, response.status_code)
+        return response
+
+    @app.get("/metrics", include_in_schema=False)
+    def metrics() -> Response:
+        payload, content_type = render_api_metrics()
+        return Response(content=payload, headers={"Content-Type": content_type})
 
     # Opt-in only (D: settings.cors_allowed_origins) — an unconfigured
     # deployment adds no middleware and gets no CORS headers at all.

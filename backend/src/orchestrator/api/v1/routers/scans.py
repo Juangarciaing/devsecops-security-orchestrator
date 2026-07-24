@@ -52,6 +52,7 @@ from orchestrator.infrastructure.db.repositories.scan_run_repository import (
 from orchestrator.infrastructure.db.repositories.scan_task_repository import (
     SqlAlchemyScanTaskRepository,
 )
+from orchestrator.infrastructure.observability.metrics import record_scan_accepted
 
 router = APIRouter(prefix="/api/v1", tags=["scans"])
 
@@ -62,6 +63,14 @@ def _repository_not_found() -> ProblemException:
 
 def _scan_not_found() -> ProblemException:
     return ProblemException(status_code=404, title="Not Found", detail="Scan not found")
+
+
+def enqueue_committed_scan(task_id: str, scanner_type: ScannerType) -> None:
+    """Enqueue a committed task, then record acceptance only if enqueue succeeds."""
+    from orchestrator.workers.tasks.process_scan import process_scan_task
+
+    process_scan_task.delay(task_id)
+    record_scan_accepted(scanner_type)
 
 
 @router.post("/repositories/{repository_id}/scans", response_model=ScanRunRead)
@@ -98,17 +107,7 @@ async def trigger_scan_endpoint(
         task = tasks[0]
         await session.commit()  # D4: commit BEFORE enqueue — no uncommitted-read race
 
-        # Imported lazily (not at module top level): `celery_app.py` resolves
-        # `Settings()` eagerly at import time (standard Celery `-A module`
-        # requirement, PR2 D1). Importing it at `scans.py`'s module level
-        # would force every test that imports `create_app()` — including
-        # ones with no interest in Celery — to pre-populate Settings' env
-        # vars before test collection even runs, exactly the constraint
-        # `tests/unit/workers/test_celery_app.py` and
-        # `tests/integration/test_process_scan_task.py` already work around.
-        from orchestrator.workers.tasks.process_scan import process_scan_task
-
-        process_scan_task.delay(str(task.id))
+        enqueue_committed_scan(str(task.id), scanner_type)
 
     status_code = 202 if created else 200
     return JSONResponse(
