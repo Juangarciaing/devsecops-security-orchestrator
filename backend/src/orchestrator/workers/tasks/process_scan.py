@@ -45,6 +45,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import UTC, datetime
+from time import monotonic
 from typing import TYPE_CHECKING
 
 import docker
@@ -72,6 +73,13 @@ from orchestrator.infrastructure.db.repositories.scan_run_repository import (
 from orchestrator.infrastructure.db.repositories.scan_task_repository import (
     ScanTaskNotFoundError,
     SqlAlchemyScanTaskRepository,
+)
+from orchestrator.infrastructure.observability.metrics import (
+    record_scan_findings,
+    record_scan_retried,
+    record_scan_started,
+    record_scan_terminal,
+    record_scanner_duration,
 )
 from orchestrator.infrastructure.scanners.ast_sast_adapter import SastFailedError
 from orchestrator.infrastructure.scanners.gitleaks_adapter import GitleaksFailedError
@@ -105,7 +113,7 @@ class TransientScanError(RuntimeError):
 
 async def _load_and_start(
     session: AsyncSession, scan_task_id: uuid.UUID
-) -> tuple[str, str, uuid.UUID, uuid.UUID, ScannerType]:
+) -> tuple[str, str, uuid.UUID, uuid.UUID, ScannerType, bool, bool]:
     """Load the repo's `clone_url` + the run's `ref`; transition `pending -> running`.
 
     Returns `(clone_url, ref, scan_run_id, repository_id, scanner_type)`.
@@ -132,12 +140,26 @@ async def _load_and_start(
         raise CodeRepositoryNotFoundError(run.repository_id)
 
     now = datetime.now(UTC).replace(tzinfo=None)
-    if task.status == ScanTaskStatus.PENDING:
+    transitioned = task.status == ScanTaskStatus.PENDING
+    terminal = task.status in (
+        ScanTaskStatus.COMPLETED,
+        ScanTaskStatus.FAILED,
+        ScanTaskStatus.SKIPPED,
+    )
+    if transitioned:
         await scan_task_repo.update_status(scan_task_id, ScanTaskStatus.RUNNING, started_at=now)
         await scan_run_repo.update_status(task.scan_run_id, ScanRunStatus.RUNNING, started_at=now)
         await session.commit()
 
-    return repository.clone_url, run.ref, task.scan_run_id, repository.id, task.scanner_type
+    return (
+        repository.clone_url,
+        run.ref,
+        task.scan_run_id,
+        repository.id,
+        task.scanner_type,
+        transitioned,
+        terminal,
+    )
 
 
 def _checkout_and_scan(
@@ -180,7 +202,7 @@ async def _complete_scan(
     repository_id: uuid.UUID,
     head_sha: str,
     findings: list[Finding],
-) -> None:
+) -> tuple[bool, float]:
     """Persist the resolved HEAD SHA + `Finding`s; `task`/`run` -> `completed`.
 
     Zero `findings` (a clean repo) is a valid, successful outcome (D4/spec) —
@@ -198,6 +220,11 @@ async def _complete_scan(
     scan_task_repo = SqlAlchemyScanTaskRepository(session)
     scan_run_repo = SqlAlchemyScanRunRepository(session)
     finding_repo = SqlAlchemyFindingRepository(session)
+    task = await scan_task_repo.get_by_id(scan_task_id)
+    if task is None:
+        raise ScanTaskNotFoundError(scan_task_id)
+    if task.status != ScanTaskStatus.RUNNING:
+        return False, 0.0
 
     await scan_run_repo.update_commit_sha(scan_run_id, head_sha)
     await finding_repo.bulk_upsert_findings(repository_id, scan_run_id, findings)
@@ -210,9 +237,12 @@ async def _complete_scan(
         scan_run_id, ScanRunStatus.COMPLETED, completed_at=completed_at
     )
     await session.commit()
+    return True, logical_scan_duration_seconds(task.started_at, completed_at)
 
 
-async def _mark_failed(session: AsyncSession, scan_task_id: uuid.UUID, error_message: str) -> None:
+async def _mark_failed(
+    session: AsyncSession, scan_task_id: uuid.UUID, error_message: str
+) -> tuple[bool, ScannerType, float]:
     """Terminal `failed` transition for both `ScanTask` and its `ScanRun` (D5)."""
     scan_task_repo = SqlAlchemyScanTaskRepository(session)
     scan_run_repo = SqlAlchemyScanRunRepository(session)
@@ -220,6 +250,8 @@ async def _mark_failed(session: AsyncSession, scan_task_id: uuid.UUID, error_mes
     task = await scan_task_repo.get_by_id(scan_task_id)
     if task is None:
         raise ScanTaskNotFoundError(scan_task_id)
+    if task.status not in (ScanTaskStatus.PENDING, ScanTaskStatus.RUNNING):
+        return False, task.scanner_type, 0.0
 
     now = datetime.now(UTC).replace(tzinfo=None)
     await scan_task_repo.update_status(
@@ -227,6 +259,21 @@ async def _mark_failed(session: AsyncSession, scan_task_id: uuid.UUID, error_mes
     )
     await scan_run_repo.update_status(task.scan_run_id, ScanRunStatus.FAILED, completed_at=now)
     await session.commit()
+    return True, task.scanner_type, logical_scan_duration_seconds(task.started_at, now)
+
+
+def logical_scan_duration_seconds(started_at: datetime | None, completed_at: datetime) -> float:
+    return max(0.0, (completed_at - (started_at or completed_at)).total_seconds())
+
+
+def _failure_category(error: Exception) -> str:
+    if isinstance(error, CheckoutFailedError):
+        return "checkout"
+    if "timeout" in str(error).lower() or "timed out" in str(error).lower():
+        return "timeout"
+    if isinstance(error, TransientScanError):
+        return "container_runtime"
+    return "scanner"
 
 
 @celery_app.task(bind=True, max_retries=MAX_RETRIES)  # type: ignore[untyped-decorator]
@@ -250,14 +297,19 @@ def process_scan_task(
     try:
         try:
             with tracer.start_as_current_span("scan.load_and_start"):
-                clone_url, ref, scan_run_id, repository_id, scanner_type = run_async(
-                    lambda session: _load_and_start(session, task_id)
-                )
+                loaded = run_async(lambda session: _load_and_start(session, task_id))
+                clone_url, ref, scan_run_id, repository_id, scanner_type = loaded[:5]
+                started, terminal = loaded[5:] if len(loaded) == 7 else (False, False)
+            if terminal:
+                return
+            if started:
+                record_scan_started(scanner_type)
 
             with tracer.start_as_current_span("scan.checkout_and_scan") as checkout_span:
                 # Module 13a threat matrix: `scanner_type` only — NEVER
                 # `clone_url`/`ref` (may embed credentials/branch secrets).
                 checkout_span.set_attribute("scanner_type", scanner_type.value)
+                scanner_started = monotonic()
                 try:
                     head_sha, findings = _checkout_and_scan(
                         clone_url, ref, task_id, scanner_type, runner, client, settings
@@ -274,17 +326,22 @@ def process_scan_task(
                     # Docker-daemon/network blip, not a deterministic checkout/scan
                     # failure (D5) — hand off to Module 5's existing retry/backoff.
                     raise TransientScanError(str(exc)) from exc
+                scanner_duration = monotonic() - scanner_started
 
             with tracer.start_as_current_span("scan.write_back") as write_back_span:
                 write_back_span.set_attribute("db.system", "postgresql")
                 write_back_span.set_attribute("findings.count", len(findings))
                 write_back_span.set_attribute("repository.id", str(repository_id))
                 write_back_span.set_attribute("scan_run.id", str(scan_run_id))
-                run_async(
+                transitioned, scan_duration = run_async(
                     lambda session: _complete_scan(
                         session, task_id, scan_run_id, repository_id, head_sha, findings
                     )
-                )
+                ) or (False, 0.0)
+                if transitioned:
+                    record_scan_terminal(scanner_type, "completed", "none", scan_duration)
+                    record_scanner_duration(scanner_type, "success", scanner_duration)
+                    record_scan_findings(scanner_type, len(findings))
         finally:
             if docker_client is None:
                 client.close()
@@ -297,10 +354,18 @@ def process_scan_task(
     ) as exc:
         error_message = str(exc)
         logger.warning("scan_task %s failed deterministically: %s", task_id, error_message)
-        run_async(lambda session: _mark_failed(session, task_id, error_message))
+        transitioned, scanner_type, scan_duration = run_async(
+            lambda session: _mark_failed(session, task_id, error_message)
+        )
+        if transitioned:
+            record_scan_terminal(scanner_type, "failed", _failure_category(exc), scan_duration)
     except TransientScanError as exc:
         error_message = str(exc)
         try:
+            # The counter is deliberately adjacent to the retry call: a terminal
+            # exhausted branch below emits only terminal failure telemetry.
+            if self.request.retries < MAX_RETRIES:
+                record_scan_retried(scanner_type, _failure_category(exc))
             self.retry(exc=exc, countdown=backoff_jitter(self.request.retries))
         except (MaxRetriesExceededError, TransientScanError):
             # `self.retry(exc=exc, ...)`, once `max_retries` is exhausted,
@@ -309,4 +374,8 @@ def process_scan_task(
             # catch both to make the terminal `failed` transition explicit
             # and guaranteed either way (D5, Module 5 precedent).
             logger.warning("scan_task %s exhausted retries: %s", task_id, error_message)
-            run_async(lambda session: _mark_failed(session, task_id, error_message))
+            transitioned, scanner_type, scan_duration = run_async(
+                lambda session: _mark_failed(session, task_id, error_message)
+            )
+            if transitioned:
+                record_scan_terminal(scanner_type, "failed", _failure_category(exc), scan_duration)
