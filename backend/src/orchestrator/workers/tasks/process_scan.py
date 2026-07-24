@@ -59,6 +59,7 @@ from orchestrator.domain.entities.finding import Finding
 from orchestrator.domain.value_objects.enums import ScannerType, ScanRunStatus, ScanTaskStatus
 from orchestrator.infrastructure.config.settings import get_settings
 from orchestrator.infrastructure.container.docker_container_runner import DockerContainerRunner
+from orchestrator.infrastructure.container.legacy_docker_execution import create_scan_execution
 from orchestrator.infrastructure.db.repositories.code_repository_repository import (
     CodeRepositoryNotFoundError,
     SqlAlchemyCodeRepositoryRepository,
@@ -84,9 +85,8 @@ from orchestrator.infrastructure.observability.metrics import (
 from orchestrator.infrastructure.scanners.ast_sast_adapter import SastFailedError
 from orchestrator.infrastructure.scanners.gitleaks_adapter import GitleaksFailedError
 from orchestrator.infrastructure.scanners.pip_audit_adapter import PipAuditFailedError
-from orchestrator.infrastructure.scanners.registry import get_adapter
 from orchestrator.infrastructure.scanners.semgrep_adapter import SemgrepFailedError
-from orchestrator.infrastructure.vcs.git_checkout import CheckoutFailedError, GitCheckout
+from orchestrator.infrastructure.vcs.git_checkout import CheckoutFailedError
 from orchestrator.workers.backoff import backoff_jitter
 from orchestrator.workers.celery_app import celery_app
 from orchestrator.workers.db import run_async
@@ -189,10 +189,9 @@ def _checkout_and_scan(
     `UnregisteredScannerError`) is left to propagate to the caller, which
     wraps it as `TransientScanError`.
     """
-    adapter = get_adapter(scanner_type, runner, settings)
-    with GitCheckout(runner, docker_client, settings).checkout(clone_url, ref) as workspace:
-        result = adapter.scan(workspace.volume_name)
-    return workspace.head_sha, adapter.parse(result, scan_task_id)
+    execution = create_scan_execution(runner, docker_client, settings)
+    result = execution.execute(clone_url, ref, scan_task_id, scanner_type)
+    return result.head_sha, result.findings
 
 
 async def _complete_scan(

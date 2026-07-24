@@ -113,6 +113,24 @@ def test_process_scan_task_emits_a_checkout_and_scan_span_with_scanner_type(
     assert spans["scan.checkout_and_scan"].attributes["scanner_type"] == "secrets"
 
 
+def test_checkout_and_scan_uses_the_production_execution_factory(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from orchestrator.domain.ports.scan_execution_port import ScanExecutionResult
+    from orchestrator.workers.tasks import process_scan
+
+    execution = MagicMock()
+    execution.execute.return_value = ScanExecutionResult(head_sha=_HEAD_SHA, findings=[])
+    monkeypatch.setattr(process_scan, "create_scan_execution", lambda *_args: execution)
+
+    head_sha, findings = process_scan._checkout_and_scan(
+        _CLONE_URL, _REF, _TASK_ID, ScannerType.SECRETS, MagicMock(), MagicMock(), MagicMock()
+    )
+
+    assert (head_sha, findings) == (_HEAD_SHA, [])
+    execution.execute.assert_called_once_with(_CLONE_URL, _REF, _TASK_ID, ScannerType.SECRETS)
+
+
 def test_process_scan_task_emits_a_write_back_span_with_db_attributes(
     monkeypatch: pytest.MonkeyPatch, valid_env: None, span_exporter: InMemorySpanExporter
 ) -> None:
