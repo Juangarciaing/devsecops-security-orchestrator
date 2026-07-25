@@ -16,9 +16,9 @@ from orchestrator.infrastructure.container import (
 from orchestrator.infrastructure.container.ast_sast_docker_execution import AstSastDockerExecution
 from orchestrator.infrastructure.container.gitleaks_docker_execution import GitleaksDockerExecution
 from orchestrator.infrastructure.container.legacy_docker_execution import (
-    LegacyDockerExecution,
     create_scan_execution,
 )
+from orchestrator.infrastructure.container.pip_audit_docker_execution import PipAuditDockerExecution
 from orchestrator.infrastructure.container.semgrep_docker_execution import SemgrepDockerExecution
 from orchestrator.infrastructure.scanners.ast_sast_adapter import SastFailedError
 from orchestrator.infrastructure.scanners.semgrep_adapter import SemgrepFailedError
@@ -184,4 +184,6 @@ def test_descriptor_executions_preserve_parser_findings_and_factory_has_one_rout
         create_scan_execution(*dependencies, ScannerType.SEMGREP),
         SemgrepDockerExecution,
     )
-    assert isinstance(create_scan_execution(*dependencies, ScannerType.SCA), LegacyDockerExecution)
+    assert isinstance(
+        create_scan_execution(*dependencies, ScannerType.SCA), PipAuditDockerExecution
+    )

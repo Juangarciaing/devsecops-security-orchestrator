@@ -10,6 +10,7 @@ from orchestrator.infrastructure.container.legacy_docker_execution import (
     LegacyDockerExecution,
     create_scan_execution,
 )
+from orchestrator.infrastructure.container.pip_audit_docker_execution import PipAuditDockerExecution
 
 
 class _Workspace:
@@ -35,10 +36,10 @@ class _Adapter:
         return [f"{scan_task_id}:{result.stdout}"]
 
 
-def test_factory_selects_legacy_docker_for_unmigrated_scanners() -> None:
+def test_factory_selects_descriptor_docker_for_sca() -> None:
     execution = create_scan_execution(MagicMock(), MagicMock(), SimpleNamespace(), ScannerType.SCA)
 
-    assert isinstance(execution, LegacyDockerExecution)
+    assert isinstance(execution, PipAuditDockerExecution)
 
 
 def test_legacy_execution_delegates_to_existing_checkout_adapter_and_parser(

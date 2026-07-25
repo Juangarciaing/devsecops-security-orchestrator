@@ -9,6 +9,7 @@ from orchestrator.domain.ports.scan_execution_port import ScanExecutionPort, Sca
 from orchestrator.domain.value_objects.enums import ScannerType
 from orchestrator.infrastructure.container.ast_sast_docker_execution import AstSastDockerExecution
 from orchestrator.infrastructure.container.gitleaks_docker_execution import GitleaksDockerExecution
+from orchestrator.infrastructure.container.pip_audit_docker_execution import PipAuditDockerExecution
 from orchestrator.infrastructure.container.semgrep_docker_execution import SemgrepDockerExecution
 from orchestrator.infrastructure.scanners.registry import get_adapter
 from orchestrator.infrastructure.vcs.git_checkout import GitCheckout
@@ -53,11 +54,13 @@ def create_scan_execution(
     settings: Settings,
     scanner_type: ScannerType,
 ) -> ScanExecutionPort:
-    """Route migrated scanners to descriptors and retain legacy only for SCA."""
+    """Route all active scanner types to exactly one descriptor executor."""
     if scanner_type == ScannerType.SECRETS:
         return GitleaksDockerExecution(runner, docker_client, settings)
     if scanner_type == ScannerType.SAST:
         return AstSastDockerExecution(runner, docker_client, settings)
     if scanner_type == ScannerType.SEMGREP:
         return SemgrepDockerExecution(runner, docker_client, settings)
+    if scanner_type == ScannerType.SCA:
+        return PipAuditDockerExecution(runner, docker_client, settings)
     return LegacyDockerExecution(runner, docker_client, settings)
