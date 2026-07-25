@@ -33,6 +33,7 @@ class RecordedRun:
     limits: ResourceLimits
     timeout_seconds: int
     tmp_exec: bool = False
+    cleanup_anonymous_volumes: bool = False
 
 
 @dataclass(slots=True)
@@ -58,6 +59,7 @@ class FakeContainerRunner(ContainerRunnerPort):
         limits: ResourceLimits,
         timeout_seconds: int,
         tmp_exec: bool = False,
+        cleanup_anonymous_volumes: bool = False,
     ) -> RunResult:
         self.calls.append(
             RecordedRun(
@@ -70,6 +72,7 @@ class FakeContainerRunner(ContainerRunnerPort):
                 limits=limits,
                 timeout_seconds=timeout_seconds,
                 tmp_exec=tmp_exec,
+                cleanup_anonymous_volumes=cleanup_anonymous_volumes,
             )
         )
         if self._results:

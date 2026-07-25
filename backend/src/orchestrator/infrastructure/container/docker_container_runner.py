@@ -81,6 +81,7 @@ class DockerContainerRunner(ContainerRunnerPort):
         limits: ResourceLimits,
         timeout_seconds: int,
         tmp_exec: bool = False,
+        cleanup_anonymous_volumes: bool = False,
     ) -> RunResult:
         """One `container.run` span covers this call's entire launch-to-exit
         lifetime — the deepest point of instrumentation for the scanning step
@@ -132,7 +133,10 @@ class DockerContainerRunner(ContainerRunnerPort):
                 stdout = container.logs(stdout=True, stderr=False).decode("utf-8", errors="replace")
                 stderr = container.logs(stdout=False, stderr=True).decode("utf-8", errors="replace")
             finally:
-                container.remove(force=True)
+                if cleanup_anonymous_volumes:
+                    container.remove(force=True, v=True)
+                else:
+                    container.remove(force=True)
 
             duration_ms = (time.monotonic() - start) * 1000
             span.set_attribute("exit_code", exit_code)

@@ -35,28 +35,15 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from orchestrator.domain.entities.finding import Finding
-from orchestrator.domain.ports.container_runner_port import ResourceLimits, RunResult
+from orchestrator.domain.ports.container_runner_port import RunResult
 from orchestrator.domain.ports.scanner_adapter_port import ScannerAdapterPort
 from orchestrator.domain.value_objects.enums import FindingSeverity, ScannerType
+from orchestrator.infrastructure.scanners.gitleaks_descriptor import GitleaksInvocation
 
 if TYPE_CHECKING:
     from orchestrator.domain.ports.container_runner_port import ContainerRunnerPort
     from orchestrator.infrastructure.config.settings import Settings
 
-_MOUNT_PATH = "/checkout"
-#: `GitCheckout` clones into a `checkout/` subdir of the SHARED volume root
-#: (its own mount path is `/workspace`, so on-disk that subdir is
-#: `/workspace/checkout`); mounted here at `/checkout` instead, the same
-#: files resolve at `/checkout/checkout`.
-_TARGET_DIR = "/checkout/checkout"
-_GITLEAKS_ARGV: tuple[str, ...] = (
-    "dir",
-    _TARGET_DIR,
-    "--report-format=json",
-    "--report-path=/dev/stdout",
-    "--exit-code=2",
-    "--no-banner",
-)
 _LEAKS_FOUND_EXIT_CODE = 2
 _CLEAN_EXIT_CODE = 0
 
@@ -87,16 +74,7 @@ class GitleaksAdapter(ScannerAdapterPort):
         `Finding`s (kept separate so `parse()` stays a pure, easily
         triangulated method with no container dependency).
         """
-        return self._runner.run(
-            image=self._settings.scan_container_image,
-            command=list(_GITLEAKS_ARGV),
-            volume_name=volume_name,
-            mount_path=_MOUNT_PATH,
-            read_only_mount=True,
-            network_disabled=True,
-            limits=self._resource_limits(),
-            timeout_seconds=self._settings.scan_timeout_seconds,
-        )
+        return GitleaksInvocation.from_settings(self._settings).run(self._runner, volume_name)
 
     def parse(
         self,
@@ -129,13 +107,6 @@ class GitleaksAdapter(ScannerAdapterPort):
     def supports(self, scanner_type: ScannerType) -> bool:
         """`GitleaksAdapter` only handles `ScannerType.SECRETS`."""
         return scanner_type == ScannerType.SECRETS
-
-    def _resource_limits(self) -> ResourceLimits:
-        return ResourceLimits(
-            memory_mb=self._settings.scan_memory_limit_mb,
-            nano_cpus=int(self._settings.scan_cpu_limit * 1_000_000_000),
-            pids_limit=self._settings.scan_pids_limit,
-        )
 
 
 def _parse_json_report(stdout: str) -> list[dict[str, Any]]:

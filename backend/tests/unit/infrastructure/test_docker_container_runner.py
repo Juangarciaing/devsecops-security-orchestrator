@@ -320,6 +320,25 @@ def test_run_always_force_removes_container_success_or_timeout(wait_raises: bool
     container.remove.assert_called_once_with(force=True)
 
 
+def test_run_removes_only_container_anonymous_volumes_when_requested() -> None:
+    client, container = _make_mock_client()
+    runner = DockerContainerRunner(client=client)
+
+    runner.run(
+        image="ghcr.io/gitleaks/gitleaks:v8.30.1",
+        command=["dir", "/checkout/checkout"],
+        volume_name="scan-1",
+        mount_path="/checkout",
+        read_only_mount=True,
+        network_disabled=True,
+        limits=_LIMITS,
+        timeout_seconds=5,
+        cleanup_anonymous_volumes=True,
+    )
+
+    container.remove.assert_called_once_with(force=True, v=True)
+
+
 def test_run_force_removes_container_even_when_logs_raise() -> None:
     client, container = _make_mock_client()
     container.logs.side_effect = RuntimeError("daemon connection dropped")

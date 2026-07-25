@@ -20,10 +20,8 @@ from orchestrator.infrastructure.scanners.ast_sast_adapter import (
     _SAST_ARGV,
     AstSastAdapter,
 )
-from orchestrator.infrastructure.scanners.gitleaks_adapter import (
-    _GITLEAKS_ARGV,
-    GitleaksAdapter,
-)
+from orchestrator.infrastructure.scanners.gitleaks_adapter import GitleaksAdapter
+from orchestrator.infrastructure.scanners.gitleaks_descriptor import _GITLEAKS_ARGV
 from orchestrator.infrastructure.scanners.pip_audit_adapter import (
     _PIP_AUDIT_ARGV,
     PipAuditAdapter,

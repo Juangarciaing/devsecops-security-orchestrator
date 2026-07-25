@@ -35,8 +35,8 @@ class _Adapter:
         return [f"{scan_task_id}:{result.stdout}"]
 
 
-def test_factory_selects_legacy_docker_as_the_only_default() -> None:
-    execution = create_scan_execution(MagicMock(), MagicMock(), SimpleNamespace())
+def test_factory_selects_legacy_docker_for_unmigrated_scanners() -> None:
+    execution = create_scan_execution(MagicMock(), MagicMock(), SimpleNamespace(), ScannerType.SAST)
 
     assert isinstance(execution, LegacyDockerExecution)
 
@@ -57,7 +57,7 @@ def test_legacy_execution_delegates_to_existing_checkout_adapter_and_parser(
         clone_url="https://github.com/acme/public.git",
         ref="main",
         scan_task_id=task_id,
-        scanner_type=ScannerType.SECRETS,
+        scanner_type=ScannerType.SAST,
     )
 
     assert result.head_sha == "deadbeef"

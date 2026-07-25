@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 
 from orchestrator.domain.ports.scan_execution_port import ScanExecutionPort, ScanExecutionResult
 from orchestrator.domain.value_objects.enums import ScannerType
+from orchestrator.infrastructure.container.gitleaks_docker_execution import GitleaksDockerExecution
 from orchestrator.infrastructure.scanners.registry import get_adapter
 from orchestrator.infrastructure.vcs.git_checkout import GitCheckout
 
@@ -34,6 +35,8 @@ class LegacyDockerExecution(ScanExecutionPort):
         scan_task_id: uuid.UUID,
         scanner_type: ScannerType,
     ) -> ScanExecutionResult:
+        if scanner_type == ScannerType.SECRETS:
+            raise ValueError("Gitleaks must use GitleaksDockerExecution")
         adapter = get_adapter(scanner_type, self._runner, self._settings)
         with GitCheckout(self._runner, self._docker_client, self._settings).checkout(
             clone_url, ref
@@ -43,7 +46,12 @@ class LegacyDockerExecution(ScanExecutionPort):
 
 
 def create_scan_execution(
-    runner: ContainerRunnerPort, docker_client: DockerClient, settings: Settings
+    runner: ContainerRunnerPort,
+    docker_client: DockerClient,
+    settings: Settings,
+    scanner_type: ScannerType,
 ) -> ScanExecutionPort:
-    """Create the sole PR1 execution path; later backends extend this factory."""
+    """Route Gitleaks to descriptors while every other scanner remains legacy."""
+    if scanner_type == ScannerType.SECRETS:
+        return GitleaksDockerExecution(runner, docker_client, settings)
     return LegacyDockerExecution(runner, docker_client, settings)
