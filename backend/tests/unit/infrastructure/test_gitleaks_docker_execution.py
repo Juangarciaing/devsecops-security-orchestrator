@@ -141,10 +141,10 @@ def test_factory_preserves_gitleaks_descriptor_execution() -> None:
     from orchestrator.infrastructure.container.gitleaks_docker_execution import (
         GitleaksDockerExecution,
     )
-    from orchestrator.infrastructure.container.legacy_docker_execution import create_scan_execution
     from orchestrator.infrastructure.container.pip_audit_docker_execution import (
         PipAuditDockerExecution,
     )
+    from orchestrator.infrastructure.container.scan_execution_factory import create_scan_execution
 
     dependencies = (MagicMock(), MagicMock(), SimpleNamespace())
 
@@ -154,14 +154,3 @@ def test_factory_preserves_gitleaks_descriptor_execution() -> None:
     assert isinstance(
         create_scan_execution(*dependencies, ScannerType.SCA), PipAuditDockerExecution
     )
-
-
-def test_legacy_execution_rejects_gitleaks_to_prevent_a_second_execution_route() -> None:
-    from orchestrator.infrastructure.container.legacy_docker_execution import LegacyDockerExecution
-
-    execution = LegacyDockerExecution(MagicMock(), MagicMock(), _settings())
-
-    with pytest.raises(ValueError, match="descriptor Docker execution"):
-        execution.execute(
-            "https://github.com/acme/public.git", "main", uuid.uuid4(), ScannerType.SECRETS
-        )

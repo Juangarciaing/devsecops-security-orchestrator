@@ -32,7 +32,7 @@ import pytest
 from orchestrator.domain.value_objects.enums import FindingSeverity, ScannerType
 from orchestrator.infrastructure.config.settings import Settings
 from orchestrator.infrastructure.container.docker_container_runner import DockerContainerRunner
-from orchestrator.infrastructure.container.legacy_docker_execution import create_scan_execution
+from orchestrator.infrastructure.container.scan_execution_factory import create_scan_execution
 from orchestrator.infrastructure.scanners.gitleaks_adapter import GitleaksAdapter
 
 pytestmark = pytest.mark.integration
