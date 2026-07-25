@@ -59,7 +59,7 @@ from orchestrator.domain.entities.finding import Finding
 from orchestrator.domain.value_objects.enums import ScannerType, ScanRunStatus, ScanTaskStatus
 from orchestrator.infrastructure.config.settings import get_settings
 from orchestrator.infrastructure.container.docker_container_runner import DockerContainerRunner
-from orchestrator.infrastructure.container.legacy_docker_execution import create_scan_execution
+from orchestrator.infrastructure.container.scan_execution_factory import create_scan_execution
 from orchestrator.infrastructure.db.repositories.code_repository_repository import (
     CodeRepositoryNotFoundError,
     SqlAlchemyCodeRepositoryRepository,
