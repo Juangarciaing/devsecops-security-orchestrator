@@ -141,9 +141,9 @@ def test_factory_preserves_gitleaks_descriptor_execution() -> None:
     from orchestrator.infrastructure.container.gitleaks_docker_execution import (
         GitleaksDockerExecution,
     )
-    from orchestrator.infrastructure.container.legacy_docker_execution import (
-        LegacyDockerExecution,
-        create_scan_execution,
+    from orchestrator.infrastructure.container.legacy_docker_execution import create_scan_execution
+    from orchestrator.infrastructure.container.pip_audit_docker_execution import (
+        PipAuditDockerExecution,
     )
 
     dependencies = (MagicMock(), MagicMock(), SimpleNamespace())
@@ -151,7 +151,9 @@ def test_factory_preserves_gitleaks_descriptor_execution() -> None:
     assert isinstance(
         create_scan_execution(*dependencies, ScannerType.SECRETS), GitleaksDockerExecution
     )
-    assert isinstance(create_scan_execution(*dependencies, ScannerType.SCA), LegacyDockerExecution)
+    assert isinstance(
+        create_scan_execution(*dependencies, ScannerType.SCA), PipAuditDockerExecution
+    )
 
 
 def test_legacy_execution_rejects_gitleaks_to_prevent_a_second_execution_route() -> None:
