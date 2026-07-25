@@ -189,7 +189,7 @@ def _checkout_and_scan(
     `UnregisteredScannerError`) is left to propagate to the caller, which
     wraps it as `TransientScanError`.
     """
-    execution = create_scan_execution(runner, docker_client, settings)
+    execution = create_scan_execution(runner, docker_client, settings, scanner_type)
     result = execution.execute(clone_url, ref, scan_task_id, scanner_type)
     return result.head_sha, result.findings
 

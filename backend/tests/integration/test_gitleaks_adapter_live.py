@@ -29,9 +29,10 @@ from collections.abc import Iterator
 import docker
 import pytest
 
-from orchestrator.domain.value_objects.enums import FindingSeverity
+from orchestrator.domain.value_objects.enums import FindingSeverity, ScannerType
 from orchestrator.infrastructure.config.settings import Settings
 from orchestrator.infrastructure.container.docker_container_runner import DockerContainerRunner
+from orchestrator.infrastructure.container.legacy_docker_execution import create_scan_execution
 from orchestrator.infrastructure.scanners.gitleaks_adapter import GitleaksAdapter
 
 pytestmark = pytest.mark.integration
@@ -161,3 +162,30 @@ def test_gitleaks_adapter_reports_zero_findings_on_a_real_clean_scan(
         assert findings == []
     finally:
         docker_client.volumes.get(volume_name).remove(force=True)
+
+
+def test_active_gitleaks_execution_removes_only_its_anonymous_volumes(
+    docker_client: docker.DockerClient,
+) -> None:
+    settings = _settings()
+    before = {volume.name for volume in docker_client.volumes.list()}
+
+    try:
+        result = create_scan_execution(
+            DockerContainerRunner(client=docker_client),
+            docker_client,
+            settings,
+            ScannerType.SECRETS,
+        ).execute(
+            "https://github.com/octocat/Hello-World.git",
+            "master",
+            uuid.uuid4(),
+            ScannerType.SECRETS,
+        )
+
+        assert result.findings == []
+        assert {volume.name for volume in docker_client.volumes.list()} == before
+    finally:
+        for volume in docker_client.volumes.list():
+            if volume.name not in before:
+                volume.remove(force=True)

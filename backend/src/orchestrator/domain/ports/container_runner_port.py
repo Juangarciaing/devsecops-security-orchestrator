@@ -64,6 +64,7 @@ class ContainerRunnerPort(ABC):
         limits: ResourceLimits,
         timeout_seconds: int,
         tmp_exec: bool = False,
+        cleanup_anonymous_volumes: bool = False,
     ) -> RunResult:
         """Run `image` with an argv-only `command` (never a shell string).
 
@@ -89,4 +90,5 @@ class ContainerRunnerPort(ABC):
         cannot function under `noexec` (upstream limitation,
         pypa/pip-audit#732) — no other scanner needs this, so it is scoped
         as a narrow per-call opt-in rather than a global relaxation.
+
         """

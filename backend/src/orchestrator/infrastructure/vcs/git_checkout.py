@@ -16,7 +16,7 @@ from __future__ import annotations
 import uuid
 from dataclasses import dataclass, field
 from types import TracebackType
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from opentelemetry import trace
 
@@ -94,11 +94,17 @@ class GitCheckout:
     """Orchestrates the named-volume + init-container checkout handoff (D1, D2)."""
 
     def __init__(
-        self, runner: ContainerRunnerPort, docker_client: DockerClient, settings: Settings
+        self,
+        runner: ContainerRunnerPort,
+        docker_client: DockerClient,
+        settings: Settings,
+        *,
+        cleanup_anonymous_volumes: bool = False,
     ) -> None:
         self._runner = runner
         self._docker_client = docker_client
         self._settings = settings
+        self._cleanup_anonymous_volumes = cleanup_anonymous_volumes
 
     def checkout(self, clone_url: str, ref: str) -> Workspace:
         """Shallow-clone `clone_url` at `ref` and resolve its real HEAD SHA.
@@ -141,6 +147,7 @@ class GitCheckout:
                     network_disabled=False,
                     limits=limits,
                     timeout_seconds=self._settings.scan_timeout_seconds,
+                    cleanup_anonymous_volumes=self._cleanup_anonymous_volumes,
                 )
                 if clone_result.exit_code != 0:
                     if _looks_like_auth_failure(clone_result.stderr):
@@ -158,6 +165,7 @@ class GitCheckout:
                     network_disabled=False,
                     limits=limits,
                     timeout_seconds=self._settings.scan_timeout_seconds,
+                    cleanup_anonymous_volumes=self._cleanup_anonymous_volumes,
                 )
                 if rev_parse_result.exit_code != 0:
                     raise CheckoutFailedError(
@@ -191,14 +199,21 @@ class GitCheckout:
         command, no network, against a volume that holds ZERO untrusted
         content yet (this runs strictly before the clone).
         """
-        self._docker_client.containers.run(
-            image=self._settings.scan_git_image,
-            entrypoint="chmod",
-            command=["0777", _WORKSPACE_MOUNT_PATH],
-            volumes={volume_name: {"bind": _WORKSPACE_MOUNT_PATH, "mode": "rw"}},
-            network_mode="none",
-            remove=True,
-        )
+        run_kwargs: dict[str, Any] = {
+            "image": self._settings.scan_git_image,
+            "entrypoint": "chmod",
+            "command": ["0777", _WORKSPACE_MOUNT_PATH],
+            "volumes": {volume_name: {"bind": _WORKSPACE_MOUNT_PATH, "mode": "rw"}},
+            "network_mode": "none",
+        }
+        if self._cleanup_anonymous_volumes:
+            container = self._docker_client.containers.run(**run_kwargs, detach=True)
+            try:
+                container.wait()
+            finally:
+                container.remove(force=True, v=True)
+        else:
+            self._docker_client.containers.run(**run_kwargs, remove=True)
 
     def _resource_limits(self) -> ResourceLimits:
         return ResourceLimits(
