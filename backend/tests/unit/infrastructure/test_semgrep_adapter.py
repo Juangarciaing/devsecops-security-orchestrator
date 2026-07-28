@@ -9,9 +9,10 @@ installed `semgrep==1.170.0` CLI: `--quiet --json` emits pure JSON with no
 preamble, and exit code stays 0 even with findings present). The
 single-call container-invocation shape is covered by
 `tests/integration/test_semgrep_adapter_live.py` (real Docker); the compat
-`scan(volume_name)` shape test was removed in Module 13c PR5c (the
-parser/malformed/redaction cases below are temporary duplication with
-`test_semgrep_parser_contract.py`, removed separately in a PR5c follow-up).
+`scan(volume_name)` shape test was removed in Module 13c PR5c-1. Clean-run,
+malformed-input, and finding-redaction parser cases are now owned solely by
+`test_semgrep_parser_contract.py` (Module 13c PR5c-2) — this file keeps
+only cases with no parser-contract analog.
 """
 
 from __future__ import annotations
@@ -27,7 +28,6 @@ from orchestrator.infrastructure.scanners.semgrep_adapter import (
     _SEMGREP_ARGV,
     _TARGET_DIR,
     SemgrepAdapter,
-    SemgrepFailedError,
 )
 from tests.fakes.fake_container_runner import FakeContainerRunner
 
@@ -75,115 +75,6 @@ def test_semgrep_argv_is_a_fixed_tuple_never_interpolated_from_repo_content() ->
 
 
 # ---------------------------------------------------------------------------
-# 3.1 — pure-JSON stdout parsing (D6)
-# ---------------------------------------------------------------------------
-
-
-def test_parse_valid_results_array_returns_findings() -> None:
-    report = _json_report(
-        [
-            {
-                "check_id": "python.lang.security.audit.subprocess-shell-true",
-                "path": f"{_TARGET_DIR}/app/a.py",
-                "start": {"line": 5, "col": 1},
-                "end": {"line": 5, "col": 10},
-                "extra": {"severity": "ERROR", "message": "dangerous shell=True"},
-            }
-        ]
-    )
-    result = RunResult(exit_code=0, stdout=report, stderr="", timed_out=False)
-
-    findings = _adapter().parse(result, _SCAN_TASK_ID)
-
-    assert len(findings) == 1
-    finding = findings[0]
-    assert finding.scan_task_id == _SCAN_TASK_ID
-    assert finding.rule_id == "python.lang.security.audit.subprocess-shell-true"
-    assert finding.title == "python.lang.security.audit.subprocess-shell-true"
-    assert finding.line_number == 5
-    assert finding.file_path == "app/a.py"
-    assert finding.severity == FindingSeverity.HIGH
-    assert finding.snippet == "dangerous shell=True"
-    assert finding.raw_evidence is not None
-    assert finding.raw_evidence["message"] == "dangerous shell=True"
-    assert finding.fingerprint
-
-
-def test_parse_empty_results_returns_no_findings_not_an_error() -> None:
-    result = RunResult(exit_code=0, stdout=_json_report([]), stderr="", timed_out=False)
-
-    findings = _adapter().parse(result, _SCAN_TASK_ID)
-
-    assert findings == []
-
-
-def test_parse_exit_code_1_with_valid_json_is_success_not_error() -> None:
-    """Confirmed against the real installed CLI: semgrep's exit code is
-    IGNORED (D6) — `parse()` is driven entirely by JSON `results[]`
-    presence, mirroring pip-audit's D4 parse-driven contract."""
-    report = _json_report(
-        [
-            {
-                "check_id": "rule-a",
-                "path": f"{_TARGET_DIR}/a.py",
-                "start": {"line": 1, "col": 1},
-                "end": {"line": 1, "col": 2},
-                "extra": {"severity": "WARNING", "message": "msg"},
-            }
-        ]
-    )
-    result = RunResult(exit_code=1, stdout=report, stderr="", timed_out=False)
-
-    findings = _adapter().parse(result, _SCAN_TASK_ID)
-
-    assert len(findings) == 1
-
-
-def test_parse_raises_semgrep_failed_error_when_timed_out_even_with_exit_code_0() -> None:
-    result = RunResult(exit_code=0, stdout="", stderr="", timed_out=True)
-
-    try:
-        _adapter().parse(result, _SCAN_TASK_ID)
-    except SemgrepFailedError:
-        pass
-    else:
-        raise AssertionError("expected SemgrepFailedError when the run timed out")
-
-
-def test_parse_empty_stdout_raises_semgrep_failed_error() -> None:
-    result = RunResult(exit_code=2, stdout="", stderr="semgrep crashed", timed_out=False)
-
-    try:
-        _adapter().parse(result, _SCAN_TASK_ID)
-    except SemgrepFailedError as exc:
-        assert "semgrep crashed" in str(exc)
-    else:
-        raise AssertionError("expected SemgrepFailedError on empty stdout")
-
-
-def test_parse_malformed_json_raises_semgrep_failed_error() -> None:
-    result = RunResult(exit_code=2, stdout="{not valid json", stderr="", timed_out=False)
-
-    try:
-        _adapter().parse(result, _SCAN_TASK_ID)
-    except SemgrepFailedError:
-        pass
-    else:
-        raise AssertionError("expected SemgrepFailedError on malformed JSON")
-
-
-def test_parse_json_without_results_key_raises_semgrep_failed_error() -> None:
-    result = RunResult(exit_code=2, stdout='{"unexpected": true}', stderr="", timed_out=False)
-
-    try:
-        _adapter().parse(result, _SCAN_TASK_ID)
-    except SemgrepFailedError:
-        pass
-    else:
-        raise AssertionError("expected SemgrepFailedError when 'results' key is missing")
-
-
-# ---------------------------------------------------------------------------
 # 3.2 — severity mapping + safe fallback (D7)
 # ---------------------------------------------------------------------------
 
@@ -223,61 +114,6 @@ def test_parse_maps_error_warning_info_to_high_medium_low() -> None:
     assert by_rule["rule-high"].severity == FindingSeverity.HIGH
     assert by_rule["rule-medium"].severity == FindingSeverity.MEDIUM
     assert by_rule["rule-low"].severity == FindingSeverity.LOW
-
-
-def test_parse_unknown_severity_falls_back_to_medium_and_does_not_fail_scan() -> None:
-    report = _json_report(
-        [
-            {
-                "check_id": "rule-unknown",
-                "path": f"{_TARGET_DIR}/a.py",
-                "start": {"line": 1, "col": 1},
-                "end": {"line": 1, "col": 2},
-                "extra": {"severity": "CRITICAL", "message": "not in {ERROR, WARNING, INFO}"},
-            },
-            {
-                "check_id": "rule-known",
-                "path": f"{_TARGET_DIR}/b.py",
-                "start": {"line": 2, "col": 1},
-                "end": {"line": 2, "col": 2},
-                "extra": {"severity": "ERROR", "message": "known"},
-            },
-        ]
-    )
-    result = RunResult(exit_code=0, stdout=report, stderr="", timed_out=False)
-
-    findings = _adapter().parse(result, _SCAN_TASK_ID)
-
-    by_rule = {f.rule_id: f for f in findings}
-    assert len(findings) == 2
-    assert by_rule["rule-unknown"].severity == FindingSeverity.MEDIUM
-    assert by_rule["rule-known"].severity == FindingSeverity.HIGH
-
-
-# ---------------------------------------------------------------------------
-# 3.3 — path normalization (D9)
-# ---------------------------------------------------------------------------
-
-
-def test_parse_strips_checkout_checkout_prefix_from_file_path() -> None:
-    report = _json_report(
-        [
-            {
-                "check_id": "rule-x",
-                "path": f"{_TARGET_DIR}/app/routes/auth.py",
-                "start": {"line": 43, "col": 1},
-                "end": {"line": 43, "col": 2},
-                "extra": {"severity": "ERROR", "message": "hardcoded secret"},
-            }
-        ]
-    )
-    result = RunResult(exit_code=0, stdout=report, stderr="", timed_out=False)
-
-    findings = _adapter().parse(result, _SCAN_TASK_ID)
-
-    assert len(findings) == 1
-    assert findings[0].file_path == "app/routes/auth.py"
-    assert _TARGET_DIR not in findings[0].file_path
 
 
 # ---------------------------------------------------------------------------

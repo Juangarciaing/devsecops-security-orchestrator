@@ -8,9 +8,10 @@ preamble) -> parsed `Finding`s (possibly zero) with severity translated from
 Spanish and `file_path` stripped of its container mount-path prefix. The
 single-call container-invocation shape is covered by
 `tests/integration/test_ast_sast_adapter_live.py` (real Docker); the compat
-`scan(volume_name)` shape test was removed in Module 13c PR5c (the
-parser/malformed/redaction cases below are temporary duplication with
-`test_ast_sast_parser_contract.py`, removed separately in a PR5c follow-up).
+`scan(volume_name)` shape test was removed in Module 13c PR5c-1. Clean-run,
+malformed-input, and finding-redaction parser cases are now owned solely by
+`test_ast_sast_parser_contract.py` (Module 13c PR5c-2) — this file keeps
+only cases with no parser-contract analog.
 """
 
 from __future__ import annotations
@@ -26,7 +27,6 @@ from orchestrator.infrastructure.scanners.ast_sast_adapter import (
     _SAST_ARGV,
     _TARGET_DIR,
     AstSastAdapter,
-    SastFailedError,
 )
 from tests.fakes.fake_container_runner import FakeContainerRunner
 
@@ -76,70 +76,6 @@ def test_sast_argv_is_a_fixed_tuple_never_interpolated_from_repo_content() -> No
         "json",
     )
     assert isinstance(_SAST_ARGV, tuple)
-
-
-# ---------------------------------------------------------------------------
-# 2.1 — non-JSON-prefixed stdout parsing (D2)
-# ---------------------------------------------------------------------------
-
-
-def test_parse_extracts_json_from_first_brace_behind_a_preamble() -> None:
-    preamble = "Analizando: /checkout/checkout ...\nHallazgos: 0 (Alta=0, Media=0, Baja=0)\n"
-    result = RunResult(exit_code=0, stdout=preamble + _json_report([]), stderr="", timed_out=False)
-
-    findings = _adapter().parse(result, _SCAN_TASK_ID)
-
-    assert findings == []
-
-
-def test_parse_raises_sast_failed_error_when_no_brace_present() -> None:
-    result = RunResult(
-        exit_code=1, stdout="Analizando: /checkout/checkout ...\n", stderr="crash", timed_out=False
-    )
-
-    try:
-        _adapter().parse(result, _SCAN_TASK_ID)
-    except SastFailedError as exc:
-        assert "crash" in str(exc)
-    else:
-        raise AssertionError("expected SastFailedError when stdout has no '{' character")
-
-
-def test_parse_raises_sast_failed_error_on_malformed_json_after_slicing() -> None:
-    result = RunResult(
-        exit_code=1, stdout="Analizando: ...\n{not valid json", stderr="", timed_out=False
-    )
-
-    try:
-        _adapter().parse(result, _SCAN_TASK_ID)
-    except SastFailedError:
-        pass
-    else:
-        raise AssertionError("expected SastFailedError on malformed JSON")
-
-
-def test_parse_raises_sast_failed_error_when_timed_out_even_with_exit_code_0() -> None:
-    result = RunResult(exit_code=0, stdout="", stderr="", timed_out=True)
-
-    try:
-        _adapter().parse(result, _SCAN_TASK_ID)
-    except SastFailedError:
-        pass
-    else:
-        raise AssertionError("expected SastFailedError when the run timed out")
-
-
-# ---------------------------------------------------------------------------
-# Zero-findings success contract
-# ---------------------------------------------------------------------------
-
-
-def test_parse_empty_findings_list_returns_no_findings_not_an_error() -> None:
-    result = RunResult(exit_code=0, stdout=_json_report([]), stderr="", timed_out=False)
-
-    findings = _adapter().parse(result, _SCAN_TASK_ID)
-
-    assert findings == []
 
 
 # ---------------------------------------------------------------------------
@@ -224,34 +160,6 @@ def test_parse_unknown_severity_falls_back_to_medium_and_does_not_fail_scan() ->
 
 
 # ---------------------------------------------------------------------------
-# 2.3 — path normalization (D4)
-# ---------------------------------------------------------------------------
-
-
-def test_parse_strips_checkout_checkout_prefix_from_file_path() -> None:
-    report = _json_report(
-        [
-            {
-                "file": "/checkout/checkout/app/routes/auth.py",
-                "line": 43,
-                "severity": "ALTA",
-                "rule_id": "SAST-020",
-                "title": "hardcoded secret",
-                "description": "desc",
-                "remediation": "fix",
-            }
-        ]
-    )
-    result = RunResult(exit_code=0, stdout=report, stderr="", timed_out=False)
-
-    findings = _adapter().parse(result, _SCAN_TASK_ID)
-
-    assert len(findings) == 1
-    assert findings[0].file_path == "app/routes/auth.py"
-    assert "/checkout/checkout" not in findings[0].file_path
-
-
-# ---------------------------------------------------------------------------
 # 2.4 — fingerprint stability
 # ---------------------------------------------------------------------------
 
@@ -309,42 +217,6 @@ def test_fingerprint_differs_for_different_rule_file_or_line() -> None:
 
     assert len(findings) == 2
     assert findings[0].fingerprint != findings[1].fingerprint
-
-
-# ---------------------------------------------------------------------------
-# Field mapping (rule_id/title/line_number/raw_evidence/snippet)
-# ---------------------------------------------------------------------------
-
-
-def test_parse_maps_all_finding_fields() -> None:
-    report = _json_report(
-        [
-            {
-                "file": "/checkout/checkout/app/routes/auth.py",
-                "line": 43,
-                "severity": "ALTA",
-                "rule_id": "SAST-020",
-                "title": "Hardcoded secret key",
-                "description": "A secret key is hardcoded in source.",
-                "remediation": "Move the secret to an environment variable.",
-            }
-        ]
-    )
-    result = RunResult(exit_code=0, stdout=report, stderr="", timed_out=False)
-
-    findings = _adapter().parse(result, _SCAN_TASK_ID)
-
-    assert len(findings) == 1
-    finding = findings[0]
-    assert finding.scan_task_id == _SCAN_TASK_ID
-    assert finding.rule_id == "SAST-020"
-    assert finding.title == "Hardcoded secret key"
-    assert finding.line_number == 43
-    assert finding.file_path == "app/routes/auth.py"
-    assert finding.raw_evidence is not None
-    assert finding.raw_evidence["description"] == "A secret key is hardcoded in source."
-    assert finding.raw_evidence["remediation"] == "Move the secret to an environment variable."
-    assert finding.snippet == "A secret key is hardcoded in source."
 
 
 # ---------------------------------------------------------------------------
