@@ -1,15 +1,16 @@
-"""`PipAuditAdapter` — pre-flight probe + argv builder + JSON-to-`Finding`
-parser (Module 11 PR1, tasks 1.4-1.6).
+"""`PipAuditAdapter` — JSON-to-`Finding` parser (Module 11 PR1, tasks 1.4-1.6).
 
-`PipAuditAdapter.scan()` proves the exact two-call `ContainerRunnerPort.run()`
-shape (network-off probe, then network-on audit) via `FakeContainerRunner` —
-no real Docker socket needed here; the live proof lives in
-`tests/integration/test_pip_audit_adapter_live.py` (PR2). `.parse()` is a
-pure method: `timed_out=True` -> `PipAuditFailedError`; valid JSON with a
-`dependencies` key -> parsed `Finding`s (possibly zero); anything else ->
-`PipAuditFailedError` (D4 — pip-audit's exit code is ambiguous between
-"vulns found" and "genuine error", so success/failure is parse-driven, not
-exit-code-driven).
+`.parse()` is a pure method: `timed_out=True` -> `PipAuditFailedError`; valid
+JSON with a `dependencies` key -> parsed `Finding`s (possibly zero); anything
+else -> `PipAuditFailedError` (D4 — pip-audit's exit code is ambiguous
+between "vulns found" and "genuine error", so success/failure is
+parse-driven, not exit-code-driven). Probe/argv/network-toggle shape is
+covered by `tests/unit/infrastructure/test_pip_audit_docker_execution.py`
+(the descriptor's production path) and
+`tests/integration/test_pip_audit_adapter_live.py` (real Docker); the
+compat `scan(volume_name)` shape tests were removed in Module 13c PR5c (the
+parser/malformed/redaction cases below are temporary duplication with
+`test_pip_audit_parser_contract.py`, removed separately in a PR5c follow-up).
 """
 
 from __future__ import annotations
@@ -22,15 +23,12 @@ from orchestrator.domain.ports.scanner_adapter_port import ScannerAdapterPort
 from orchestrator.domain.value_objects.enums import FindingSeverity, ScannerType
 from orchestrator.infrastructure.config.settings import Settings
 from orchestrator.infrastructure.scanners.pip_audit_adapter import (
-    _PIP_AUDIT_ARGV,
     PipAuditAdapter,
     PipAuditFailedError,
 )
 from tests.fakes.fake_container_runner import FakeContainerRunner
 
 _SCAN_TASK_ID = uuid.uuid4()
-_PROBE_PRESENT_RESULT = RunResult(exit_code=0, stdout="", stderr="", timed_out=False)
-_PROBE_ABSENT_RESULT = RunResult(exit_code=1, stdout="", stderr="", timed_out=False)
 
 
 def _settings() -> Settings:
@@ -43,118 +41,10 @@ def _settings() -> Settings:
     )
 
 
-def _adapter(runner: FakeContainerRunner | None = None) -> PipAuditAdapter:
-    """A `PipAuditAdapter` used only for `.parse()` in most tests — no
+def _adapter() -> PipAuditAdapter:
+    """A `PipAuditAdapter` used only for `.parse()` in these tests — no
     container calls, so a fresh unscripted `FakeContainerRunner` is fine."""
-    return PipAuditAdapter(runner=runner or FakeContainerRunner(), settings=_settings())
-
-
-# ---------------------------------------------------------------------------
-# 1.4 — probe short-circuit / `.scan()` call shape
-# ---------------------------------------------------------------------------
-
-
-def test_scan_probes_manifest_presence_first_network_off() -> None:
-    fake_runner = FakeContainerRunner()
-    fake_runner.script(
-        _PROBE_PRESENT_RESULT, RunResult(exit_code=0, stdout="{}", stderr="", timed_out=False)
-    )
-    settings = _settings()
-    adapter = PipAuditAdapter(runner=fake_runner, settings=settings)
-
-    adapter.scan("scan-abc123")
-
-    assert len(fake_runner.calls) == 2
-    probe_call = fake_runner.calls[0]
-    assert probe_call.image == settings.scan_pip_audit_image
-    assert probe_call.volume_name == "scan-abc123"
-    assert probe_call.mount_path == "/checkout"
-    assert probe_call.read_only_mount is True
-    assert probe_call.network_disabled is True
-    assert probe_call.timeout_seconds == settings.scan_timeout_seconds
-    assert probe_call.command[0] == "python"
-    assert "requirements.txt" in probe_call.command[-1]
-    assert probe_call.tmp_exec is False  # a bare os.path.isfile check, no subprocess/venv
-
-
-def test_scan_runs_pip_audit_network_on_when_manifest_present() -> None:
-    fake_runner = FakeContainerRunner()
-    fake_runner.script(
-        _PROBE_PRESENT_RESULT, RunResult(exit_code=0, stdout="{}", stderr="", timed_out=False)
-    )
-    settings = _settings()
-    adapter = PipAuditAdapter(runner=fake_runner, settings=settings)
-
-    adapter.scan("scan-abc123")
-
-    assert len(fake_runner.calls) == 2
-    audit_call = fake_runner.calls[1]
-    assert audit_call.command == list(_PIP_AUDIT_ARGV)
-    assert audit_call.image == settings.scan_pip_audit_image
-    assert audit_call.volume_name == "scan-abc123"
-    assert audit_call.mount_path == "/checkout"
-    assert audit_call.read_only_mount is True
-    assert audit_call.network_disabled is False
-    assert audit_call.timeout_seconds == settings.scan_timeout_seconds
-    assert audit_call.limits.memory_mb == settings.scan_memory_limit_mb
-    assert audit_call.limits.pids_limit == settings.scan_pids_limit
-    # Live-Docker discovery (D7b): pip-audit needs an exec-capable /tmp to
-    # bootstrap its internal audit virtualenv (pypa/pip-audit#732) — the
-    # probe call does NOT (asserted below), keeping the blast radius of the
-    # opt-in narrow to exactly the call that needs it.
-    assert audit_call.tmp_exec is True
-
-
-def test_scan_short_circuits_to_synthetic_empty_result_when_manifest_absent() -> None:
-    fake_runner = FakeContainerRunner()
-    fake_runner.script(_PROBE_ABSENT_RESULT)
-    adapter = PipAuditAdapter(runner=fake_runner, settings=_settings())
-
-    result = adapter.scan("scan-no-manifest")
-
-    # Only the probe launched — no network-enabled container for a
-    # guaranteed no-op (D3).
-    assert len(fake_runner.calls) == 1
-    assert result.exit_code == 0
-    assert json.loads(result.stdout) == {"dependencies": []}
-    assert result.timed_out is False
-
-
-def test_synthetic_empty_result_parses_to_zero_findings() -> None:
-    fake_runner = FakeContainerRunner()
-    fake_runner.script(_PROBE_ABSENT_RESULT)
-    adapter = PipAuditAdapter(runner=fake_runner, settings=_settings())
-
-    result = adapter.scan("scan-no-manifest")
-    findings = adapter.parse(result, _SCAN_TASK_ID)
-
-    assert findings == []
-
-
-def test_scan_raises_pip_audit_failed_error_when_probe_times_out() -> None:
-    """PR1 flagged a masking edge case: a probe `RunResult` with
-    `timed_out=True` also has a non-zero `exit_code` (typically `-1`), which
-    used to fall into the SAME `exit_code != 0` branch as "manifest genuinely
-    absent" — silently returning a synthetic zero-findings result instead of
-    surfacing a real container-runtime problem. A probe timeout is NOT
-    "no manifest"; it must raise `PipAuditFailedError` (D4's existing
-    contract for "pip-audit itself timed out") so it reaches the SAME
-    deterministic no-retry failure path as any other adapter failure,
-    instead of silently under-reporting as a clean scan."""
-    fake_runner = FakeContainerRunner()
-    fake_runner.script(RunResult(exit_code=-1, stdout="", stderr="", timed_out=True))
-    adapter = PipAuditAdapter(runner=fake_runner, settings=_settings())
-
-    try:
-        adapter.scan("scan-probe-timeout")
-    except PipAuditFailedError:
-        pass
-    else:
-        raise AssertionError("expected PipAuditFailedError when the probe times out")
-
-    # Only the probe launched — a timed-out probe must not fall through to
-    # launching the network-enabled audit container.
-    assert len(fake_runner.calls) == 1
+    return PipAuditAdapter(runner=FakeContainerRunner(), settings=_settings())
 
 
 # ---------------------------------------------------------------------------

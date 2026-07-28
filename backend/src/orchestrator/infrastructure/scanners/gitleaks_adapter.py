@@ -38,7 +38,6 @@ from orchestrator.domain.entities.finding import Finding
 from orchestrator.domain.ports.container_runner_port import RunResult
 from orchestrator.domain.ports.scanner_adapter_port import ScannerAdapterPort
 from orchestrator.domain.value_objects.enums import FindingSeverity, ScannerType
-from orchestrator.infrastructure.scanners.gitleaks_descriptor import GitleaksInvocation
 
 if TYPE_CHECKING:
     from orchestrator.domain.ports.container_runner_port import ContainerRunnerPort
@@ -57,24 +56,16 @@ class GitleaksFailedError(Exception):
 
 
 class GitleaksAdapter(ScannerAdapterPort):
-    """Launches the pinned Gitleaks image against a checked-out volume (D4).
+    """Parses Gitleaks Docker output for a checked-out volume (D4).
 
-    Implements `ScannerAdapterPort` (Module 7 D1) — selected via
-    `infrastructure.scanners.registry.get_adapter(ScannerType.SECRETS, ...)`.
+    Implements `ScannerAdapterPort` (Module 7 D1) — driven via
+    `infrastructure.container.gitleaks_docker_execution.GitleaksDockerExecution`,
+    which invokes `GitleaksInvocation` and passes the `RunResult` here.
     """
 
     def __init__(self, runner: ContainerRunnerPort, settings: Settings) -> None:
         self._runner = runner
         self._settings = settings
-
-    def scan(self, volume_name: str) -> RunResult:
-        """Run Gitleaks read-only, network-disabled, against `volume_name`.
-
-        Returns the raw `RunResult` — callers pass it to `parse()` to get
-        `Finding`s (kept separate so `parse()` stays a pure, easily
-        triangulated method with no container dependency).
-        """
-        return GitleaksInvocation.from_settings(self._settings).run(self._runner, volume_name)
 
     def parse(
         self,

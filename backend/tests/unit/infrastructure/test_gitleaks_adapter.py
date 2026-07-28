@@ -1,13 +1,15 @@
-"""`GitleaksAdapter` — argv builder + JSON-to-`Finding` parser (Module 6 PR2,
-tasks 2.1-2.3; retrofitted to `ScannerAdapterPort` in Module 7 PR1, tasks
-2.1-2.2 — `parse()` moved from a module-level function to a method).
+"""`GitleaksAdapter` — JSON-to-`Finding` parser (Module 6 PR2, tasks 2.1-2.3;
+retrofitted to `ScannerAdapterPort` in Module 7 PR1, tasks 2.1-2.2 —
+`parse()` moved from a module-level function to a method).
 
-`GitleaksAdapter.scan()` proves the exact `ContainerRunnerPort.run()` call
-shape via `FakeContainerRunner` (no real Docker socket needed here — that
-live proof lives in `tests/integration/test_gitleaks_adapter_live.py`).
 `.parse()` is a pure method: exit 0 -> no findings, exit 2 + JSON report ->
 parsed `Finding`s, anything else (or `timed_out=True`) -> `GitleaksFailedError`
 (D4/D5 — never conflate "leaks found" with a genuine tool failure).
+Container-invocation shape is covered by
+`tests/integration/test_gitleaks_adapter_live.py` (real Docker); the compat
+`scan(volume_name)` shape tests were removed in Module 13c PR5c (the
+parser/malformed/redaction cases below are temporary duplication with
+`test_gitleaks_parser_contract.py`, removed separately in a PR5c follow-up).
 """
 
 from __future__ import annotations
@@ -39,50 +41,6 @@ def _adapter() -> GitleaksAdapter:
     """A `GitleaksAdapter` used only for `.parse()` in these tests — no
     container calls, so a fresh unscripted `FakeContainerRunner` is fine."""
     return GitleaksAdapter(runner=FakeContainerRunner(), settings=_settings())
-
-
-# ---------------------------------------------------------------------------
-# 2.1 — argv builder / `.scan()` call shape
-# ---------------------------------------------------------------------------
-
-
-def test_scan_runs_gitleaks_against_the_checkout_subdir_with_hardened_kwargs() -> None:
-    fake_runner = FakeContainerRunner()
-    fake_runner.script(RunResult(exit_code=0, stdout="", stderr="", timed_out=False))
-    settings = _settings()
-    adapter = GitleaksAdapter(runner=fake_runner, settings=settings)
-
-    adapter.scan("scan-abc123")
-
-    assert len(fake_runner.calls) == 1
-    call = fake_runner.calls[0]
-    assert call.command == [
-        "dir",
-        "/checkout/checkout",
-        "--report-format=json",
-        "--report-path=/dev/stdout",
-        "--exit-code=2",
-        "--no-banner",
-    ]
-    assert call.image == settings.scan_container_image
-    assert call.volume_name == "scan-abc123"
-    assert call.mount_path == "/checkout"
-    assert call.read_only_mount is True
-    assert call.network_disabled is True
-    assert call.timeout_seconds == settings.scan_timeout_seconds
-    assert call.limits.memory_mb == settings.scan_memory_limit_mb
-    assert call.limits.pids_limit == settings.scan_pids_limit
-
-
-def test_scan_returns_the_raw_run_result() -> None:
-    fake_runner = FakeContainerRunner()
-    fake_runner.script(RunResult(exit_code=2, stdout="[]", stderr="", timed_out=False))
-    adapter = GitleaksAdapter(runner=fake_runner, settings=_settings())
-
-    result = adapter.scan("scan-xyz")
-
-    assert result.exit_code == 2
-    assert result.stdout == "[]"
 
 
 # ---------------------------------------------------------------------------

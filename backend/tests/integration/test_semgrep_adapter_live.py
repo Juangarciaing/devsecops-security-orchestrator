@@ -37,6 +37,7 @@ from orchestrator.domain.value_objects.enums import FindingSeverity
 from orchestrator.infrastructure.config.settings import Settings
 from orchestrator.infrastructure.container.docker_container_runner import DockerContainerRunner
 from orchestrator.infrastructure.scanners.semgrep_adapter import SemgrepAdapter
+from orchestrator.infrastructure.scanners.semgrep_descriptor import SemgrepInvocation
 from orchestrator.infrastructure.vcs.git_checkout import GitCheckout
 
 pytestmark = pytest.mark.integration
@@ -93,7 +94,7 @@ def test_semgrep_adapter_detects_a_real_finding_via_real_docker_and_real_checkou
     with checkout.checkout(_SECURE_TASK_API_URL, _SECURE_TASK_API_REF) as workspace:
         adapter = SemgrepAdapter(runner=runner, settings=settings)
 
-        result = adapter.scan(workspace.volume_name)
+        result = SemgrepInvocation.from_settings(settings).run(runner, workspace.volume_name)
         assert result.timed_out is False
 
         scan_task_id = uuid.uuid4()
@@ -133,7 +134,7 @@ def test_semgrep_adapter_reports_zero_findings_and_completes_on_a_clean_repo(
     with checkout.checkout(_NO_FINDINGS_REPO_URL, _NO_FINDINGS_REPO_REF) as workspace:
         adapter = SemgrepAdapter(runner=runner, settings=settings)
 
-        result = adapter.scan(workspace.volume_name)
+        result = SemgrepInvocation.from_settings(settings).run(runner, workspace.volume_name)
         assert result.timed_out is False
 
         findings = adapter.parse(result, uuid.uuid4())
@@ -164,7 +165,6 @@ def test_semgrep_adapter_scan_container_has_zero_network_egress(
     runner.run = _capturing_run  # type: ignore[method-assign]
 
     with checkout.checkout(_NO_FINDINGS_REPO_URL, _NO_FINDINGS_REPO_REF) as workspace:
-        adapter = SemgrepAdapter(runner=runner, settings=settings)
-        adapter.scan(workspace.volume_name)
+        SemgrepInvocation.from_settings(settings).run(runner, workspace.volume_name)
 
     assert captured["network_disabled"] is True
