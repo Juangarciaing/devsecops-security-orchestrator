@@ -13,6 +13,12 @@ from orchestrator.domain.ports.container_runner_port import (
     RunResult,
 )
 from orchestrator.domain.ports.finding_port import FindingPort
+from orchestrator.domain.ports.kubernetes_job_runner_port import (
+    JobOutcome,
+    JobSpec,
+    KubernetesJobRunnerPort,
+    PvcSpec,
+)
 from orchestrator.domain.ports.scan_run_port import ScanRunPort
 from orchestrator.domain.ports.scan_task_port import ScanTaskPort
 from orchestrator.domain.ports.user_port import UserPort
@@ -23,6 +29,10 @@ __all__ = [
     "CodeRepositoryPort",
     "ContainerRunnerPort",
     "FindingPort",
+    "JobOutcome",
+    "JobSpec",
+    "KubernetesJobRunnerPort",
+    "PvcSpec",
     "ResourceLimits",
     "RunResult",
     "ScanRunPort",
