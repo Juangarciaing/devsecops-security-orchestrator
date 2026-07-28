@@ -104,14 +104,15 @@ def test_scan_run_port_declares_list_recent_completed() -> None:
     assert inspect.iscoroutinefunction(ScanRunPort.list_recent_completed)
 
 
-def test_scanner_adapter_port_is_a_framework_free_abc_with_scan_parse_supports() -> None:
-    """Module 7 D1: `ScannerAdapterPort` is a sync (not async — matches
-    `ContainerRunnerPort`, Module 6 D3) ABC with `scan`/`parse`/`supports`."""
+def test_scanner_adapter_port_is_a_framework_free_abc_with_parse_supports() -> None:
+    """Module 7 D1 ABC with `parse`/`supports` — sync (not async — matches
+    `ContainerRunnerPort`, Module 6 D3). `scan(volume_name)` was removed once
+    every production caller became a descriptor executor (Module 13c PR5c)."""
     from orchestrator.domain.ports.scanner_adapter_port import ScannerAdapterPort
 
     assert inspect.isabstract(ScannerAdapterPort)
-    assert ScannerAdapterPort.__abstractmethods__ == frozenset({"scan", "parse", "supports"})
-    for method_name in ("scan", "parse", "supports"):
+    assert ScannerAdapterPort.__abstractmethods__ == frozenset({"parse", "supports"})
+    for method_name in ("parse", "supports"):
         method = getattr(ScannerAdapterPort, method_name)
         assert not inspect.iscoroutinefunction(method), (
             f"ScannerAdapterPort.{method_name} must be sync (Module 6 D3 precedent)"
@@ -127,13 +128,13 @@ def test_scanner_adapter_port_cannot_be_instantiated_without_implementing_all_me
     from orchestrator.domain.ports.scanner_adapter_port import ScannerAdapterPort
 
     class _IncompleteAdapter(ScannerAdapterPort):
-        def scan(self, volume_name: str) -> object:
+        def parse(self, result: object, scan_task_id: uuid.UUID) -> list[object]:
             raise NotImplementedError
 
     try:
         _IncompleteAdapter()  # type: ignore[abstract]
     except TypeError as exc:
-        assert "parse" in str(exc) or "supports" in str(exc)
+        assert "supports" in str(exc)
     else:
         raise AssertionError("expected TypeError: abstract methods not implemented")
 
@@ -142,9 +143,6 @@ def test_scanner_adapter_port_full_implementation_can_be_instantiated_and_used()
     from orchestrator.domain.ports.scanner_adapter_port import ScannerAdapterPort
 
     class _FakeAdapter(ScannerAdapterPort):
-        def scan(self, volume_name: str) -> str:
-            return f"ran:{volume_name}"
-
         def parse(self, result: object, scan_task_id: uuid.UUID) -> list[object]:
             return [result]
 
@@ -152,7 +150,6 @@ def test_scanner_adapter_port_full_implementation_can_be_instantiated_and_used()
             return scanner_type == ScannerType.SECRETS
 
     adapter = _FakeAdapter()
-    assert adapter.scan("vol-1") == "ran:vol-1"
     task_id = uuid.uuid4()
     assert adapter.parse("raw-result", task_id) == ["raw-result"]
     assert adapter.supports(ScannerType.SECRETS) is True

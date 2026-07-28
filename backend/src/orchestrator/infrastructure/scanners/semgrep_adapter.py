@@ -3,9 +3,8 @@ checked-out volume and parses its JSON output into `Finding`s (Module 11
 PR2, tasks 3.1-3.7).
 
 Implements `ScannerAdapterPort` (Module 7 D1), mirroring
-`AstSastAdapter`/`PipAuditAdapter`'s shape (`scan()`/`parse()`/`supports()`),
-selected via
-`infrastructure.scanners.registry.get_adapter(ScannerType.SEMGREP, ...)`.
+`AstSastAdapter`/`PipAuditAdapter`'s shape (`parse()`/`supports()`), driven
+via `infrastructure.container.semgrep_docker_execution.SemgrepDockerExecution`.
 
 ## Pure-JSON stdout, exit-code-agnostic parse (D6)
 Confirmed against the real, installed `semgrep==1.170.0` CLI
@@ -47,7 +46,7 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from orchestrator.domain.entities.finding import Finding
-from orchestrator.domain.ports.container_runner_port import ResourceLimits, RunResult
+from orchestrator.domain.ports.container_runner_port import RunResult
 from orchestrator.domain.ports.scanner_adapter_port import ScannerAdapterPort
 from orchestrator.domain.value_objects.enums import FindingSeverity, ScannerType
 
@@ -98,39 +97,16 @@ class SemgrepFailedError(Exception):
 
 
 class SemgrepAdapter(ScannerAdapterPort):
-    """Launches the pinned `semgrep-scanner` image against a checked-out volume.
+    """Parses `semgrep` Docker output for a checked-out volume.
 
-    Implements `ScannerAdapterPort` (Module 7 D1) — selected via
-    `infrastructure.scanners.registry.get_adapter(ScannerType.SEMGREP, ...)`.
+    Implements `ScannerAdapterPort` (Module 7 D1) — driven via
+    `infrastructure.container.semgrep_docker_execution.SemgrepDockerExecution`,
+    which invokes the fixed `_SEMGREP_ARGV` and passes the `RunResult` here.
     """
 
     def __init__(self, runner: ContainerRunnerPort, settings: Settings) -> None:
         self._runner = runner
         self._settings = settings
-
-    def scan(self, volume_name: str) -> RunResult:
-        """Run `semgrep` read-only, network-disabled, against `volume_name`.
-
-        Returns the raw `RunResult` — callers pass it to `parse()` to get
-        `Finding`s (kept separate so `parse()` stays a pure, easily
-        triangulated method with no container dependency). `network_disabled
-        =True` is safe (D3): rules are baked into the image at BUILD time
-        only, and the running scan makes zero runtime network attempts
-        (`--metrics=off --disable-version-check` plus the image's own
-        `SEMGREP_SEND_METRICS=off`). No `tmp_exec` needed either — confirmed
-        via a live hardened-container smoke test: semgrep needs no
-        subprocess/venv bootstrapping under `/tmp`, unlike pip-audit.
-        """
-        return self._runner.run(
-            image=self._settings.scan_semgrep_image,
-            command=list(_SEMGREP_ARGV),
-            volume_name=volume_name,
-            mount_path=_MOUNT_PATH,
-            read_only_mount=True,
-            network_disabled=True,
-            limits=self._resource_limits(),
-            timeout_seconds=self._settings.scan_timeout_seconds,
-        )
 
     def parse(
         self,
@@ -155,13 +131,6 @@ class SemgrepAdapter(ScannerAdapterPort):
     def supports(self, scanner_type: ScannerType) -> bool:
         """`SemgrepAdapter` only handles `ScannerType.SEMGREP`."""
         return scanner_type == ScannerType.SEMGREP
-
-    def _resource_limits(self) -> ResourceLimits:
-        return ResourceLimits(
-            memory_mb=self._settings.scan_memory_limit_mb,
-            nano_cpus=int(self._settings.scan_cpu_limit * 1_000_000_000),
-            pids_limit=self._settings.scan_pids_limit,
-        )
 
 
 def _parse_json_report(stdout: str, stderr: str) -> dict[str, Any]:

@@ -48,6 +48,7 @@ from orchestrator.domain.value_objects.enums import FindingSeverity
 from orchestrator.infrastructure.config.settings import Settings
 from orchestrator.infrastructure.container.docker_container_runner import DockerContainerRunner
 from orchestrator.infrastructure.scanners.ast_sast_adapter import AstSastAdapter
+from orchestrator.infrastructure.scanners.ast_sast_descriptor import AstSastInvocation
 from orchestrator.infrastructure.vcs.git_checkout import GitCheckout
 
 pytestmark = pytest.mark.integration
@@ -100,7 +101,7 @@ def test_ast_sast_adapter_detects_a_real_finding_via_real_docker_and_real_checko
     with checkout.checkout(_SECURE_TASK_API_URL, _SECURE_TASK_API_REF) as workspace:
         adapter = AstSastAdapter(runner=runner, settings=settings)
 
-        result = adapter.scan(workspace.volume_name)
+        result = AstSastInvocation.from_settings(settings).run(runner, workspace.volume_name)
         assert result.timed_out is False
 
         scan_task_id = uuid.uuid4()
@@ -138,7 +139,7 @@ def test_ast_sast_adapter_reports_zero_findings_and_completes_on_a_no_python_rep
     with checkout.checkout(_NO_PYTHON_REPO_URL, _NO_PYTHON_REPO_REF) as workspace:
         adapter = AstSastAdapter(runner=runner, settings=settings)
 
-        result = adapter.scan(workspace.volume_name)
+        result = AstSastInvocation.from_settings(settings).run(runner, workspace.volume_name)
         assert result.timed_out is False
 
         findings = adapter.parse(result, uuid.uuid4())

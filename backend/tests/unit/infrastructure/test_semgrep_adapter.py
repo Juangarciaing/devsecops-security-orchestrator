@@ -1,16 +1,17 @@
-"""`SemgrepAdapter` — argv builder + pure-JSON parser + per-finding severity
+"""`SemgrepAdapter` — argv constant + pure-JSON parser + per-finding severity
 map + path normalization (Module 11 PR2, tasks 3.1-3.7).
 
-`SemgrepAdapter.scan()` proves the single-call `ContainerRunnerPort.run()`
-shape (network-disabled, read-only, no `tmp_exec`) via `FakeContainerRunner`
-— no real Docker socket needed here; the live proof lives in
-`tests/integration/test_semgrep_adapter_live.py` (PR3). `.parse()` is a pure
-method: `timed_out=True` -> `SemgrepFailedError`; empty/malformed JSON /
-missing `results` key -> `SemgrepFailedError`; valid JSON -> parsed
-`Finding`s (possibly zero), mirroring `PipAuditAdapter`'s D4 parse-driven,
-exit-code-agnostic contract (confirmed against the real, installed
-`semgrep==1.170.0` CLI: `--quiet --json` emits pure JSON with no preamble,
-and exit code stays 0 even with findings present).
+`.parse()` is a pure method: `timed_out=True` -> `SemgrepFailedError`;
+empty/malformed JSON / missing `results` key -> `SemgrepFailedError`; valid
+JSON -> parsed `Finding`s (possibly zero), mirroring `PipAuditAdapter`'s D4
+parse-driven, exit-code-agnostic contract (confirmed against the real,
+installed `semgrep==1.170.0` CLI: `--quiet --json` emits pure JSON with no
+preamble, and exit code stays 0 even with findings present). The
+single-call container-invocation shape is covered by
+`tests/integration/test_semgrep_adapter_live.py` (real Docker); the compat
+`scan(volume_name)` shape test was removed in Module 13c PR5c (the
+parser/malformed/redaction cases below are temporary duplication with
+`test_semgrep_parser_contract.py`, removed separately in a PR5c follow-up).
 """
 
 from __future__ import annotations
@@ -43,11 +44,10 @@ def _settings() -> Settings:
     )
 
 
-def _adapter(runner: FakeContainerRunner | None = None) -> SemgrepAdapter:
-    """A `SemgrepAdapter` used mostly for `.parse()` — no container calls,
-    so a fresh unscripted `FakeContainerRunner` is fine unless the test
-    scripts a specific `.scan()` result."""
-    return SemgrepAdapter(runner=runner or FakeContainerRunner(), settings=_settings())
+def _adapter() -> SemgrepAdapter:
+    """A `SemgrepAdapter` used only for `.parse()` in these tests — no
+    container calls, so a fresh unscripted `FakeContainerRunner` is fine."""
+    return SemgrepAdapter(runner=FakeContainerRunner(), settings=_settings())
 
 
 def _json_report(results: list[dict]) -> str:
@@ -55,7 +55,7 @@ def _json_report(results: list[dict]) -> str:
 
 
 # ---------------------------------------------------------------------------
-# 3.5 — argv composition / `.scan()` call shape
+# 3.5 — argv composition (fixed, never interpolated from repo content)
 # ---------------------------------------------------------------------------
 
 
@@ -72,31 +72,6 @@ def test_semgrep_argv_is_a_fixed_tuple_never_interpolated_from_repo_content() ->
         _TARGET_DIR,
     )
     assert isinstance(_SEMGREP_ARGV, tuple)
-
-
-def test_scan_runs_semgrep_read_only_network_disabled() -> None:
-    fake_runner = FakeContainerRunner()
-    fake_runner.script(RunResult(exit_code=0, stdout=_json_report([]), stderr="", timed_out=False))
-    settings = _settings()
-    adapter = SemgrepAdapter(runner=fake_runner, settings=settings)
-
-    adapter.scan("scan-abc123")
-
-    assert len(fake_runner.calls) == 1
-    call = fake_runner.calls[0]
-    assert call.command == list(_SEMGREP_ARGV)
-    assert call.image == settings.scan_semgrep_image
-    assert call.volume_name == "scan-abc123"
-    assert call.mount_path == "/checkout"
-    assert call.read_only_mount is True
-    assert call.network_disabled is True
-    assert call.timeout_seconds == settings.scan_timeout_seconds
-    assert call.limits.memory_mb == settings.scan_memory_limit_mb
-    assert call.limits.pids_limit == settings.scan_pids_limit
-    # Confirmed against a real hardened-container smoke test (PR2): semgrep
-    # needs no subprocess/venv bootstrapping under /tmp, unlike pip-audit
-    # (D7b) — the default strict `noexec` posture is fine.
-    assert call.tmp_exec is False
 
 
 # ---------------------------------------------------------------------------

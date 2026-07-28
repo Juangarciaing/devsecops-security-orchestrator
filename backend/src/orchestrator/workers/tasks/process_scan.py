@@ -1,12 +1,13 @@
 """`process_scan_task` — the real Module 6/7 scan flow (D1-D6).
 
 ## Flow
-    run_async: load task -> run -> repository; pending -> running          [DB]
-    sync:      get_adapter(task.scanner_type, runner, settings)            [registry, D2/D6]
-               GitCheckout(...).checkout(clone_url, ref) -> Workspace      [init container]
-               adapter.scan(workspace.volume_name)                        [scanner container]
-               adapter.parse(RunResult, scan_task_id) -> list[Finding]
-               # Workspace.__exit__ force-removes the volume (finally)
+    run_async: load task -> run -> repository; pending -> running    [DB]
+    sync:      create_scan_execution(scanner_type, ...)              [factory, Module 13c PR5b]
+               execution.execute(clone_url, ref, scan_task_id, ...)  [checkout + scan containers]
+               # descriptor executor's GitCheckout(...).checkout(...) yields
+               # a Workspace whose __exit__ force-removes the volume
+               # (finally); it invokes the scanner's fixed descriptor, then
+               # adapter.parse(RunResult, scan_task_id) -> list[Finding]
     run_async: persist resolved commit_sha + bulk_upsert_findings(...)     [DB, dedup on
                (repository_id, fingerprint); task + run -> completed        Module 7 D4/D6]
 
@@ -121,7 +122,7 @@ async def _load_and_start(
     original convention.
 
     `repository_id`/`scanner_type` are returned so `_checkout_and_scan`
-    (registry-routed, Module 7 D2/D6) and `_complete_scan`
+    (factory-routed, Module 13c PR5b) and `_complete_scan`
     (`bulk_upsert_findings`, Module 7 D4/D6) don't need to re-load `task`/
     `repository` themselves.
     """
@@ -171,22 +172,22 @@ def _checkout_and_scan(
     docker_client: DockerClient,
     settings: Settings,
 ) -> tuple[str, list[Finding]]:
-    """Sync/blocking: resolve the adapter, checkout, scan, parse. Runs OUTSIDE
-    any async DB session/event loop (Module 6 D3).
+    """Sync/blocking: resolve the descriptor executor, checkout, scan, parse.
+    Runs OUTSIDE any async DB session/event loop (Module 6 D3).
 
-    The adapter is resolved via `registry.get_adapter(scanner_type, ...)`
-    (Module 7 D2/D6) instead of a hardcoded `GitleaksAdapter(...)` — this is
-    what actually makes `ScanTask.scanner_type` meaningful. Raises
-    `UnregisteredScannerError` (via `get_adapter`) for any `scanner_type`
-    with no registration; `CheckoutFailedError` (deterministic, from
-    `GitCheckout`), `GitleaksFailedError` (deterministic, from
+    The executor is resolved via `create_scan_execution(scanner_type, ...)`
+    (Module 13c PR5b factory) instead of a hardcoded adapter — this is what
+    actually makes `ScanTask.scanner_type` meaningful. Raises
+    `UnsupportedScannerTypeError` (via `create_scan_execution`) for any
+    `scanner_type` with no descriptor; `CheckoutFailedError` (deterministic,
+    from `GitCheckout`), `GitleaksFailedError` (deterministic, from
     `GitleaksAdapter.parse()`), `PipAuditFailedError` (deterministic,
-    from `PipAuditAdapter.scan()`/`.parse()`, Module 11 D7),
+    from `PipAuditAdapter.parse()`, Module 11 D7),
     `SastFailedError` (deterministic, from `AstSastAdapter.parse()`,
     Module 11 D5, PR2), or `SemgrepFailedError` (deterministic, from
     `SemgrepAdapter.parse()`, Module 11 D8, PR3) unchanged — callers
     classify those as non-retryable (D5). Any OTHER exception (including
-    `UnregisteredScannerError`) is left to propagate to the caller, which
+    `UnsupportedScannerTypeError`) is left to propagate to the caller, which
     wraps it as `TransientScanError`.
     """
     execution = create_scan_execution(runner, docker_client, settings, scanner_type)

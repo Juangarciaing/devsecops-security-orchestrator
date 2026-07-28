@@ -1,15 +1,16 @@
-"""`AstSastAdapter` — argv builder + non-JSON-prefixed-stdout parser +
+"""`AstSastAdapter` — argv constant + non-JSON-prefixed-stdout parser +
 per-finding severity map + path normalization (Module 11 PR1, tasks 2.1-2.5).
 
-`AstSastAdapter.scan()` proves the single-call `ContainerRunnerPort.run()`
-shape (network-disabled, read-only, no `tmp_exec`) via `FakeContainerRunner`
-— no real Docker socket needed here; the live proof lives in
-`tests/integration/test_ast_sast_adapter_live.py` (PR2). `.parse()` is a pure
-method: `timed_out=True` -> `SastFailedError`; stdout with no `{` character
--> `SastFailedError`; malformed JSON after slicing from the first `{` ->
-`SastFailedError`; valid JSON (possibly behind a preamble) -> parsed
-`Finding`s (possibly zero) with severity translated from Spanish and
-`file_path` stripped of its container mount-path prefix.
+`.parse()` is a pure method: `timed_out=True` -> `SastFailedError`; stdout
+with no `{` character -> `SastFailedError`; malformed JSON after slicing
+from the first `{` -> `SastFailedError`; valid JSON (possibly behind a
+preamble) -> parsed `Finding`s (possibly zero) with severity translated from
+Spanish and `file_path` stripped of its container mount-path prefix. The
+single-call container-invocation shape is covered by
+`tests/integration/test_ast_sast_adapter_live.py` (real Docker); the compat
+`scan(volume_name)` shape test was removed in Module 13c PR5c (the
+parser/malformed/redaction cases below are temporary duplication with
+`test_ast_sast_parser_contract.py`, removed separately in a PR5c follow-up).
 """
 
 from __future__ import annotations
@@ -42,11 +43,10 @@ def _settings() -> Settings:
     )
 
 
-def _adapter(runner: FakeContainerRunner | None = None) -> AstSastAdapter:
-    """An `AstSastAdapter` used mostly for `.parse()` — no container calls,
-    so a fresh unscripted `FakeContainerRunner` is fine unless the test
-    scripts a specific `.scan()` result."""
-    return AstSastAdapter(runner=runner or FakeContainerRunner(), settings=_settings())
+def _adapter() -> AstSastAdapter:
+    """An `AstSastAdapter` used only for `.parse()` in these tests — no
+    container calls, so a fresh unscripted `FakeContainerRunner` is fine."""
+    return AstSastAdapter(runner=FakeContainerRunner(), settings=_settings())
 
 
 def _json_report(findings: list[dict]) -> str:
@@ -61,7 +61,7 @@ def _json_report(findings: list[dict]) -> str:
 
 
 # ---------------------------------------------------------------------------
-# 2.5 — argv composition / `.scan()` call shape
+# 2.5 — argv composition (fixed, never interpolated from repo content)
 # ---------------------------------------------------------------------------
 
 
@@ -76,30 +76,6 @@ def test_sast_argv_is_a_fixed_tuple_never_interpolated_from_repo_content() -> No
         "json",
     )
     assert isinstance(_SAST_ARGV, tuple)
-
-
-def test_scan_runs_sast_scanner_read_only_network_disabled() -> None:
-    fake_runner = FakeContainerRunner()
-    fake_runner.script(RunResult(exit_code=0, stdout=_json_report([]), stderr="", timed_out=False))
-    settings = _settings()
-    adapter = AstSastAdapter(runner=fake_runner, settings=settings)
-
-    adapter.scan("scan-abc123")
-
-    assert len(fake_runner.calls) == 1
-    call = fake_runner.calls[0]
-    assert call.command == list(_SAST_ARGV)
-    assert call.image == settings.scan_sast_image
-    assert call.volume_name == "scan-abc123"
-    assert call.mount_path == "/checkout"
-    assert call.read_only_mount is True
-    assert call.network_disabled is True
-    assert call.timeout_seconds == settings.scan_timeout_seconds
-    assert call.limits.memory_mb == settings.scan_memory_limit_mb
-    assert call.limits.pids_limit == settings.scan_pids_limit
-    # No subprocess/venv bootstrapping needed (unlike pip-audit D7b) — the
-    # default strict `noexec` posture is fine.
-    assert call.tmp_exec is False
 
 
 # ---------------------------------------------------------------------------

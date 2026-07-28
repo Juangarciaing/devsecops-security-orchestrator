@@ -2,7 +2,8 @@
 socket, REAL locally-built pip-audit image (`docker/pip-audit.Dockerfile`),
 no mocks.
 
-Confirms, against a REAL daemon, that `PipAuditAdapter.scan()` + `parse()`:
+Confirms, against a REAL daemon, that `PipAuditInvocation.run()` +
+`PipAuditAdapter.parse()`:
 1. detect a REAL, currently-known vulnerability (`requests==2.19.0`,
    PYSEC-2018-28 / CVE-2018-18074 — confirmed via the REAL pip-audit output
    below, not assumed) via the network-enabled scan path;
@@ -35,6 +36,7 @@ from orchestrator.infrastructure.scanners.pip_audit_adapter import (
     DEFAULT_SEVERITY,
     PipAuditAdapter,
 )
+from orchestrator.infrastructure.scanners.pip_audit_descriptor import PipAuditInvocation
 
 pytestmark = pytest.mark.integration
 
@@ -110,7 +112,7 @@ def test_pip_audit_adapter_detects_a_real_known_vulnerability_via_real_docker(
         runner = DockerContainerRunner(client=docker_client)
         adapter = PipAuditAdapter(runner=runner, settings=settings)
 
-        result = adapter.scan(volume_name)
+        result = PipAuditInvocation.from_settings(settings).run(runner, volume_name)
         assert result.timed_out is False
 
         scan_task_id = uuid.uuid4()
@@ -150,7 +152,7 @@ def test_pip_audit_adapter_reports_zero_findings_on_a_real_clean_manifest(
         runner = DockerContainerRunner(client=docker_client)
         adapter = PipAuditAdapter(runner=runner, settings=settings)
 
-        result = adapter.scan(volume_name)
+        result = PipAuditInvocation.from_settings(settings).run(runner, volume_name)
         assert result.timed_out is False
 
         findings = adapter.parse(result, uuid.uuid4())
@@ -174,7 +176,7 @@ def test_pip_audit_adapter_reports_zero_findings_when_no_manifest_present(
         runner = DockerContainerRunner(client=docker_client)
         adapter = PipAuditAdapter(runner=runner, settings=settings)
 
-        result = adapter.scan(volume_name)
+        result = PipAuditInvocation.from_settings(settings).run(runner, volume_name)
         assert result.timed_out is False
 
         findings = adapter.parse(result, uuid.uuid4())

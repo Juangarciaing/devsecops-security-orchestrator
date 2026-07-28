@@ -3,8 +3,8 @@ tool against a checked-out volume and parses its JSON report into
 `Finding`s (Module 11 PR1, tasks 2.1-2.5).
 
 Implements `ScannerAdapterPort` (Module 7 D1), mirroring
-`GitleaksAdapter`/`PipAuditAdapter`'s shape (`scan()`/`parse()`/`supports()`),
-selected via `infrastructure.scanners.registry.get_adapter(ScannerType.SAST, ...)`.
+`GitleaksAdapter`/`PipAuditAdapter`'s shape (`parse()`/`supports()`), driven
+via `infrastructure.container.ast_sast_docker_execution.AstSastDockerExecution`.
 
 ## Non-JSON-prefixed stdout (D2)
 `sast-scanner`'s `--format json` CLI still prints two preamble lines
@@ -44,7 +44,7 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from orchestrator.domain.entities.finding import Finding
-from orchestrator.domain.ports.container_runner_port import ResourceLimits, RunResult
+from orchestrator.domain.ports.container_runner_port import RunResult
 from orchestrator.domain.ports.scanner_adapter_port import ScannerAdapterPort
 from orchestrator.domain.value_objects.enums import FindingSeverity, ScannerType
 
@@ -89,37 +89,16 @@ class SastFailedError(Exception):
 
 
 class AstSastAdapter(ScannerAdapterPort):
-    """Launches the pinned `sast-scanner` image against a checked-out volume.
+    """Parses `sast-scanner` Docker output for a checked-out volume.
 
-    Implements `ScannerAdapterPort` (Module 7 D1) — selected via
-    `infrastructure.scanners.registry.get_adapter(ScannerType.SAST, ...)`.
+    Implements `ScannerAdapterPort` (Module 7 D1) — driven via
+    `infrastructure.container.ast_sast_docker_execution.AstSastDockerExecution`,
+    which invokes the fixed `_SAST_ARGV` and passes the `RunResult` here.
     """
 
     def __init__(self, runner: ContainerRunnerPort, settings: Settings) -> None:
         self._runner = runner
         self._settings = settings
-
-    def scan(self, volume_name: str) -> RunResult:
-        """Run `sast-scanner` read-only, network-disabled, against `volume_name`.
-
-        Returns the raw `RunResult` — callers pass it to `parse()` to get
-        `Finding`s (kept separate so `parse()` stays a pure, easily
-        triangulated method with no container dependency). `network_disabled
-        =True` is safe (D6): the `sast-scanner` source is fetched at
-        IMAGE-BUILD time only, and the running scan is pure `ast`-based
-        static analysis with zero runtime egress. No `tmp_exec` needed
-        either — no subprocess/venv bootstrapping, unlike pip-audit.
-        """
-        return self._runner.run(
-            image=self._settings.scan_sast_image,
-            command=list(_SAST_ARGV),
-            volume_name=volume_name,
-            mount_path=_MOUNT_PATH,
-            read_only_mount=True,
-            network_disabled=True,
-            limits=self._resource_limits(),
-            timeout_seconds=self._settings.scan_timeout_seconds,
-        )
 
     def parse(
         self,
@@ -147,13 +126,6 @@ class AstSastAdapter(ScannerAdapterPort):
     def supports(self, scanner_type: ScannerType) -> bool:
         """`AstSastAdapter` only handles `ScannerType.SAST`."""
         return scanner_type == ScannerType.SAST
-
-    def _resource_limits(self) -> ResourceLimits:
-        return ResourceLimits(
-            memory_mb=self._settings.scan_memory_limit_mb,
-            nano_cpus=int(self._settings.scan_cpu_limit * 1_000_000_000),
-            pids_limit=self._settings.scan_pids_limit,
-        )
 
 
 def _parse_json_report(stdout: str, stderr: str) -> dict[str, Any]:

@@ -1,12 +1,12 @@
 """Integration tests for `process_scan_task`'s REAL flow (Module 6 D1-D5,
-Module 7 D6): checkout (init-container clone + `rev-parse HEAD`) -> resolve/
-persist the real commit SHA -> resolve the adapter via
-`registry.get_adapter(scanner_type, ...)` -> run Gitleaks -> parse ->
-`bulk_upsert_findings` (cross-run dedup on `(repository_id, fingerprint)`) ->
-drive the `ScanTask`/`ScanRun` state machine to `completed` (0..N real
-findings) or `failed` (deterministic checkout/scan/registry-lookup failure, no
-retry) or `completed` after a transient Docker-daemon error retries and
-succeeds.
+Module 7 D6, Module 13c PR5b): checkout (init-container clone + `rev-parse
+HEAD`) -> resolve/persist the real commit SHA -> resolve the descriptor
+executor via `create_scan_execution(scanner_type, ...)` -> run Gitleaks ->
+parse -> `bulk_upsert_findings` (cross-run dedup on `(repository_id,
+fingerprint)`) -> drive the `ScanTask`/`ScanRun` state machine to `completed`
+(0..N real findings) or `failed` (deterministic checkout/scan/unsupported-type
+failure, no retry) or `completed` after a transient Docker-daemon error
+retries and succeeds.
 
 Uses `Task.apply()` — Celery's built-in eager/synchronous execution path — so
 no live broker or running `celery worker` process is required. `container_runner`
@@ -661,26 +661,27 @@ def test_process_scan_task_exhausts_retries_on_persistent_transient_error_and_ma
     assert len(findings) == 0
 
 
-def test_process_scan_task_marks_failed_when_scanner_type_has_no_registered_adapter(
+def test_process_scan_task_marks_failed_when_scanner_type_has_no_descriptor_execution(
     migrated_schema: None,
 ) -> None:
-    """Module 7 D6 proof: the adapter is now resolved via
-    `registry.get_adapter(task.scanner_type, ...)`, NOT a hardcoded
+    """Module 13c PR5b proof: the executor is resolved via
+    `create_scan_execution(scanner_type, ...)`, NOT a hardcoded
     `GitleaksAdapter(...)`. A `ScanTask` whose `scanner_type` has no
-    registration (only `SECRETS`/`SCA`/`SAST` are registered as of Module 11
-    PR1 — `DAST` still is not) must fail with `UnregisteredScannerError`'s
-    message — which is only reachable if `scanner_type` is genuinely
-    consulted before any checkout/scan attempt. Before this PR (hardcoded
-    `GitleaksAdapter`), `scanner_type` was never read at all and this
-    scenario would instead fail on the FIRST scripted container call (or
-    crash with an empty-script error) with a completely different message.
+    descriptor registration (only `SECRETS`/`SCA`/`SAST`/`SEMGREP` are
+    registered — `DAST` still is not) must fail with
+    `UnsupportedScannerTypeError`'s message — which is only reachable if
+    `scanner_type` is genuinely consulted before any checkout/scan attempt.
+    Before Module 7 D6 (hardcoded `GitleaksAdapter`), `scanner_type` was
+    never read at all and this scenario would instead fail on the FIRST
+    scripted container call (or crash with an empty-script error) with a
+    completely different message.
     """
     from orchestrator.workers.tasks.process_scan import process_scan_task
 
     task_id, run_id = asyncio.run(_seed_pending_task(scanner_type=ScannerType.DAST))
 
-    # No container calls should happen at all: `get_adapter` raises before
-    # `GitCheckout.checkout()` (or `adapter.scan()`) is ever reached.
+    # No container calls should happen at all: `create_scan_execution` raises
+    # before `GitCheckout.checkout()` (or any scanner invocation) is reached.
     fake_runner = FakeContainerRunner()
     docker_client = MagicMock()
 
@@ -693,7 +694,7 @@ def test_process_scan_task_marks_failed_when_scanner_type_has_no_registered_adap
     task, run, findings = asyncio.run(_load_state(task_id, run_id))
     assert task.status == ScanTaskStatus.FAILED
     assert task.error_message is not None
-    assert "no adapter registered for scanner type" in task.error_message
+    assert "no descriptor Docker execution registered for scanner type" in task.error_message
     assert "dast" in task.error_message.lower()
     assert run.status == ScanRunStatus.FAILED
     assert len(findings) == 0

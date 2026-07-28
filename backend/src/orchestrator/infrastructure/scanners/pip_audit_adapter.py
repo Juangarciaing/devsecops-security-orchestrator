@@ -2,18 +2,19 @@
 its JSON report into `Finding`s (Module 11, tasks 1.4-1.6).
 
 Implements `ScannerAdapterPort` (Module 7 D1), mirroring `GitleaksAdapter`'s
-shape (`scan()`/`parse()`/`supports()`), selected via
-`infrastructure.scanners.registry.get_adapter(ScannerType.SCA, ...)`.
+shape (`parse()`/`supports()`), driven via
+`infrastructure.container.pip_audit_docker_execution.PipAuditDockerExecution`,
+which invokes `PipAuditInvocation` (manifest probe + real scan) and passes
+the `RunResult` here.
 
 ## Manifest short-circuit (D3)
-The adapter cannot stat the checked-out volume directly (it only ever
-receives `volume_name`), so `scan()` first launches a hardened,
-`network_disabled=True` PROBE container (same pinned image, argv
-`["python", "-c", "..."]`) that checks whether `requirements.txt` exists in
-the mounted checkout. Exit `0` (present) -> the real, network-enabled
-pip-audit container runs. Exit non-zero (absent) -> `scan()` returns a
-synthetic `RunResult` carrying `{"dependencies": []}` WITHOUT ever launching
-the network-enabled container — avoids a guaranteed no-op network egress.
+`PipAuditInvocation` first launches a hardened, `network_disabled=True`
+PROBE container (same pinned image, argv `["python", "-c", "..."]`) that
+checks whether `requirements.txt` exists in the mounted checkout. Exit `0`
+(present) -> the real, network-enabled pip-audit container runs. Exit
+non-zero (absent) -> a synthetic `RunResult` carrying `{"dependencies": []}`
+is returned WITHOUT ever launching the network-enabled container — avoids a
+guaranteed no-op network egress.
 
 ## Parse-driven success (D4)
 Unlike Gitleaks, pip-audit has no `--exit-code` disambiguator: exit `1`
@@ -34,7 +35,7 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from orchestrator.domain.entities.finding import Finding
-from orchestrator.domain.ports.container_runner_port import ResourceLimits, RunResult
+from orchestrator.domain.ports.container_runner_port import RunResult
 from orchestrator.domain.ports.scanner_adapter_port import ScannerAdapterPort
 from orchestrator.domain.value_objects.enums import FindingSeverity, ScannerType
 
@@ -70,9 +71,9 @@ _PIP_AUDIT_ARGV: tuple[str, ...] = (
     _TARGET_REQUIREMENTS,
 )
 
-#: Synthetic zero-findings report returned by `scan()` when the probe finds
-#: no manifest — keeps `parse()` purely JSON-driven with no special-casing
-#: for "manifest absent" (D3).
+#: Synthetic zero-findings report `PipAuditInvocation` returns when the probe
+#: finds no manifest — keeps `parse()` purely JSON-driven with no
+#: special-casing for "manifest absent" (D3).
 _SYNTHETIC_EMPTY_STDOUT = json.dumps({"dependencies": []})
 
 #: pip-audit has no built-in severity concept — every finding defaults to
@@ -87,66 +88,16 @@ class PipAuditFailedError(Exception):
 
 
 class PipAuditAdapter(ScannerAdapterPort):
-    """Launches the pinned pip-audit image against a checked-out volume (D3/D4).
+    """Parses pip-audit Docker output for a checked-out volume (D3/D4).
 
-    Implements `ScannerAdapterPort` (Module 7 D1) — selected via
-    `infrastructure.scanners.registry.get_adapter(ScannerType.SCA, ...)`.
+    Implements `ScannerAdapterPort` (Module 7 D1) — driven via
+    `infrastructure.container.pip_audit_docker_execution.PipAuditDockerExecution`,
+    which invokes `PipAuditInvocation` and passes the `RunResult` here.
     """
 
     def __init__(self, runner: ContainerRunnerPort, settings: Settings) -> None:
         self._runner = runner
         self._settings = settings
-
-    def scan(self, volume_name: str) -> RunResult:
-        """Probe for `requirements.txt`, then run pip-audit iff present (D3).
-
-        Returns the raw `RunResult` — callers pass it to `parse()` to get
-        `Finding`s (kept separate so `parse()` stays a pure, easily
-        triangulated method with no container dependency).
-        """
-        probe_result = self._runner.run(
-            image=self._settings.scan_pip_audit_image,
-            command=list(_PROBE_ARGV),
-            volume_name=volume_name,
-            mount_path=_MOUNT_PATH,
-            read_only_mount=True,
-            network_disabled=True,
-            limits=self._resource_limits(),
-            timeout_seconds=self._settings.scan_timeout_seconds,
-        )
-        if probe_result.timed_out:
-            # A timed-out probe is NOT "manifest absent" — it signals a
-            # genuine container-runtime problem (the probe never even
-            # finished a stat). Treating it like "absent" would silently
-            # under-report a real failure as a clean, zero-findings scan.
-            # Surface it the same way a pip-audit-itself timeout is
-            # surfaced (D4) so it reaches the deterministic no-retry path.
-            raise PipAuditFailedError(
-                f"pip-audit manifest probe timed out "
-                f"(exit_code={probe_result.exit_code}, stderr={probe_result.stderr!r})"
-            )
-        if probe_result.exit_code != _PROBE_PRESENT_EXIT_CODE:
-            return RunResult(
-                exit_code=0, stdout=_SYNTHETIC_EMPTY_STDOUT, stderr="", timed_out=False
-            )
-
-        return self._runner.run(
-            image=self._settings.scan_pip_audit_image,
-            command=list(_PIP_AUDIT_ARGV),
-            volume_name=volume_name,
-            mount_path=_MOUNT_PATH,
-            read_only_mount=True,
-            network_disabled=False,
-            limits=self._resource_limits(),
-            timeout_seconds=self._settings.scan_timeout_seconds,
-            # Live-Docker discovery (PR2): pip-audit bootstraps an internal
-            # audit virtualenv under `/tmp` and cannot function under the
-            # runner's default `noexec` tmpfs (upstream limitation,
-            # pypa/pip-audit#732) — opt in via the narrow `tmp_exec` flag
-            # (D7b). The probe call above does NOT need this (a bare
-            # `os.path.isfile` check, no subprocess/venv involved).
-            tmp_exec=True,
-        )
 
     def parse(
         self,
@@ -192,13 +143,6 @@ class PipAuditAdapter(ScannerAdapterPort):
     def supports(self, scanner_type: ScannerType) -> bool:
         """`PipAuditAdapter` only handles `ScannerType.SCA`."""
         return scanner_type == ScannerType.SCA
-
-    def _resource_limits(self) -> ResourceLimits:
-        return ResourceLimits(
-            memory_mb=self._settings.scan_memory_limit_mb,
-            nano_cpus=int(self._settings.scan_cpu_limit * 1_000_000_000),
-            pids_limit=self._settings.scan_pids_limit,
-        )
 
 
 def _parse_json_report(stdout: str, stderr: str) -> dict[str, Any]:

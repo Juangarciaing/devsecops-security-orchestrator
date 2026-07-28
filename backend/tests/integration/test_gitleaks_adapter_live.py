@@ -1,8 +1,9 @@
 """Live-Docker proof for Module 6 PR2 (Gitleaks adapter) — REAL Docker socket,
 REAL pinned Gitleaks image, no mocks.
 
-Confirms, against a REAL daemon, that `GitleaksAdapter.scan()` + `parse()`
-correctly detect a deliberately-planted FAKE secret in a small fixture
+Confirms, against a REAL daemon, that `GitleaksInvocation.run()` +
+`GitleaksAdapter.parse()` correctly detect a deliberately-planted FAKE secret
+in a small fixture
 volume, and correctly report a clean scan when none is present. The planted
 secret is a synthetic, randomly-generated hex string — never a real
 credential, and deliberately NOT shaped like any real provider's key format
@@ -34,6 +35,7 @@ from orchestrator.infrastructure.config.settings import Settings
 from orchestrator.infrastructure.container.docker_container_runner import DockerContainerRunner
 from orchestrator.infrastructure.container.scan_execution_factory import create_scan_execution
 from orchestrator.infrastructure.scanners.gitleaks_adapter import GitleaksAdapter
+from orchestrator.infrastructure.scanners.gitleaks_descriptor import GitleaksInvocation
 
 pytestmark = pytest.mark.integration
 
@@ -118,7 +120,7 @@ def test_gitleaks_adapter_detects_a_real_planted_fake_secret_via_real_docker(
         runner = DockerContainerRunner(client=docker_client)
         adapter = GitleaksAdapter(runner=runner, settings=settings)
 
-        result = adapter.scan(volume_name)
+        result = GitleaksInvocation.from_settings(settings).run(runner, volume_name)
         assert result.exit_code == 2, f"expected leaks-found exit 2, got {result.exit_code}"
         assert result.timed_out is False
 
@@ -155,7 +157,7 @@ def test_gitleaks_adapter_reports_zero_findings_on_a_real_clean_scan(
         runner = DockerContainerRunner(client=docker_client)
         adapter = GitleaksAdapter(runner=runner, settings=settings)
 
-        result = adapter.scan(volume_name)
+        result = GitleaksInvocation.from_settings(settings).run(runner, volume_name)
         assert result.exit_code == 0, f"expected clean exit 0, got {result.exit_code}"
 
         findings = adapter.parse(result, uuid.uuid4())
