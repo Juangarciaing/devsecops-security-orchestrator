@@ -7,9 +7,10 @@ parsed `Finding`s, anything else (or `timed_out=True`) -> `GitleaksFailedError`
 (D4/D5 — never conflate "leaks found" with a genuine tool failure).
 Container-invocation shape is covered by
 `tests/integration/test_gitleaks_adapter_live.py` (real Docker); the compat
-`scan(volume_name)` shape tests were removed in Module 13c PR5c (the
-parser/malformed/redaction cases below are temporary duplication with
-`test_gitleaks_parser_contract.py`, removed separately in a PR5c follow-up).
+`scan(volume_name)` shape tests were removed in Module 13c PR5c-1. Clean-run,
+malformed-input, and finding-redaction parser cases are now owned solely by
+`test_gitleaks_parser_contract.py` (Module 13c PR5c-2) — this file keeps
+only cases with no parser-contract analog.
 """
 
 from __future__ import annotations
@@ -19,7 +20,7 @@ import uuid
 
 from orchestrator.domain.ports.container_runner_port import RunResult
 from orchestrator.domain.ports.scanner_adapter_port import ScannerAdapterPort
-from orchestrator.domain.value_objects.enums import FindingSeverity, ScannerType
+from orchestrator.domain.value_objects.enums import ScannerType
 from orchestrator.infrastructure.config.settings import Settings
 from orchestrator.infrastructure.scanners.gitleaks_adapter import GitleaksAdapter
 from tests.fakes.fake_container_runner import FakeContainerRunner
@@ -46,44 +47,6 @@ def _adapter() -> GitleaksAdapter:
 # ---------------------------------------------------------------------------
 # 2.2 — parse(RunResult)
 # ---------------------------------------------------------------------------
-
-
-def test_parse_exit_0_returns_no_findings() -> None:
-    result = RunResult(exit_code=0, stdout="", stderr="", timed_out=False)
-
-    findings = _adapter().parse(result, _SCAN_TASK_ID)
-
-    assert findings == []
-
-
-def test_parse_exit_2_with_one_leak_returns_one_finding_with_all_fields_mapped() -> None:
-    report = [
-        {
-            "RuleID": "aws-access-token",
-            "Description": "AWS Access Key",
-            "File": "config.py",
-            "StartLine": 12,
-            "Match": "aws_key = AKIAIOSFODNN7EXAMPLE",
-            "Secret": "AKIAIOSFODNN7EXAMPLE",
-            "Commit": "deadbeef",
-        }
-    ]
-    result = RunResult(exit_code=2, stdout=json.dumps(report), stderr="", timed_out=False)
-
-    findings = _adapter().parse(result, _SCAN_TASK_ID)
-
-    assert len(findings) == 1
-    finding = findings[0]
-    assert finding.scan_task_id == _SCAN_TASK_ID
-    assert finding.rule_id == "aws-access-token"
-    assert finding.title == "AWS Access Key"
-    assert finding.severity == FindingSeverity.HIGH
-    assert finding.file_path == "config.py"
-    assert finding.line_number == 12
-    assert finding.snippet == "AKIAIOSFODNN7EXAMPLE"
-    assert finding.raw_evidence is not None
-    assert finding.raw_evidence["secret"] == "AKIAIOSFODNN7EXAMPLE"
-    assert finding.fingerprint
 
 
 def test_parse_exit_2_with_three_leaks_returns_three_findings_triangulation() -> None:
@@ -118,58 +81,6 @@ def test_parse_exit_2_with_three_leaks_returns_three_findings_triangulation() ->
     assert {f.rule_id for f in findings} == {"generic-api-key", "slack-token"}
     # Distinct secrets/files/lines -> distinct fingerprints (dedup key).
     assert len({f.fingerprint for f in findings}) == 3
-
-
-def test_parse_exit_1_raises_gitleaks_failed_error() -> None:
-    from orchestrator.infrastructure.scanners.gitleaks_adapter import GitleaksFailedError
-
-    result = RunResult(exit_code=1, stdout="", stderr="fatal: bad config", timed_out=False)
-
-    try:
-        _adapter().parse(result, _SCAN_TASK_ID)
-    except GitleaksFailedError as exc:
-        assert "1" in str(exc)
-    else:
-        raise AssertionError("expected GitleaksFailedError")
-
-
-def test_parse_other_nonstandard_exit_code_raises_gitleaks_failed_error() -> None:
-    from orchestrator.infrastructure.scanners.gitleaks_adapter import GitleaksFailedError
-
-    result = RunResult(exit_code=126, stdout="", stderr="unknown flag", timed_out=False)
-
-    try:
-        _adapter().parse(result, _SCAN_TASK_ID)
-    except GitleaksFailedError:
-        pass
-    else:
-        raise AssertionError("expected GitleaksFailedError")
-
-
-def test_parse_timed_out_raises_gitleaks_failed_error_even_with_exit_code_0() -> None:
-    from orchestrator.infrastructure.scanners.gitleaks_adapter import GitleaksFailedError
-
-    result = RunResult(exit_code=0, stdout="", stderr="", timed_out=True)
-
-    try:
-        _adapter().parse(result, _SCAN_TASK_ID)
-    except GitleaksFailedError:
-        pass
-    else:
-        raise AssertionError("expected GitleaksFailedError")
-
-
-def test_parse_malformed_json_on_exit_2_raises_gitleaks_failed_error() -> None:
-    from orchestrator.infrastructure.scanners.gitleaks_adapter import GitleaksFailedError
-
-    result = RunResult(exit_code=2, stdout="{not valid json", stderr="", timed_out=False)
-
-    try:
-        _adapter().parse(result, _SCAN_TASK_ID)
-    except GitleaksFailedError:
-        pass
-    else:
-        raise AssertionError("expected GitleaksFailedError")
 
 
 def test_parse_uses_rule_id_as_title_fallback_when_description_missing() -> None:

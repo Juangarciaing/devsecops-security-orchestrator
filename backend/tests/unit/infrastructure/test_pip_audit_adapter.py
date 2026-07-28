@@ -8,9 +8,10 @@ parse-driven, not exit-code-driven). Probe/argv/network-toggle shape is
 covered by `tests/unit/infrastructure/test_pip_audit_docker_execution.py`
 (the descriptor's production path) and
 `tests/integration/test_pip_audit_adapter_live.py` (real Docker); the
-compat `scan(volume_name)` shape tests were removed in Module 13c PR5c (the
-parser/malformed/redaction cases below are temporary duplication with
-`test_pip_audit_parser_contract.py`, removed separately in a PR5c follow-up).
+compat `scan(volume_name)` shape tests were removed in Module 13c PR5c-1.
+Clean-run, malformed-input, and finding-redaction parser cases are now owned
+solely by `test_pip_audit_parser_contract.py` (Module 13c PR5c-2) — this
+file keeps only cases with no parser-contract analog.
 """
 
 from __future__ import annotations
@@ -20,12 +21,9 @@ import uuid
 
 from orchestrator.domain.ports.container_runner_port import RunResult
 from orchestrator.domain.ports.scanner_adapter_port import ScannerAdapterPort
-from orchestrator.domain.value_objects.enums import FindingSeverity, ScannerType
+from orchestrator.domain.value_objects.enums import ScannerType
 from orchestrator.infrastructure.config.settings import Settings
-from orchestrator.infrastructure.scanners.pip_audit_adapter import (
-    PipAuditAdapter,
-    PipAuditFailedError,
-)
+from orchestrator.infrastructure.scanners.pip_audit_adapter import PipAuditAdapter
 from tests.fakes.fake_container_runner import FakeContainerRunner
 
 _SCAN_TASK_ID = uuid.uuid4()
@@ -50,51 +48,6 @@ def _adapter() -> PipAuditAdapter:
 # ---------------------------------------------------------------------------
 # 1.4 — parse(RunResult)
 # ---------------------------------------------------------------------------
-
-
-def test_parse_empty_dependencies_returns_no_findings() -> None:
-    result = RunResult(exit_code=0, stdout='{"dependencies": []}', stderr="", timed_out=False)
-
-    findings = _adapter().parse(result, _SCAN_TASK_ID)
-
-    assert findings == []
-
-
-def test_parse_one_dependency_with_one_vuln_returns_one_finding_with_all_fields_mapped() -> None:
-    report = {
-        "dependencies": [
-            {
-                "name": "requests",
-                "version": "2.19.0",
-                "vulns": [
-                    {
-                        "id": "PYSEC-2018-28",
-                        "description": "Requests before 2.20.0 exposes proxy credentials.",
-                        "fix_versions": ["2.20.0"],
-                        "aliases": ["CVE-2018-18074"],
-                    }
-                ],
-            }
-        ]
-    }
-    result = RunResult(exit_code=1, stdout=json.dumps(report), stderr="", timed_out=False)
-
-    findings = _adapter().parse(result, _SCAN_TASK_ID)
-
-    assert len(findings) == 1
-    finding = findings[0]
-    assert finding.scan_task_id == _SCAN_TASK_ID
-    assert finding.rule_id == "PYSEC-2018-28"
-    assert "requests" in finding.title
-    assert "PYSEC-2018-28" in finding.title
-    assert finding.severity == FindingSeverity.MEDIUM
-    assert finding.file_path == "requirements.txt"
-    assert finding.raw_evidence is not None
-    expected_description = report["dependencies"][0]["vulns"][0]["description"]
-    assert finding.raw_evidence["description"] == expected_description
-    assert finding.raw_evidence["fix_versions"] == ["2.20.0"]
-    assert finding.snippet
-    assert finding.fingerprint
 
 
 def test_parse_exit_code_1_with_valid_json_is_success_not_error() -> None:
@@ -174,50 +127,6 @@ def test_parse_deduplicates_a_vuln_id_repeated_within_the_same_dependency() -> N
     assert len(findings) == 1
     assert findings[0].rule_id == "PYSEC-2023-74"
     assert findings[0].snippet is not None and "first occurrence" in findings[0].snippet
-
-
-def test_parse_timed_out_raises_pip_audit_failed_error_even_with_exit_code_0() -> None:
-    result = RunResult(exit_code=0, stdout="", stderr="", timed_out=True)
-
-    try:
-        _adapter().parse(result, _SCAN_TASK_ID)
-    except PipAuditFailedError:
-        pass
-    else:
-        raise AssertionError("expected PipAuditFailedError")
-
-
-def test_parse_empty_stdout_raises_pip_audit_failed_error() -> None:
-    result = RunResult(exit_code=1, stdout="", stderr="pip-audit crashed", timed_out=False)
-
-    try:
-        _adapter().parse(result, _SCAN_TASK_ID)
-    except PipAuditFailedError as exc:
-        assert "pip-audit crashed" in str(exc)
-    else:
-        raise AssertionError("expected PipAuditFailedError")
-
-
-def test_parse_malformed_json_raises_pip_audit_failed_error() -> None:
-    result = RunResult(exit_code=1, stdout="{not valid json", stderr="", timed_out=False)
-
-    try:
-        _adapter().parse(result, _SCAN_TASK_ID)
-    except PipAuditFailedError:
-        pass
-    else:
-        raise AssertionError("expected PipAuditFailedError")
-
-
-def test_parse_json_without_dependencies_key_raises_pip_audit_failed_error() -> None:
-    result = RunResult(exit_code=1, stdout='{"unexpected": true}', stderr="", timed_out=False)
-
-    try:
-        _adapter().parse(result, _SCAN_TASK_ID)
-    except PipAuditFailedError:
-        pass
-    else:
-        raise AssertionError("expected PipAuditFailedError")
 
 
 # ---------------------------------------------------------------------------
