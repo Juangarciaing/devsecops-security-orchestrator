@@ -13,6 +13,7 @@ from orchestrator.infrastructure.db.base import Base
 # Import models so they register on Base.metadata.
 from orchestrator.infrastructure.db.models.api_key import ApiKeyModel
 from orchestrator.infrastructure.db.models.code_repository import CodeRepositoryModel
+from orchestrator.infrastructure.db.models.credential_access_log import CredentialAccessLogModel
 from orchestrator.infrastructure.db.models.finding import FindingModel
 from orchestrator.infrastructure.db.models.scan_run import ScanRunModel
 from orchestrator.infrastructure.db.models.scan_task import ScanTaskModel
@@ -22,6 +23,7 @@ from orchestrator.infrastructure.db.models.webhook_delivery import WebhookDelive
 __all__ = [
     "ApiKeyModel",
     "CodeRepositoryModel",
+    "CredentialAccessLogModel",
     "FindingModel",
     "ScanRunModel",
     "ScanTaskModel",
@@ -92,15 +94,29 @@ def test_code_repositories_unique_constraint(engine: sa.Engine) -> None:
     assert ("provider", "owner", "name") in unique_column_sets
 
 
-def test_code_repositories_has_credential_ref_and_is_active_columns(engine: sa.Engine) -> None:
+def test_code_repositories_has_credential_kind_ciphertext_and_is_active_columns(
+    engine: sa.Engine,
+) -> None:
     inspector = sa.inspect(engine)
     columns = {col["name"]: col for col in inspector.get_columns("code_repositories")}
 
-    assert "credential_ref" in columns
-    assert columns["credential_ref"]["nullable"] is True
+    assert "credential_kind" in columns
+    assert columns["credential_kind"]["nullable"] is True
+
+    assert "credential_ciphertext" in columns
+    assert columns["credential_ciphertext"]["nullable"] is True
 
     assert "is_active" in columns
     assert columns["is_active"]["nullable"] is False
+
+
+def test_code_repositories_has_no_credential_ref_column(engine: sa.Engine) -> None:
+    """The old inert `credential_ref` column is dropped entirely — not
+    repurposed as the ciphertext column (design decision)."""
+    inspector = sa.inspect(engine)
+    column_names = {col["name"] for col in inspector.get_columns("code_repositories")}
+
+    assert "credential_ref" not in column_names
 
 
 def test_scan_tasks_unique_constraint_and_fk(engine: sa.Engine) -> None:

@@ -13,6 +13,7 @@ from pathlib import Path
 
 from orchestrator.domain.ports.api_key_port import ApiKeyPort
 from orchestrator.domain.ports.code_repository_port import CodeRepositoryPort
+from orchestrator.domain.ports.credential_access_log_port import CredentialAccessLogPort
 from orchestrator.domain.ports.finding_port import FindingDiffSets, FindingPort
 from orchestrator.domain.ports.scan_run_port import ScanRunPort
 from orchestrator.domain.ports.scan_task_port import ScanTaskPort
@@ -31,6 +32,7 @@ ALL_PORTS = (
     UserPort,
     ApiKeyPort,
     WebhookDeliveryPort,
+    CredentialAccessLogPort,
 )
 
 FORBIDDEN_MODULE_PREFIXES = ("sqlalchemy",)
@@ -456,5 +458,45 @@ def test_webhook_delivery_port_full_implementation_can_be_instantiated_and_used(
 
         present = await repo.exists("delivery-1")
         assert present is True
+
+    asyncio.run(_run())
+
+
+def test_credential_access_log_port_declares_append() -> None:
+    """PR2: `CredentialAccessLogPort` — append-only audit persistence for one
+    decrypt-and-use attempt against a stored credential (design D7). Not yet
+    wired to any writer in this PR — the worker unseal/audit flow lands later."""
+    assert "append" in CredentialAccessLogPort.__abstractmethods__
+    assert inspect.iscoroutinefunction(CredentialAccessLogPort.append)
+
+
+def test_credential_access_log_port_full_implementation_can_be_instantiated_and_used() -> None:
+    """Unit-level calling-contract coverage via a fake `CredentialAccessLogPort` —
+    the real persistence semantics are integration-only coverage
+    (`tests/integration/test_credential_access_log_repository.py`)."""
+    from orchestrator.domain.entities.credential_access_log import CredentialAccessLog
+    from orchestrator.domain.value_objects.enums import CredentialAccessOutcome, CredentialKind
+
+    class _FakeCredentialAccessLogRepository(CredentialAccessLogPort):
+        def __init__(self) -> None:
+            self.appended: list[CredentialAccessLog] = []
+
+        async def append(self, entry: CredentialAccessLog) -> None:
+            self.appended.append(entry)
+
+    async def _run() -> None:
+        repo = _FakeCredentialAccessLogRepository()
+        entry = CredentialAccessLog(
+            id=uuid.uuid4(),
+            repository_id=uuid.uuid4(),
+            credential_kind=CredentialKind.PERSONAL_ACCESS_TOKEN,
+            actor="webhook",
+            outcome=CredentialAccessOutcome.USED,
+            accessed_at=_NOW,
+        )
+
+        result = await repo.append(entry)
+        assert result is None
+        assert repo.appended == [entry]
 
     asyncio.run(_run())

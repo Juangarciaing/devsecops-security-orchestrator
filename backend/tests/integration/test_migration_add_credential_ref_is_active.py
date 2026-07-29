@@ -50,8 +50,13 @@ async def _code_repositories_columns() -> dict[str, dict[str, object]]:
         await engine.dispose()
 
 
-def test_upgrade_head_adds_credential_ref_and_is_active_columns(db_env: None) -> None:
-    _run_alembic("upgrade", "head")
+def test_upgrade_to_this_revision_adds_credential_ref_and_is_active_columns(
+    db_env: None,
+) -> None:
+    """Target this migration's own revision explicitly, not `head` — a later
+    migration (Module `secrets-manager` PR2) drops `credential_ref` again,
+    so asserting its presence at `head` would no longer hold."""
+    _run_alembic("upgrade", "04c47c6921fb")
     try:
         columns = asyncio.run(_code_repositories_columns())
 

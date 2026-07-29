@@ -27,7 +27,8 @@ def _make_repository(**overrides: object) -> CodeRepository:
         "name": "widgets",
         "clone_url": "https://github.com/acme/widgets.git",
         "default_branch": "main",
-        "credential_ref": "vault://secret/widgets",
+        "credential_kind": None,
+        "credential_ciphertext": None,
         "is_active": True,
         "created_at": _NOW,
         "updated_at": _NOW,
@@ -80,19 +81,6 @@ def test_update_repository_applies_only_provided_fields() -> None:
     assert result.clone_url == "https://github.com/acme/widgets-new.git"
     # Omitted fields stay unchanged.
     assert result.default_branch == "main"
-    assert result.credential_ref == "vault://secret/widgets"
-
-
-def test_update_repository_distinguishes_omitted_from_explicit_null() -> None:
-    repo = _make_repository(credential_ref="vault://secret/widgets")
-    repository_port = _FakeCodeRepositoryRepository([repo])
-    update = CodeRepositoryUpdate(credential_ref=None)
-
-    result = asyncio.run(update_repository(repository_port, repo.id, update))
-
-    # Explicitly set to null -> nulled, not left unchanged.
-    assert result.credential_ref is None
-    assert result.clone_url == "https://github.com/acme/widgets.git"
 
 
 def test_update_repository_rejects_explicit_null_clone_url() -> None:

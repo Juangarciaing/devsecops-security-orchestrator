@@ -21,13 +21,17 @@ async def register_repository(
     name: str,
     clone_url: str,
     default_branch: str,
-    credential_ref: str | None = None,
 ) -> CodeRepository:
     """Create and persist a new `CodeRepository`, always starting `is_active=True`.
 
     Raises `DuplicateRepositoryIdentityError` if the identity already exists,
     whether the existing match is active or soft-deleted — reactivation is
     out of scope for this module.
+
+    No credential parameter yet: sealing a submitted credential into
+    `credential_kind`/`credential_ciphertext` is wired in a follow-up slice
+    (secrets-manager PR3) — every repository registered through this use
+    case today is credential-less (public repos), matching current behavior.
     """
     existing = await repository_port.get_by_identity(provider, owner, name)
     if existing is not None:
@@ -41,7 +45,8 @@ async def register_repository(
         name=name,
         clone_url=clone_url,
         default_branch=default_branch,
-        credential_ref=credential_ref,
+        credential_kind=None,
+        credential_ciphertext=None,
         is_active=True,
         created_at=now,
         updated_at=now,

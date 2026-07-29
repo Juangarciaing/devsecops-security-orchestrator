@@ -68,7 +68,8 @@ class SqlAlchemyCodeRepositoryRepository(CodeRepositoryPort):
             raise CodeRepositoryNotFoundError(repository.id)
         model.clone_url = repository.clone_url
         model.default_branch = repository.default_branch
-        model.credential_ref = repository.credential_ref
+        model.credential_kind = repository.credential_kind
+        model.credential_ciphertext = repository.credential_ciphertext
         # Naive UTC: matches `created_at`'s `func.now()` server_default convention.
         model.updated_at = datetime.now(UTC).replace(tzinfo=None)
         await self._session.flush()

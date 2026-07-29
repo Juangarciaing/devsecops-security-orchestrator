@@ -13,6 +13,9 @@ from orchestrator.infrastructure.db.repositories.code_repository_repository impo
     CodeRepositoryNotFoundError,
     SqlAlchemyCodeRepositoryRepository,
 )
+from orchestrator.infrastructure.db.repositories.credential_access_log_repository import (
+    SqlAlchemyCredentialAccessLogRepository,
+)
 from orchestrator.infrastructure.db.repositories.user_repository import SqlAlchemyUserRepository
 from orchestrator.infrastructure.db.repositories.webhook_delivery_repository import (
     SqlAlchemyWebhookDeliveryRepository,
@@ -22,6 +25,7 @@ __all__ = [
     "CodeRepositoryNotFoundError",
     "SqlAlchemyApiKeyRepository",
     "SqlAlchemyCodeRepositoryRepository",
+    "SqlAlchemyCredentialAccessLogRepository",
     "SqlAlchemyUserRepository",
     "SqlAlchemyWebhookDeliveryRepository",
 ]

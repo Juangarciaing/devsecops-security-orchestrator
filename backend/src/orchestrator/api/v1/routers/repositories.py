@@ -76,7 +76,6 @@ async def register_repository_endpoint(
             payload.name,
             payload.clone_url,
             payload.default_branch,
-            payload.credential_ref,
         )
     except DuplicateRepositoryIdentityError as exc:
         raise ProblemException(

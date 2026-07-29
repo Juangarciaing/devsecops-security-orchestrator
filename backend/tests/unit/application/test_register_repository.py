@@ -74,26 +74,8 @@ def test_register_repository_creates_active_repository() -> None:
     assert created.owner == "acme"
     assert created.name == "widgets"
     assert created.is_active is True
-    assert created.credential_ref is None
-
-
-def test_register_repository_honors_explicit_credential_ref() -> None:
-    repository_port = _FakeCodeRepositoryRepository()
-
-    created = asyncio.run(
-        register_repository(
-            repository_port,
-            RepositoryProvider.GITLAB,
-            "acme",
-            "gizmos",
-            "https://gitlab.com/acme/gizmos.git",
-            "develop",
-            credential_ref="vault://secret/gizmos",
-        )
-    )
-
-    assert created.credential_ref == "vault://secret/gizmos"
-    assert created.default_branch == "develop"
+    assert created.credential_kind is None
+    assert created.credential_ciphertext is None
 
 
 def test_register_repository_raises_on_duplicate_active_identity() -> None:

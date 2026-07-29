@@ -9,7 +9,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime
 
-from orchestrator.domain.value_objects.enums import RepositoryProvider
+from orchestrator.domain.value_objects.enums import CredentialKind, RepositoryProvider
 
 
 @dataclass(slots=True)
@@ -20,6 +20,13 @@ class CodeRepository:
     of identity, so two repositories that share the same provider/owner/name
     but differ only in `clone_url` are treated as an identity conflict, not
     two distinct repositories.
+
+    `credential_kind`/`credential_ciphertext` replace the old inert
+    `credential_ref` field (design decision: dropped entirely, not
+    repurposed — a column that could hold either plaintext or ciphertext has
+    no way to tell the two apart). Both are `None` for a public repository
+    with no stored credential; `credential_ciphertext` is opaque sealed
+    output from `CredentialStorePort.seal()` and MUST NOT be parsed here.
     """
 
     id: uuid.UUID
@@ -28,7 +35,8 @@ class CodeRepository:
     name: str
     clone_url: str
     default_branch: str
-    credential_ref: str | None
+    credential_kind: CredentialKind | None
+    credential_ciphertext: str | None
     is_active: bool
     created_at: datetime
     updated_at: datetime
