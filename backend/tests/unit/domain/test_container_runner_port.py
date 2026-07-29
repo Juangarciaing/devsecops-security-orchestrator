@@ -68,3 +68,12 @@ def test_run_result_is_frozen_and_slotted() -> None:
     assert result.stderr == ""
     assert result.timed_out is False
     assert not hasattr(result, "__dict__")  # slots=True
+
+
+def test_run_signature_appends_a_defaulted_env_kwarg_last() -> None:
+    """PR4 (task 4.2): `env: dict[str, str] | None = None` is APPENDED as the
+    last parameter — additive, so no existing caller needs to change."""
+    params = list(inspect.signature(ContainerRunnerPort.run).parameters.values())
+    assert params[-1].name == "env"
+    assert params[-1].default is None
+    assert params[-1].kind is inspect.Parameter.KEYWORD_ONLY

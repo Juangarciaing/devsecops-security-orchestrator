@@ -89,3 +89,42 @@ def test_fake_container_runner_defaults_to_a_successful_result_when_unscripted()
 
     assert result.exit_code == 0
     assert result.timed_out is False
+
+
+def test_fake_container_runner_records_env_defaulting_to_none() -> None:
+    """PR4 (task 4.6): `RecordedRun.env` defaults to `None` when a caller
+    (e.g. every existing scanner descriptor) never passes `env`."""
+    fake = FakeContainerRunner()
+
+    fake.run(
+        image="ghcr.io/gitleaks/gitleaks:v8.30.1",
+        command=["dir", "/checkout/checkout"],
+        volume_name="scan-2",
+        mount_path="/checkout",
+        read_only_mount=True,
+        network_disabled=True,
+        limits=_LIMITS,
+        timeout_seconds=120,
+    )
+
+    assert fake.calls[0].env is None
+
+
+def test_fake_container_runner_records_the_supplied_env_dict() -> None:
+    """PR4 (task 4.6): a caller-supplied `env` is recorded verbatim so
+    future tests (PR5) can assert on it."""
+    fake = FakeContainerRunner()
+
+    fake.run(
+        image="alpine/git:2.54.0",
+        command=["clone", "https://example.com/x.git", "/workspace/checkout"],
+        volume_name="scan-1",
+        mount_path="/workspace",
+        read_only_mount=False,
+        network_disabled=False,
+        limits=_LIMITS,
+        timeout_seconds=120,
+        env={"HOME": "/workspace", "GIT_TERMINAL_PROMPT": "0"},
+    )
+
+    assert fake.calls[0].env == {"HOME": "/workspace", "GIT_TERMINAL_PROMPT": "0"}

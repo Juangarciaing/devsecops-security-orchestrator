@@ -499,3 +499,84 @@ def test_run_never_injects_trace_context_into_the_launched_container(
     call_kwargs: dict[str, Any] = client.containers.run.call_args.kwargs
     assert "environment" not in call_kwargs
     assert len(span_exporter.get_finished_spans()) == 1  # exactly one span, not a per-line trace
+
+
+def test_run_with_env_none_reproduces_todays_behavior_byte_for_byte() -> None:
+    """PR4 (task 4.4): calling `.run()` without `env` (the default `None`)
+    MUST NOT add an `environment` kwarg to the underlying SDK call at all —
+    not even `environment=None` — so existing callers (every scanner
+    descriptor) see zero behavior change."""
+    client, _container = _make_mock_client()
+    runner = DockerContainerRunner(client=client)
+
+    runner.run(
+        image="ghcr.io/gitleaks/gitleaks:v8.30.1",
+        command=["dir", "/checkout/checkout"],
+        volume_name="scan-1",
+        mount_path="/checkout",
+        read_only_mount=True,
+        network_disabled=True,
+        limits=_LIMITS,
+        timeout_seconds=120,
+    )
+
+    call_kwargs: dict[str, Any] = client.containers.run.call_args.kwargs
+    assert "environment" not in call_kwargs
+
+
+def test_run_passes_env_dict_to_the_docker_sdk_when_provided() -> None:
+    """PR4 (task 4.4): a caller-supplied `env` (e.g. PR5's future
+    `{"HOME": "/workspace", "GIT_TERMINAL_PROMPT": "0"}`) reaches
+    `containers.run(environment=...)` verbatim."""
+    client, _container = _make_mock_client()
+    runner = DockerContainerRunner(client=client)
+
+    runner.run(
+        image="alpine/git:2.54.0",
+        command=["clone", "https://example.com/x.git", "/workspace/checkout"],
+        volume_name="scan-1",
+        mount_path="/workspace",
+        read_only_mount=False,
+        network_disabled=False,
+        limits=_LIMITS,
+        timeout_seconds=120,
+        env={"HOME": "/workspace", "GIT_TERMINAL_PROMPT": "0"},
+    )
+
+    call_kwargs: dict[str, Any] = client.containers.run.call_args.kwargs
+    assert call_kwargs["environment"] == {"HOME": "/workspace", "GIT_TERMINAL_PROMPT": "0"}
+
+
+def test_run_never_sets_an_env_span_attribute_or_metric_label(
+    span_exporter: InMemorySpanExporter,
+) -> None:
+    """PR4 (task 4.8) — span/metric/log allowlist regression: even when a
+    caller passes `env`, no OTel span attribute, Prometheus metric label, or
+    log field may ever carry an `env` key or value. The `container.run`
+    span's attribute set stays exactly the pre-PR4 allowlist."""
+    client, _container = _make_mock_client()
+    runner = DockerContainerRunner(client=client)
+
+    runner.run(
+        image="alpine/git:2.54.0",
+        command=["clone", "https://example.com/x.git", "/workspace/checkout"],
+        volume_name="scan-1",
+        mount_path="/workspace",
+        read_only_mount=False,
+        network_disabled=False,
+        limits=_LIMITS,
+        timeout_seconds=120,
+        env={"HOME": "/workspace", "GIT_TERMINAL_PROMPT": "0"},
+    )
+
+    span = span_exporter.get_finished_spans()[0]
+    assert span.attributes is not None
+    assert set(span.attributes.keys()) == {
+        "image",
+        "network_disabled",
+        "exit_code",
+        "timed_out",
+        "duration_ms",
+    }
+    for key, value in span.attributes.items():
+        assert "HOME" not in str(value) and "GIT_TERMINAL_PROMPT" not in str(value), key

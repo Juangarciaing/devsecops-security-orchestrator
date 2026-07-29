@@ -10,7 +10,7 @@ Ephemeral Container Execution").
 from __future__ import annotations
 
 import time
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import docker
 import requests.exceptions
@@ -82,6 +82,7 @@ class DockerContainerRunner(ContainerRunnerPort):
         timeout_seconds: int,
         tmp_exec: bool = False,
         cleanup_anonymous_volumes: bool = False,
+        env: dict[str, str] | None = None,
     ) -> RunResult:
         """One `container.run` span covers this call's entire launch-to-exit
         lifetime — the deepest point of instrumentation for the scanning step
@@ -90,6 +91,13 @@ class DockerContainerRunner(ContainerRunnerPort):
         is ever injected into `containers.run(...)`'s kwargs above, so no span
         or trace context can originate from the third-party scanner CLI
         process running inside it.
+
+        `env` (PR4) is passed straight through to the Docker SDK's own
+        `environment=` kwarg — non-secret values only (contract on the port).
+        When `env` is `None`, the `environment` kwarg is OMITTED entirely
+        (never passed as `environment=None`) so every existing caller's
+        `containers.run(...)` call is byte-for-byte unchanged. `env` MUST
+        NEVER be read into a span attribute, metric label, or log field.
         """
         tracer = trace.get_tracer(__name__)
         with tracer.start_as_current_span("container.run") as span:
@@ -97,23 +105,26 @@ class DockerContainerRunner(ContainerRunnerPort):
             span.set_attribute("network_disabled", network_disabled)
 
             start = time.monotonic()
-            container = self._client.containers.run(
-                image=image,
-                command=command,
-                volumes={
+            run_kwargs: dict[str, Any] = {
+                "image": image,
+                "command": command,
+                "volumes": {
                     volume_name: {"bind": mount_path, "mode": "ro" if read_only_mount else "rw"}
                 },
-                user=_NONROOT_USER,
-                read_only=True,
-                cap_drop=["ALL"],
-                security_opt=["no-new-privileges"],
-                network_mode="none" if network_disabled else None,
-                mem_limit=f"{limits.memory_mb}m",
-                nano_cpus=limits.nano_cpus,
-                pids_limit=limits.pids_limit,
-                tmpfs={"/tmp": _TMPFS_MOUNT_OPTS_EXEC if tmp_exec else _TMPFS_MOUNT_OPTS},
-                detach=True,
-            )
+                "user": _NONROOT_USER,
+                "read_only": True,
+                "cap_drop": ["ALL"],
+                "security_opt": ["no-new-privileges"],
+                "network_mode": "none" if network_disabled else None,
+                "mem_limit": f"{limits.memory_mb}m",
+                "nano_cpus": limits.nano_cpus,
+                "pids_limit": limits.pids_limit,
+                "tmpfs": {"/tmp": _TMPFS_MOUNT_OPTS_EXEC if tmp_exec else _TMPFS_MOUNT_OPTS},
+                "detach": True,
+            }
+            if env is not None:
+                run_kwargs["environment"] = env
+            container = self._client.containers.run(**run_kwargs)
             try:
                 timed_out = False
                 try:
