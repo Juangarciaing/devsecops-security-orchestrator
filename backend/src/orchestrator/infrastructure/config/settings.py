@@ -8,7 +8,9 @@ startup, before any request is served.
 from __future__ import annotations
 
 from functools import lru_cache
+from typing import Literal
 
+from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -82,6 +84,33 @@ class Settings(BaseSettings):
     # application startup.
     otel_exporter_otlp_endpoint: str = ""
     otel_service_name: str = "orchestrator"
+
+    # Module 13c PR8 — explicit scan-execution backend selection (spec's
+    # "Explicit Backend Selection and Compatibility"). Absent/default
+    # ("docker", D1) requires zero Kubernetes config and leaves the existing
+    # Docker path byte-for-byte unchanged. Selecting "kubernetes" without a
+    # complete `kubernetes_namespace`/`kubernetes_storage_class_name` pair
+    # fails HERE, at `Settings()` construction — the earliest possible
+    # startup boundary, matching this class's existing fail-fast precedent
+    # for `database_url`/`redis_url`/etc — rather than deferring to a later,
+    # partially-started process. This does not by itself prove the cluster
+    # is reachable/valid (that is `kubernetes_preflight`'s job, run against a
+    # `ClusterCapabilityPort` at worker-startup time); it only proves the
+    # *shape* of the selected configuration is complete.
+    scan_execution_backend: Literal["docker", "kubernetes"] = "docker"
+    kubernetes_namespace: str | None = None
+    kubernetes_storage_class_name: str | None = None
+
+    @model_validator(mode="after")
+    def _require_complete_kubernetes_config_when_selected(self) -> Settings:
+        if self.scan_execution_backend == "kubernetes" and (
+            not self.kubernetes_namespace or not self.kubernetes_storage_class_name
+        ):
+            raise ValueError(
+                "scan_execution_backend='kubernetes' requires both "
+                "kubernetes_namespace and kubernetes_storage_class_name to be set"
+            )
+        return self
 
 
 @lru_cache

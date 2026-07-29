@@ -137,6 +137,24 @@ _worker_processes = Gauge(
     registry=None,
 )
 
+# Module 13c PR8 — minimal Kubernetes-lifecycle telemetry, mirroring the
+# `_worker_scan_*` worker-owned/multiprocess pattern above. Finite, safe
+# label sets only: `role`/`outcome`/`resource_kind` are closed enums, never
+# IDs, URLs, refs, paths, or workload/PVC names (spec's "Deterministic PVC
+# Lifecycle and Observability").
+_kubernetes_job_outcome = Counter(
+    "orchestrator_kubernetes_job_outcome",
+    "Terminal Kubernetes checkout/scanner Job outcomes.",
+    ("role", "outcome"),
+    registry=None,
+)
+_kubernetes_reconciliation_deletions = Counter(
+    "orchestrator_kubernetes_reconciliation_deletions",
+    "Orphaned Kubernetes resources deleted by reconciliation.",
+    ("resource_kind",),
+    registry=None,
+)
+
 
 def record_api_request(method: str, route: str, status_code: int) -> None:
     """Record a completed request using its router template, never request data."""
@@ -213,6 +231,23 @@ def record_container_duration(outcome: str, duration: float) -> None:
 
 def record_scan_findings(scanner_type: ScannerType, count: int) -> None:
     _record(lambda: _worker_scan_findings.labels(scanner_type=scanner_type.value).inc(count))
+
+
+def record_kubernetes_job_outcome(role: str, outcome: str) -> None:
+    """`role` in `{"checkout", "scanner"}`, `outcome` in
+    `{"succeeded", "failed", "timed_out", "transient"}` — no scan-task,
+    workload, or PVC identifiers ever recorded."""
+    _record(lambda: _kubernetes_job_outcome.labels(role=role, outcome=outcome).inc())
+
+
+def record_kubernetes_reconciliation(deleted_jobs: int, deleted_pvcs: int) -> None:
+    def _do() -> None:
+        if deleted_jobs:
+            _kubernetes_reconciliation_deletions.labels(resource_kind="job").inc(deleted_jobs)
+        if deleted_pvcs:
+            _kubernetes_reconciliation_deletions.labels(resource_kind="pvc").inc(deleted_pvcs)
+
+    _record(_do)
 
 
 def start_worker_heartbeat() -> None:

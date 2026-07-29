@@ -31,6 +31,9 @@ from celery.signals import worker_process_init, worker_process_shutdown
 from kombu import Queue
 
 from orchestrator.infrastructure.config.settings import get_settings
+from orchestrator.infrastructure.kubernetes.backend_selection import (
+    ensure_scan_execution_backend_available,
+)
 from orchestrator.infrastructure.observability.metrics import (
     start_worker_heartbeat,
     stop_worker_heartbeat,
@@ -42,6 +45,16 @@ from orchestrator.infrastructure.observability.tracing import (
 )
 
 _settings = get_settings()
+
+# Module 13c PR8 (spec's "Explicit Backend Selection"): runs at IMPORT time,
+# deliberately BEFORE `Celery(...)` below — not inside a `worker_process_init`
+# signal handler, since Celery's `Signal.send()` catches and logs receiver
+# exceptions rather than propagating them (see
+# `backend_selection.ensure_scan_execution_backend_available`'s docstring).
+# This is the earliest possible point that fails startup before any scan
+# work runs, for every process that imports this module (a real
+# `celery -A ... worker`, and the API's lazy import in `api/v1/routers/scans.py`).
+ensure_scan_execution_backend_available(_settings)
 
 celery_app = Celery(
     "orchestrator",

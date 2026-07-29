@@ -92,3 +92,9 @@ class FakeKubernetesJobRunner(KubernetesJobRunnerPort):
     def delete_pvc(self, namespace: str, name: str) -> None:
         self.delete_pvc_calls.append((namespace, name))
         self._pvcs.discard((namespace, name))
+
+    def list_job_names(self, namespace: str) -> list[str]:
+        return [ns_name for ns, ns_name in self._jobs if ns == namespace]
+
+    def list_pvc_names(self, namespace: str) -> list[str]:
+        return [ns_name for ns, ns_name in self._pvcs if ns == namespace]
