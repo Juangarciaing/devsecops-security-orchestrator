@@ -138,3 +138,14 @@ class KubernetesJobRunnerPort(ABC):
     @abstractmethod
     def delete_pvc(self, namespace: str, name: str) -> None:
         """Delete PVC `name`. MUST be a no-op if already absent."""
+
+    @abstractmethod
+    def list_job_names(self, namespace: str) -> list[str]:
+        """Names of every Job that currently exists in `namespace` (Module 13c
+        PR8 — reconciliation's discovery step; never used by the split-scan
+        lifecycle itself, which always addresses Jobs by exact name)."""
+
+    @abstractmethod
+    def list_pvc_names(self, namespace: str) -> list[str]:
+        """Names of every PVC that currently exists in `namespace` (Module
+        13c PR8 — reconciliation's discovery step)."""

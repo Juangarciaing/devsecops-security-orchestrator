@@ -258,6 +258,37 @@ def test_webhook_queue_is_declared_but_no_task_is_routed_to_it(
     assert "webhook" not in routed_queues
 
 
+def test_importing_celery_app_succeeds_when_docker_backend_is_selected(
+    monkeypatch: pytest.MonkeyPatch, valid_env: None
+) -> None:
+    """Module 13c PR8: the default/absent `scan_execution_backend` ("docker")
+    MUST leave worker startup byte-for-byte unchanged."""
+    monkeypatch.delenv("SCAN_EXECUTION_BACKEND", raising=False)
+
+    module = _import_celery_app(monkeypatch)
+
+    assert module.celery_app is not None
+
+
+def test_importing_celery_app_fails_closed_when_kubernetes_backend_is_selected(
+    monkeypatch: pytest.MonkeyPatch, valid_env: None
+) -> None:
+    """Module 13c PR8 (spec: "invalid selected configuration MUST fail
+    startup before work"): this build has no concrete cluster adapter wired
+    yet, so selecting Kubernetes MUST fail at import time — before Celery
+    even builds `celery_app`, long before any task could be consumed."""
+    from orchestrator.infrastructure.kubernetes.backend_selection import (
+        KubernetesBackendUnavailableError,
+    )
+
+    monkeypatch.setenv("SCAN_EXECUTION_BACKEND", "kubernetes")
+    monkeypatch.setenv("KUBERNETES_NAMESPACE", "security-scans")
+    monkeypatch.setenv("KUBERNETES_STORAGE_CLASS_NAME", "scan-workspace")
+
+    with pytest.raises(KubernetesBackendUnavailableError):
+        _import_celery_app(monkeypatch)
+
+
 def test_worker_process_signals_start_and_stop_metrics_heartbeat(
     monkeypatch: pytest.MonkeyPatch, valid_env: None
 ) -> None:

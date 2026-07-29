@@ -76,3 +76,23 @@ def test_logs_are_truncated_to_max_bytes() -> None:
 
     assert fake.get_job_logs(_NAMESPACE, "scan-checkout", 4) == "0123"
     assert fake.get_job_logs(_NAMESPACE, "missing", 4) == ""
+
+
+def test_list_job_and_pvc_names_reflect_creation_deletion_and_namespace_scoping() -> None:
+    """Module 13c PR8: reconciliation needs to discover existing resources —
+    `list_job_names`/`list_pvc_names` MUST only ever report the namespace
+    asked for, and MUST track create/delete exactly like `get_job`/`get_pvc`."""
+    fake = FakeKubernetesJobRunner()
+    fake.create_pvc(PvcSpec(name="scan-a-pvc", namespace=_NAMESPACE, labels={}))
+    fake.create_job(_job_spec("scan-a-checkout"))
+    fake.create_pvc(PvcSpec(name="scan-b-pvc", namespace="other-namespace", labels={}))
+
+    assert sorted(fake.list_job_names(_NAMESPACE)) == ["scan-a-checkout"]
+    assert sorted(fake.list_pvc_names(_NAMESPACE)) == ["scan-a-pvc"]
+    assert fake.list_job_names("other-namespace") == []
+
+    fake.delete_job(_NAMESPACE, "scan-a-checkout")
+    fake.delete_pvc(_NAMESPACE, "scan-a-pvc")
+
+    assert fake.list_job_names(_NAMESPACE) == []
+    assert fake.list_pvc_names(_NAMESPACE) == []

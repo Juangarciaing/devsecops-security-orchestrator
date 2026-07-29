@@ -7,6 +7,12 @@ from pydantic import ValidationError
 
 from orchestrator.infrastructure.config.settings import Settings
 
+_VALID_KUBERNETES_ENV = {
+    "SCAN_EXECUTION_BACKEND": "kubernetes",
+    "KUBERNETES_NAMESPACE": "security-scans",
+    "KUBERNETES_STORAGE_CLASS_NAME": "scan-workspace",
+}
+
 
 def test_settings_raises_when_database_url_missing(
     monkeypatch: pytest.MonkeyPatch, valid_env: None
@@ -159,3 +165,53 @@ def test_settings_scan_container_values_can_be_overridden(
     assert settings.scan_cpu_limit == 2.5
     assert settings.scan_pids_limit == 256
     assert settings.scan_timeout_seconds == 300
+
+
+def test_settings_scan_execution_backend_defaults_to_docker(valid_env: None) -> None:
+    """Module 13c PR8 (spec's "Explicit Backend Selection"): absent
+    configuration MUST use Docker — the default, requiring zero Kubernetes
+    env vars."""
+    settings = Settings(_env_file=None)
+
+    assert settings.scan_execution_backend == "docker"
+    assert settings.kubernetes_namespace is None
+    assert settings.kubernetes_storage_class_name is None
+
+
+def test_settings_rejects_unsupported_scan_execution_backend(
+    monkeypatch: pytest.MonkeyPatch, valid_env: None
+) -> None:
+    monkeypatch.setenv("SCAN_EXECUTION_BACKEND", "swarm")
+
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None)
+
+
+def test_settings_kubernetes_backend_requires_namespace_and_storage_class(
+    monkeypatch: pytest.MonkeyPatch, valid_env: None
+) -> None:
+    """Spec: "invalid selected configuration MUST fail startup before work" —
+    selecting Kubernetes without complete config fails at `Settings()`
+    construction, the earliest possible startup boundary (mirrors the
+    existing required-env-var fail-fast precedent above)."""
+    monkeypatch.setenv("SCAN_EXECUTION_BACKEND", "kubernetes")
+    monkeypatch.delenv("KUBERNETES_NAMESPACE", raising=False)
+    monkeypatch.delenv("KUBERNETES_STORAGE_CLASS_NAME", raising=False)
+
+    with pytest.raises(ValidationError) as exc_info:
+        Settings(_env_file=None)
+
+    assert "kubernetes_namespace" in str(exc_info.value)
+
+
+def test_settings_kubernetes_backend_succeeds_with_complete_config(
+    monkeypatch: pytest.MonkeyPatch, valid_env: None
+) -> None:
+    for key, value in _VALID_KUBERNETES_ENV.items():
+        monkeypatch.setenv(key, value)
+
+    settings = Settings(_env_file=None)
+
+    assert settings.scan_execution_backend == "kubernetes"
+    assert settings.kubernetes_namespace == "security-scans"
+    assert settings.kubernetes_storage_class_name == "scan-workspace"

@@ -68,6 +68,52 @@ def test_container_metric_outcome_is_a_bounded_taxonomy() -> None:
     assert container_metric_outcome(timed_out=True) == "timeout"
 
 
+def test_kubernetes_lifecycle_metrics_use_multiprocess_registry_and_bounded_labels(
+    tmp_path: Path,
+) -> None:
+    """Module 13c PR8: `record_kubernetes_job_outcome`/
+    `record_kubernetes_reconciliation` follow the same worker-owned
+    multiprocess pattern as the Docker `_worker_scan_*` metrics above, with
+    finite label sets containing no scan-task/workload/PVC identifiers."""
+    script = """
+from prometheus_client import generate_latest
+from orchestrator.infrastructure.observability.metrics import (
+    build_worker_scrape_registry, record_kubernetes_job_outcome,
+    record_kubernetes_reconciliation,
+)
+record_kubernetes_job_outcome("checkout", "succeeded")
+record_kubernetes_job_outcome("scanner", "failed")
+record_kubernetes_reconciliation(2, 1)
+print(generate_latest(build_worker_scrape_registry()).decode())
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        env={**os.environ, "PROMETHEUS_MULTIPROC_DIR": str(tmp_path)},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    exposition = result.stdout
+
+    assert (
+        'orchestrator_kubernetes_job_outcome_total{outcome="succeeded",role="checkout"} 1.0'
+        in exposition
+    )
+    assert (
+        'orchestrator_kubernetes_job_outcome_total{outcome="failed",role="scanner"} 1.0'
+        in exposition
+    )
+    assert (
+        'orchestrator_kubernetes_reconciliation_deletions_total{resource_kind="job"} 2.0'
+        in exposition
+    )
+    assert (
+        'orchestrator_kubernetes_reconciliation_deletions_total{resource_kind="pvc"} 1.0'
+        in exposition
+    )
+
+
 def _worker_exposition(directory: Path, category: str) -> str:
     script = """
 from prometheus_client import generate_latest
