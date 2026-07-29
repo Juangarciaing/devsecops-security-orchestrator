@@ -137,6 +137,41 @@ def test_descriptor_executions_preserve_timeout_and_workspace_cleanup(
     assert workspace.exited is True
 
 
+@pytest.mark.parametrize(("scanner_type", "module", "execution_class", "_", "stdout"), _CASES)
+def test_descriptor_executions_thread_credential_into_checkout_only(
+    monkeypatch: pytest.MonkeyPatch,
+    scanner_type: ScannerType,
+    module: object,
+    execution_class: type[object],
+    _: list[str],
+    stdout: str,
+) -> None:
+    """PR5 (task 5.13): a supplied `credential` reaches `GitCheckout.checkout()`
+    unchanged; the scanner invocation itself never receives it."""
+    from orchestrator.domain.value_objects.secret import Secret
+
+    workspace = _Workspace()
+    checkout = MagicMock()
+    checkout.checkout.return_value = workspace
+    monkeypatch.setattr(module, "GitCheckout", lambda *args, **kwargs: checkout)
+    runner = MagicMock()
+    runner.run.return_value = RunResult(exit_code=0, stdout=stdout, stderr="", timed_out=False)
+    credential = Secret("ghp_should-only-reach-checkout")
+
+    execution_class(runner, MagicMock(), _settings()).execute(
+        "https://github.com/acme/private.git",
+        "main",
+        uuid.uuid4(),
+        scanner_type,
+        credential=credential,
+    )
+
+    checkout.checkout.assert_called_once_with(
+        "https://github.com/acme/private.git", "main", credential=credential
+    )
+    assert "env" not in runner.run.call_args.kwargs
+
+
 def test_descriptor_executions_preserve_parser_findings_and_factory_has_one_route(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

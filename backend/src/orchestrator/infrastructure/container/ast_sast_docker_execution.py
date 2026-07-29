@@ -15,6 +15,7 @@ if TYPE_CHECKING:
     from docker import DockerClient
 
     from orchestrator.domain.ports.container_runner_port import ContainerRunnerPort
+    from orchestrator.domain.value_objects.secret import Secret
     from orchestrator.infrastructure.config.settings import Settings
 
 
@@ -29,14 +30,19 @@ class AstSastDockerExecution(ScanExecutionPort):
         self._settings = settings
 
     def execute(
-        self, clone_url: str, ref: str, scan_task_id: uuid.UUID, scanner_type: ScannerType
+        self,
+        clone_url: str,
+        ref: str,
+        scan_task_id: uuid.UUID,
+        scanner_type: ScannerType,
+        credential: Secret | None = None,
     ) -> ScanExecutionResult:
         if scanner_type != ScannerType.SAST:
             raise ValueError("AstSastDockerExecution only supports ScannerType.SAST")
         parser = AstSastAdapter(self._runner, self._settings)
         with GitCheckout(
             self._runner, self._docker_client, self._settings, cleanup_anonymous_volumes=True
-        ).checkout(clone_url, ref) as workspace:
+        ).checkout(clone_url, ref, credential=credential) as workspace:
             invocation = AstSastInvocation.from_settings(self._settings)
             result = invocation.run(self._runner, workspace.volume_name)
         return ScanExecutionResult(workspace.head_sha, parser.parse(result, scan_task_id))

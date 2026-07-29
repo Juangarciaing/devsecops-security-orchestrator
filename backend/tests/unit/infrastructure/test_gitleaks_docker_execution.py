@@ -57,7 +57,7 @@ def test_gitleaks_descriptor_execution_routes_only_secrets_and_uses_fixed_argv(
 
     assert result.head_sha == "deadbeef"
     assert result.findings == []
-    checkout.checkout.assert_called_once_with(malicious_url, malicious_ref)
+    checkout.checkout.assert_called_once_with(malicious_url, malicious_ref, credential=None)
     runner.run.assert_called_once()
     invocation = runner.run.call_args.kwargs
     assert invocation["command"] == [
@@ -135,6 +135,37 @@ def test_gitleaks_descriptor_execution_preserves_parser_findings(
     assert result.findings[0].rule_id == "generic-api-key"
     assert result.findings[0].file_path == "app.py"
     assert workspace.exited is True
+
+
+def test_gitleaks_descriptor_execution_threads_credential_into_checkout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """PR5 (task 5.13): a supplied `credential` reaches `GitCheckout.checkout()`
+    unchanged; the scanner invocation itself never sees it."""
+    from orchestrator.domain.value_objects.secret import Secret
+    from orchestrator.infrastructure.container import gitleaks_docker_execution
+
+    workspace = _Workspace()
+    checkout = MagicMock()
+    checkout.checkout.return_value = workspace
+    runner = MagicMock()
+    runner.run.return_value = RunResult(exit_code=0, stdout="", stderr="", timed_out=False)
+    monkeypatch.setattr(gitleaks_docker_execution, "GitCheckout", lambda *args, **kwargs: checkout)
+    credential = Secret("ghp_should-only-reach-checkout")
+
+    gitleaks_docker_execution.GitleaksDockerExecution(runner, MagicMock(), _settings()).execute(
+        "https://github.com/acme/private.git",
+        "main",
+        uuid.uuid4(),
+        ScannerType.SECRETS,
+        credential=credential,
+    )
+
+    checkout.checkout.assert_called_once_with(
+        "https://github.com/acme/private.git", "main", credential=credential
+    )
+    invocation = runner.run.call_args.kwargs
+    assert "env" not in invocation
 
 
 def test_factory_preserves_gitleaks_descriptor_execution() -> None:

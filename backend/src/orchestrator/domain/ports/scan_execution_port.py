@@ -11,6 +11,7 @@ from orchestrator.domain.value_objects.enums import ScannerType
 
 if TYPE_CHECKING:
     from orchestrator.domain.entities.finding import Finding
+    from orchestrator.domain.value_objects.secret import Secret
 
 
 @dataclass(frozen=True, slots=True)
@@ -31,5 +32,12 @@ class ScanExecutionPort(ABC):
         ref: str,
         scan_task_id: uuid.UUID,
         scanner_type: ScannerType,
+        credential: Secret | None = None,
     ) -> ScanExecutionResult:
-        """Return the resolved commit and parsed findings for one scan."""
+        """Return the resolved commit and parsed findings for one scan.
+
+        `credential` (PR5, additive, defaulted): threaded straight through
+        to `GitCheckout.checkout()`. `None` (the default) reproduces
+        today's public-repo behavior byte-for-byte; existing callers need
+        no change.
+        """
