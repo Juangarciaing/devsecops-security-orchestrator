@@ -97,6 +97,30 @@ def test_descriptor_execution_uses_fixed_probe_then_tmp_exec_audit_argv(
     assert audit["cleanup_anonymous_volumes"] is True and workspace.exited is True
 
 
+def test_descriptor_execution_threads_credential_into_checkout_only(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """PR5 (task 5.13): a supplied `credential` reaches `GitCheckout.checkout()`
+    unchanged; neither the probe nor the audit invocation receives it."""
+    from orchestrator.domain.value_objects.secret import Secret
+
+    runner = MagicMock()
+    runner.run.return_value = RunResult(exit_code=1, stdout="", stderr="", timed_out=False)
+    execution, _workspace = _execution(monkeypatch, runner)
+    credential = Secret("ghp_should-only-reach-checkout")
+
+    execution.execute(
+        "https://github.com/acme/private.git",
+        "main",
+        uuid.uuid4(),
+        ScannerType.SCA,
+        credential=credential,
+    )
+
+    assert runner.run.call_count == 1
+    assert "env" not in runner.run.call_args.kwargs
+
+
 def test_descriptor_execution_short_circuits_absent_manifest_and_preserves_timeout(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
