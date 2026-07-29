@@ -7,8 +7,13 @@ from datetime import UTC, datetime
 
 from orchestrator.application.dto.code_repository import CodeRepositoryUpdate
 from orchestrator.application.use_cases.get_repository import RepositoryNotFoundError
+from orchestrator.application.use_cases.register_repository import (
+    UnsupportedCredentialProviderError,
+)
 from orchestrator.domain.entities.code_repository import CodeRepository
 from orchestrator.domain.ports.code_repository_port import CodeRepositoryPort
+from orchestrator.domain.ports.credential_store_port import CredentialStorePort
+from orchestrator.domain.value_objects.enums import CredentialKind, RepositoryProvider
 
 
 class InvalidRepositoryUpdateError(Exception):
@@ -22,6 +27,7 @@ class InvalidRepositoryUpdateError(Exception):
 
 async def update_repository(
     repository_port: CodeRepositoryPort,
+    credential_store: CredentialStorePort,
     repository_id: uuid.UUID,
     update: CodeRepositoryUpdate,
 ) -> CodeRepository:
@@ -38,6 +44,17 @@ async def update_repository(
 
     Raises `RepositoryNotFoundError` if `repository_id` does not exist or the
     repository is inactive (soft-deleted).
+
+    Raises `UnsupportedCredentialProviderError` if `update.credential` is
+    provided for a repository whose `provider` is not GitHub — checked
+    before `credential_store.seal()` is ever called.
+
+    If `update.credential` is a non-`None` value, it is re-sealed via
+    `credential_store.seal()` and REPLACES the stored
+    `credential_kind`/`credential_ciphertext` — the old ciphertext is
+    discarded, never left recoverable. A `None` value — whether omitted or
+    explicitly set to `null` — leaves the existing stored credential
+    untouched; this schema has no "clear the credential" affordance.
     """
     fields_set = update.model_fields_set
     if "clone_url" in fields_set and update.clone_url is None:
@@ -53,6 +70,16 @@ async def update_repository(
         repository.clone_url = update.clone_url  # type: ignore[assignment]
     if "default_branch" in fields_set:
         repository.default_branch = update.default_branch  # type: ignore[assignment]
+
+    if update.credential is not None:
+        if repository.provider is not RepositoryProvider.GITHUB:
+            raise UnsupportedCredentialProviderError(
+                "credentials are only supported for GitHub repositories, "
+                f"got {repository.provider.value!r}"
+            )
+        sealed = credential_store.seal(update.credential, CredentialKind.PERSONAL_ACCESS_TOKEN)
+        repository.credential_kind = sealed.kind
+        repository.credential_ciphertext = sealed.ciphertext
 
     repository.updated_at = datetime.now(UTC).replace(tzinfo=None)
     return await repository_port.update(repository)

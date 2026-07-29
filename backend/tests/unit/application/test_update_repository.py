@@ -6,17 +6,45 @@ import asyncio
 import uuid
 from datetime import UTC, datetime
 
+import pytest
+from cryptography.fernet import Fernet
+
 from orchestrator.application.dto.code_repository import CodeRepositoryUpdate
 from orchestrator.application.use_cases.get_repository import RepositoryNotFoundError
+from orchestrator.application.use_cases.register_repository import (
+    UnsupportedCredentialProviderError,
+)
 from orchestrator.application.use_cases.update_repository import (
     InvalidRepositoryUpdateError,
     update_repository,
 )
 from orchestrator.domain.entities.code_repository import CodeRepository
 from orchestrator.domain.ports.code_repository_port import CodeRepositoryPort
-from orchestrator.domain.value_objects.enums import RepositoryProvider
+from orchestrator.domain.ports.credential_store_port import (
+    CredentialSealError,
+    CredentialStorePort,
+    SealedCredential,
+)
+from orchestrator.domain.value_objects.enums import CredentialKind, RepositoryProvider
+from orchestrator.domain.value_objects.secret import Secret
+from orchestrator.infrastructure.security.credential_store import FernetCredentialStore
 
 _NOW = datetime.now(UTC).replace(tzinfo=None)
+
+
+def _credential_store(*, keyed: bool = True) -> FernetCredentialStore:
+    key = Fernet.generate_key().decode("ascii") if keyed else None
+    return FernetCredentialStore(encryption_key=key)
+
+
+class _ExplodingCredentialStore(CredentialStorePort):
+    """Fails the test if `seal`/`unseal` is ever called — proves a guard runs first."""
+
+    def seal(self, plaintext: str, kind: CredentialKind) -> SealedCredential:
+        raise AssertionError("seal() must not be called")
+
+    def unseal(self, sealed: SealedCredential) -> Secret:
+        raise AssertionError("unseal() must not be called")
 
 
 def _make_repository(**overrides: object) -> CodeRepository:
@@ -76,7 +104,7 @@ def test_update_repository_applies_only_provided_fields() -> None:
     repository_port = _FakeCodeRepositoryRepository([repo])
     update = CodeRepositoryUpdate(clone_url="https://github.com/acme/widgets-new.git")
 
-    result = asyncio.run(update_repository(repository_port, repo.id, update))
+    result = asyncio.run(update_repository(repository_port, _credential_store(), repo.id, update))
 
     assert result.clone_url == "https://github.com/acme/widgets-new.git"
     # Omitted fields stay unchanged.
@@ -89,7 +117,7 @@ def test_update_repository_rejects_explicit_null_clone_url() -> None:
     update = CodeRepositoryUpdate(clone_url=None)
 
     try:
-        asyncio.run(update_repository(repository_port, repo.id, update))
+        asyncio.run(update_repository(repository_port, _credential_store(), repo.id, update))
         raise AssertionError("expected InvalidRepositoryUpdateError")
     except InvalidRepositoryUpdateError:
         pass
@@ -104,7 +132,7 @@ def test_update_repository_rejects_explicit_null_default_branch() -> None:
     update = CodeRepositoryUpdate(default_branch=None)
 
     try:
-        asyncio.run(update_repository(repository_port, repo.id, update))
+        asyncio.run(update_repository(repository_port, _credential_store(), repo.id, update))
         raise AssertionError("expected InvalidRepositoryUpdateError")
     except InvalidRepositoryUpdateError:
         pass
@@ -117,7 +145,7 @@ def test_update_repository_raises_when_missing() -> None:
     update = CodeRepositoryUpdate(clone_url="https://github.com/acme/ghost.git")
 
     try:
-        asyncio.run(update_repository(repository_port, uuid.uuid4(), update))
+        asyncio.run(update_repository(repository_port, _credential_store(), uuid.uuid4(), update))
         raise AssertionError("expected RepositoryNotFoundError")
     except RepositoryNotFoundError:
         pass
@@ -129,7 +157,102 @@ def test_update_repository_raises_when_inactive() -> None:
     update = CodeRepositoryUpdate(clone_url="https://github.com/acme/ghost.git")
 
     try:
-        asyncio.run(update_repository(repository_port, repo.id, update))
+        asyncio.run(update_repository(repository_port, _credential_store(), repo.id, update))
         raise AssertionError("expected RepositoryNotFoundError")
     except RepositoryNotFoundError:
         pass
+
+
+# ---------------------------------------------------------------------------
+# secrets-manager PR3 — re-seal-on-update, fail-closed, GitHub-only guard.
+# ---------------------------------------------------------------------------
+
+
+def test_update_repository_reseals_credential_old_ciphertext_replaced() -> None:
+    repo = _make_repository(
+        credential_kind=CredentialKind.PERSONAL_ACCESS_TOKEN,
+        credential_ciphertext="old-opaque-ciphertext",
+    )
+    repository_port = _FakeCodeRepositoryRepository([repo])
+    update = CodeRepositoryUpdate(credential="ghp_newtoken")
+
+    result = asyncio.run(update_repository(repository_port, _credential_store(), repo.id, update))
+
+    assert result.credential_kind is CredentialKind.PERSONAL_ACCESS_TOKEN
+    assert result.credential_ciphertext is not None
+    assert result.credential_ciphertext != "old-opaque-ciphertext"
+    assert result.credential_ciphertext != "ghp_newtoken"
+
+
+def test_update_repository_omitted_credential_leaves_existing_untouched() -> None:
+    repo = _make_repository(
+        credential_kind=CredentialKind.PERSONAL_ACCESS_TOKEN,
+        credential_ciphertext="unchanged-ciphertext",
+    )
+    repository_port = _FakeCodeRepositoryRepository([repo])
+    update = CodeRepositoryUpdate(clone_url="https://github.com/acme/widgets-new.git")
+
+    result = asyncio.run(update_repository(repository_port, _credential_store(), repo.id, update))
+
+    assert result.credential_kind is CredentialKind.PERSONAL_ACCESS_TOKEN
+    assert result.credential_ciphertext == "unchanged-ciphertext"
+
+
+def test_update_repository_explicit_null_credential_leaves_existing_untouched() -> None:
+    repo = _make_repository(
+        credential_kind=CredentialKind.PERSONAL_ACCESS_TOKEN,
+        credential_ciphertext="unchanged-ciphertext",
+    )
+    repository_port = _FakeCodeRepositoryRepository([repo])
+    update = CodeRepositoryUpdate(credential=None)
+
+    result = asyncio.run(update_repository(repository_port, _credential_store(), repo.id, update))
+
+    assert result.credential_kind is CredentialKind.PERSONAL_ACCESS_TOKEN
+    assert result.credential_ciphertext == "unchanged-ciphertext"
+
+
+def test_update_repository_missing_key_raises_and_leaves_prior_state_unchanged() -> None:
+    repo = _make_repository(
+        credential_kind=CredentialKind.PERSONAL_ACCESS_TOKEN,
+        credential_ciphertext="unchanged-ciphertext",
+    )
+    repository_port = _FakeCodeRepositoryRepository([repo])
+    update = CodeRepositoryUpdate(credential="ghp_newtoken")
+
+    with pytest.raises(CredentialSealError):
+        asyncio.run(
+            update_repository(repository_port, _credential_store(keyed=False), repo.id, update)
+        )
+
+    assert repository_port.updated == []
+    persisted = asyncio.run(repository_port.get_by_id(repo.id))
+    assert persisted is not None
+    assert persisted.credential_ciphertext == "unchanged-ciphertext"
+
+
+def test_update_repository_rejects_credential_for_non_github_provider() -> None:
+    repo = _make_repository(provider=RepositoryProvider.GITLAB)
+    repository_port = _FakeCodeRepositoryRepository([repo])
+    update = CodeRepositoryUpdate(credential="ghp_newtoken")
+
+    with pytest.raises(UnsupportedCredentialProviderError):
+        asyncio.run(update_repository(repository_port, _credential_store(), repo.id, update))
+
+    assert repository_port.updated == []
+
+
+def test_update_repository_checks_provider_guard_before_ever_sealing() -> None:
+    """Adversarial proof, mirroring `register_repository`'s: an exploding
+    `CredentialStorePort` that fails the test if `seal()`/`unseal()` is ever
+    called proves the GitHub-only guard runs strictly first."""
+    repo = _make_repository(provider=RepositoryProvider.GITLAB)
+    repository_port = _FakeCodeRepositoryRepository([repo])
+    update = CodeRepositoryUpdate(credential="ghp_newtoken")
+
+    with pytest.raises(UnsupportedCredentialProviderError):
+        asyncio.run(
+            update_repository(repository_port, _ExplodingCredentialStore(), repo.id, update)
+        )
+
+    assert repository_port.updated == []

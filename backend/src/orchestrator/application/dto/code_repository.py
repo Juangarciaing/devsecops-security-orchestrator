@@ -13,7 +13,7 @@ from datetime import datetime
 from pydantic import BaseModel, ConfigDict
 
 from orchestrator.domain.entities.code_repository import CodeRepository
-from orchestrator.domain.value_objects.enums import RepositoryProvider
+from orchestrator.domain.value_objects.enums import CredentialKind, RepositoryProvider
 
 
 class CodeRepositoryCreate(BaseModel):
@@ -22,11 +22,11 @@ class CodeRepositoryCreate(BaseModel):
     No `is_active` field: a newly registered repository always starts active
     (`True`), set server-side by the use case — never client-controlled.
 
-    No credential field yet: sealing a submitted credential into
-    `credential_kind`/`credential_ciphertext` is wired in a follow-up slice
-    (secrets-manager PR3) — this schema only covers the persistence shape
-    added in PR2, so every repository created through this schema is
-    credential-less (public repos), matching current behavior.
+    `credential` is write-only (secrets-manager PR3): if provided, it is the
+    raw PAT string. The use case seals it via `CredentialStorePort.seal()`
+    BEFORE persistence — it is never stored as-is and never echoed back by
+    any response (see `CodeRepositoryRead`, which exposes only
+    `has_credential`/`credential_kind`, never the value or ciphertext).
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -36,10 +36,17 @@ class CodeRepositoryCreate(BaseModel):
     name: str
     clone_url: str
     default_branch: str
+    credential: str | None = None
 
 
 class CodeRepositoryRead(BaseModel):
-    """Output schema mirroring the full `CodeRepository` entity."""
+    """Output schema mirroring the `CodeRepository` entity.
+
+    Write-only credential semantics (spec: "Write-Only Credential
+    Semantics"): the raw credential and its ciphertext are NEVER exposed.
+    `has_credential` and `credential_kind` are the only credential-related
+    fields, both derived from whether `credential_ciphertext` is set.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
@@ -49,6 +56,8 @@ class CodeRepositoryRead(BaseModel):
     name: str
     clone_url: str
     default_branch: str
+    has_credential: bool
+    credential_kind: CredentialKind | None
     is_active: bool
     created_at: datetime
     updated_at: datetime
@@ -63,13 +72,22 @@ class CodeRepositoryRead(BaseModel):
             name=entity.name,
             clone_url=entity.clone_url,
             default_branch=entity.default_branch,
+            has_credential=entity.credential_ciphertext is not None,
+            credential_kind=entity.credential_kind,
             is_active=entity.is_active,
             created_at=entity.created_at,
             updated_at=entity.updated_at,
         )
 
     def to_entity(self) -> CodeRepository:
-        """Convert this schema back into a domain `CodeRepository` entity."""
+        """Convert this schema back into a domain `CodeRepository` entity.
+
+        Lossy by design: `CodeRepositoryRead` never carries
+        `credential_ciphertext` (write-only semantics), so a round-tripped
+        entity always has `credential_ciphertext=None` even when
+        `has_credential` is `True`. Test-only helper — production code never
+        calls this on a credentialed entity.
+        """
         return CodeRepository(
             id=self.id,
             provider=self.provider,
@@ -77,7 +95,7 @@ class CodeRepositoryRead(BaseModel):
             name=self.name,
             clone_url=self.clone_url,
             default_branch=self.default_branch,
-            credential_kind=None,
+            credential_kind=self.credential_kind,
             credential_ciphertext=None,
             is_active=self.is_active,
             created_at=self.created_at,
@@ -92,9 +110,15 @@ class CodeRepositoryUpdate(BaseModel):
     is immutable after creation and MUST NOT be exposed here (422 if
     supplied). All fields are optional; the use case distinguishes
     "omitted" from "explicitly set to null" via `model_fields_set`.
+
+    `credential` is write-only, same semantics as `CodeRepositoryCreate`: a
+    non-`None` value re-seals and replaces the stored credential; `None`
+    (omitted or explicit) leaves the existing stored credential untouched —
+    there is no "clear the credential" affordance in this schema.
     """
 
     model_config = ConfigDict(extra="forbid")
 
     clone_url: str | None = None
     default_branch: str | None = None
+    credential: str | None = None

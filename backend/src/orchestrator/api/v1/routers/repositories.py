@@ -13,6 +13,7 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from orchestrator.api.v1.dependencies.auth import get_current_user, require_role
+from orchestrator.api.v1.dependencies.credentials import get_credential_store
 from orchestrator.api.v1.dependencies.db import get_db_session
 from orchestrator.api.v1.errors.problem import ProblemException
 from orchestrator.application.dto.code_repository import (
@@ -36,6 +37,7 @@ from orchestrator.application.use_cases.get_repository_trends import get_reposit
 from orchestrator.application.use_cases.list_repositories import list_repositories
 from orchestrator.application.use_cases.register_repository import (
     DuplicateRepositoryIdentityError,
+    UnsupportedCredentialProviderError,
     register_repository,
 )
 from orchestrator.application.use_cases.update_repository import (
@@ -43,6 +45,10 @@ from orchestrator.application.use_cases.update_repository import (
     update_repository,
 )
 from orchestrator.domain.entities.user import User
+from orchestrator.domain.ports.credential_store_port import (
+    CredentialSealError,
+    CredentialStorePort,
+)
 from orchestrator.domain.value_objects.enums import ScannerType, UserRole
 from orchestrator.infrastructure.db.repositories.code_repository_repository import (
     SqlAlchemyCodeRepositoryRepository,
@@ -66,16 +72,19 @@ async def register_repository_endpoint(
     payload: CodeRepositoryCreate,
     _user: User = Depends(get_current_user),  # noqa: B008
     session: AsyncSession = Depends(get_db_session),  # noqa: B008
+    credential_store: CredentialStorePort = Depends(get_credential_store),  # noqa: B008
 ) -> CodeRepositoryRead:
     repository_port = SqlAlchemyCodeRepositoryRepository(session)
     try:
         created = await register_repository(
             repository_port,
+            credential_store,
             payload.provider,
             payload.owner,
             payload.name,
             payload.clone_url,
             payload.default_branch,
+            credential=payload.credential,
         )
     except DuplicateRepositoryIdentityError as exc:
         raise ProblemException(
@@ -83,6 +92,12 @@ async def register_repository_endpoint(
             title="Conflict",
             detail="A repository with this provider/owner/name already exists",
         ) from exc
+    except UnsupportedCredentialProviderError as exc:
+        raise ProblemException(
+            status_code=422, title="Unprocessable Content", detail=str(exc)
+        ) from exc
+    except CredentialSealError as exc:
+        raise ProblemException(status_code=400, title="Bad Request", detail=str(exc)) from exc
     return CodeRepositoryRead.from_entity(created)
 
 
@@ -191,14 +206,21 @@ async def update_repository_endpoint(
     payload: CodeRepositoryUpdate,
     _user: User = Depends(get_current_user),  # noqa: B008
     session: AsyncSession = Depends(get_db_session),  # noqa: B008
+    credential_store: CredentialStorePort = Depends(get_credential_store),  # noqa: B008
 ) -> CodeRepositoryRead:
     repository_port = SqlAlchemyCodeRepositoryRepository(session)
     try:
-        updated = await update_repository(repository_port, repository_id, payload)
+        updated = await update_repository(repository_port, credential_store, repository_id, payload)
     except InvalidRepositoryUpdateError as exc:
         raise ProblemException(
             status_code=422, title="Unprocessable Content", detail=str(exc)
         ) from exc
+    except UnsupportedCredentialProviderError as exc:
+        raise ProblemException(
+            status_code=422, title="Unprocessable Content", detail=str(exc)
+        ) from exc
+    except CredentialSealError as exc:
+        raise ProblemException(status_code=400, title="Bad Request", detail=str(exc)) from exc
     except RepositoryNotFoundError as exc:
         raise _not_found() from exc
     return CodeRepositoryRead.from_entity(updated)
