@@ -7,6 +7,8 @@ startup, before any request is served.
 
 from __future__ import annotations
 
+import base64
+import binascii
 from functools import lru_cache
 from typing import Literal
 
@@ -101,6 +103,18 @@ class Settings(BaseSettings):
     kubernetes_namespace: str | None = None
     kubernetes_storage_class_name: str | None = None
 
+    # secrets-manager PR1 — separate from `secret_key` by design decision
+    # (proposal: reuse would force an HKDF step or break every existing
+    # `.env`). Nullable + fail-closed (D2): absent boots unchanged, a
+    # deployment scans public repos with zero behavior change; storing or
+    # decrypting a credential without this key raises a clear application
+    # error (`CredentialSealError`/`CredentialUnsealError`) rather than
+    # persisting plaintext or crashing at startup. Only its *shape* — a
+    # urlsafe-base64 encoding of exactly 32 raw bytes, matching
+    # `Fernet.generate_key()` — is validated here; that a caller ever
+    # configures it is optional.
+    credential_encryption_key: str | None = None
+
     @model_validator(mode="after")
     def _require_complete_kubernetes_config_when_selected(self) -> Settings:
         if self.scan_execution_backend == "kubernetes" and (
@@ -109,6 +123,24 @@ class Settings(BaseSettings):
             raise ValueError(
                 "scan_execution_backend='kubernetes' requires both "
                 "kubernetes_namespace and kubernetes_storage_class_name to be set"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _validate_credential_encryption_key_shape(self) -> Settings:
+        if self.credential_encryption_key is None:
+            return self
+        try:
+            decoded = base64.urlsafe_b64decode(self.credential_encryption_key)
+        except (binascii.Error, ValueError) as exc:
+            raise ValueError(
+                "credential_encryption_key must be a urlsafe-base64 32-byte "
+                "key (e.g. cryptography.fernet.Fernet.generate_key())"
+            ) from exc
+        if len(decoded) != 32:
+            raise ValueError(
+                "credential_encryption_key must be a urlsafe-base64 32-byte "
+                "key (e.g. cryptography.fernet.Fernet.generate_key())"
             )
         return self
 
