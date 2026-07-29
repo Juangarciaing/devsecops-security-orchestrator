@@ -1,0 +1,57 @@
+# Network-layer enforcement of the split checkout/scanner egress posture
+# (Module 13c PR7) — the scanner's "zero credentials/egress" invariant (PR6)
+# is now also enforced by policy, not just by omission in the Python model.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: checkout-egress
+  labels:
+    app.kubernetes.io/name: security-orchestrator
+    component: checkout
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: security-orchestrator
+      component: checkout
+  policyTypes:
+    - Egress
+  egress:
+    # DNS resolution — required to resolve the Git remote host.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # HTTPS clone of the Git remote only — no other egress is permitted.
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+      ports:
+        - protocol: TCP
+          port: 443
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: scanner-egress
+  labels:
+    app.kubernetes.io/name: security-orchestrator
+    component: scanner
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: security-orchestrator
+      component: scanner
+  policyTypes:
+    - Egress
+  # No egress rules at all: `policyTypes: [Egress]` with an empty `egress`
+  # list denies ALL egress from the scanner Pod — it never resolves DNS,
+  # never reaches the Git remote, never reaches anything.
+  egress: []

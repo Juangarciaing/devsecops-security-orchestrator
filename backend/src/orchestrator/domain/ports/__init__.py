@@ -19,6 +19,10 @@ from orchestrator.domain.ports.kubernetes_job_runner_port import (
     KubernetesJobRunnerPort,
     PvcSpec,
 )
+from orchestrator.domain.ports.kubernetes_preflight_port import (
+    ClusterCapabilityPort,
+    StorageClassInfo,
+)
 from orchestrator.domain.ports.scan_run_port import ScanRunPort
 from orchestrator.domain.ports.scan_task_port import ScanTaskPort
 from orchestrator.domain.ports.user_port import UserPort
@@ -26,6 +30,7 @@ from orchestrator.domain.ports.webhook_delivery_port import WebhookDeliveryPort
 
 __all__ = [
     "ApiKeyPort",
+    "ClusterCapabilityPort",
     "CodeRepositoryPort",
     "ContainerRunnerPort",
     "FindingPort",
@@ -37,6 +42,7 @@ __all__ = [
     "RunResult",
     "ScanRunPort",
     "ScanTaskPort",
+    "StorageClassInfo",
     "UserPort",
     "WebhookDeliveryPort",
 ]

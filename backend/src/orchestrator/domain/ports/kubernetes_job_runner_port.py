@@ -38,6 +38,12 @@ class PvcSpec:
     size_gi: int = 1
     access_mode: str = "ReadWriteOnce"
     volume_binding_mode: str = "WaitForFirstConsumer"
+    #: MUST match a StorageClass proven by `kubernetes_preflight` (Module
+    #: 13c PR7) to support `access_mode`/`volume_binding_mode` above — `None`
+    #: lets the cluster's default StorageClass apply, but a Kubernetes
+    #: deployment is only ever considered available once THAT StorageClass
+    #: (default or named) has passed the fail-closed preflight.
+    storage_class_name: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -48,6 +54,16 @@ class JobSpec:
     neither credentials nor network egress") — the caller is responsible for
     never populating it there. Conservative resource/PID defaults only;
     real tuning is out of scope for this slice.
+
+    The fields below (Module 13c PR7) are the Pod-level `SecurityContext`
+    shape PR6's verify report flagged as missing: non-root numeric UID, no
+    privilege escalation, dropped Linux capabilities, `RuntimeDefault`
+    seccomp, a read-only root filesystem, and a bounded ephemeral-storage
+    ceiling alongside the existing memory/CPU/PID limits. `deploy/kubernetes/
+    base/*.yaml` renders the equivalent static shape for the rendered
+    manifests (Kustomize YAML is not templated from these values at build
+    time); a future concrete Kubernetes API adapter (PR8+) is what would
+    actually read these fields to construct the real `V1PodSecurityContext`.
     """
 
     name: str
@@ -62,9 +78,16 @@ class JobSpec:
     memory_mb: int = 512
     cpu_millis: int = 1000
     pids_limit: int = 128
+    ephemeral_storage_mb: int = 256
     timeout_seconds: int = 120
     backoff_limit: int = 0
     ttl_seconds_after_finished: int = 300
+    run_as_non_root: bool = True
+    run_as_user: int = 65532
+    allow_privilege_escalation: bool = False
+    capabilities_drop: tuple[str, ...] = ("ALL",)
+    seccomp_profile_type: str = "RuntimeDefault"
+    read_only_root_filesystem: bool = True
 
     @property
     def active_deadline_seconds(self) -> int:

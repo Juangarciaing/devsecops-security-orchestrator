@@ -1,0 +1,16 @@
+# Example overlay (Module 13c PR7) — demonstrates customizing the base
+# without touching its resources: a distinguishing name prefix and an
+# environment label. A real deployment would add its own overlay the same
+# way (e.g. a different namespace, StorageClass, or image digests).
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../../base
+
+namePrefix: example-
+
+labels:
+  - pairs:
+      environment: example
+    includeSelectors: false
