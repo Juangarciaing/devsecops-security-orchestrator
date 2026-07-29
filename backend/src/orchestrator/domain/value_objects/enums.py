@@ -88,3 +88,26 @@ class WebhookOutcome(StrEnum):
     IGNORED_UNKNOWN_REPO = "ignored_unknown_repo"
     IGNORED_INACTIVE_REPO = "ignored_inactive_repo"
     IGNORED_NON_DEFAULT_BRANCH = "ignored_non_default_branch"
+
+
+class CredentialKind(StrEnum):
+    """Discriminator for the opaque ciphertext stored alongside a repository
+    credential (design D6). Only `PERSONAL_ACCESS_TOKEN` exists today; a
+    future kind (e.g. `GITHUB_APP`) can be added with `ALTER TYPE ... ADD
+    VALUE` — data-free and non-breaking for existing rows, since the payload
+    column is opaque ciphertext, not a typed schema.
+    """
+
+    PERSONAL_ACCESS_TOKEN = "personal_access_token"
+
+
+class CredentialAccessOutcome(StrEnum):
+    """Result of one decrypt-and-use attempt against a stored credential,
+    recorded on the append-only `CredentialAccessLog` audit trail (design
+    D7). Never stored: the plaintext or ciphertext itself.
+    """
+
+    SEALED = "sealed"
+    USED = "used"
+    DECRYPT_FAILED = "decrypt_failed"
+    KEY_UNAVAILABLE = "key_unavailable"

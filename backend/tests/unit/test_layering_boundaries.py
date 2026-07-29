@@ -6,6 +6,12 @@ instrumentation (automatic and manual) belongs only in `infrastructure/`,
 the API bootstrap layer, and `workers/` (spec: "Hexagonal Layering Stays
 Intact"). This is an automated, standing guard so the invariant is enforced
 going forward, not just checked once at implementation time.
+
+secrets-manager PR1 adds a second guard: `cryptography`/`Fernet` MUST NOT
+appear in `domain/` or `application/` either — only
+`infrastructure/security/credential_store.py` (`FernetCredentialStore`) may
+import `cryptography` (design: "layering guard extending
+test_layering_boundaries.py").
 """
 
 from __future__ import annotations
@@ -26,3 +32,16 @@ def test_domain_and_application_have_zero_opentelemetry_references() -> None:
                 offenders.append(str(path.relative_to(_SRC_ROOT)))
 
     assert offenders == [], f"OpenTelemetry reference found in guarded layer(s): {offenders}"
+
+
+def test_domain_and_application_have_zero_cryptography_references() -> None:
+    offenders: list[str] = []
+    for dirname in _GUARDED_DIRS:
+        root = _SRC_ROOT / dirname
+        assert root.is_dir(), f"expected {root} to exist"
+        for path in sorted(root.rglob("*.py")):
+            source = path.read_text(encoding="utf-8")
+            if "cryptography" in source or "Fernet" in source:
+                offenders.append(str(path.relative_to(_SRC_ROOT)))
+
+    assert offenders == [], f"cryptography/Fernet reference found in guarded layer(s): {offenders}"

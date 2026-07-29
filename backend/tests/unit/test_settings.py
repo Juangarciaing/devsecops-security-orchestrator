@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import base64
+
 import pytest
+from cryptography.fernet import Fernet
 from pydantic import ValidationError
 
 from orchestrator.infrastructure.config.settings import Settings
@@ -215,3 +218,47 @@ def test_settings_kubernetes_backend_succeeds_with_complete_config(
     assert settings.scan_execution_backend == "kubernetes"
     assert settings.kubernetes_namespace == "security-scans"
     assert settings.kubernetes_storage_class_name == "scan-workspace"
+
+
+def test_settings_credential_encryption_key_defaults_to_none(valid_env: None) -> None:
+    """A deployment without `credential_encryption_key` MUST boot unchanged —
+    public-repo scanning stays fully available (design D2 fail-closed table)."""
+    settings = Settings(_env_file=None)
+
+    assert settings.credential_encryption_key is None
+
+
+def test_settings_accepts_a_valid_fernet_key(
+    monkeypatch: pytest.MonkeyPatch, valid_env: None
+) -> None:
+    valid_key = Fernet.generate_key().decode("ascii")
+    monkeypatch.setenv("CREDENTIAL_ENCRYPTION_KEY", valid_key)
+
+    settings = Settings(_env_file=None)
+
+    assert settings.credential_encryption_key == valid_key
+
+
+def test_settings_rejects_a_malformed_credential_encryption_key(
+    monkeypatch: pytest.MonkeyPatch, valid_env: None
+) -> None:
+    """Fail fast at process startup (Module 6/13c precedent), not silently
+    at first use."""
+    monkeypatch.setenv("CREDENTIAL_ENCRYPTION_KEY", "not-a-valid-fernet-key")
+
+    with pytest.raises(ValidationError) as exc_info:
+        Settings(_env_file=None)
+
+    assert "credential_encryption_key" in str(exc_info.value)
+
+
+def test_settings_rejects_a_key_of_the_wrong_decoded_length(
+    monkeypatch: pytest.MonkeyPatch, valid_env: None
+) -> None:
+    wrong_length_key = base64.urlsafe_b64encode(b"too-short").decode("ascii")
+    monkeypatch.setenv("CREDENTIAL_ENCRYPTION_KEY", wrong_length_key)
+
+    with pytest.raises(ValidationError) as exc_info:
+        Settings(_env_file=None)
+
+    assert "credential_encryption_key" in str(exc_info.value)

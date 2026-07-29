@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from orchestrator.domain.value_objects.enums import (
+    CredentialAccessOutcome,
+    CredentialKind,
     FindingSeverity,
     FindingStatus,
     RepositoryProvider,
@@ -86,4 +88,19 @@ def test_webhook_outcome_members() -> None:
         "ignored_unknown_repo",
         "ignored_inactive_repo",
         "ignored_non_default_branch",
+    }
+
+
+def test_credential_kind_members() -> None:
+    """PAT only today; extensible to e.g. GITHUB_APP without a breaking
+    migration because the stored payload is opaque ciphertext (design D6)."""
+    assert {member.value for member in CredentialKind} == {"personal_access_token"}
+
+
+def test_credential_access_outcome_members() -> None:
+    assert {member.value for member in CredentialAccessOutcome} == {
+        "sealed",
+        "used",
+        "decrypt_failed",
+        "key_unavailable",
     }
