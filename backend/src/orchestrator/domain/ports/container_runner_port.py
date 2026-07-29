@@ -65,6 +65,7 @@ class ContainerRunnerPort(ABC):
         timeout_seconds: int,
         tmp_exec: bool = False,
         cleanup_anonymous_volumes: bool = False,
+        env: dict[str, str] | None = None,
     ) -> RunResult:
         """Run `image` with an argv-only `command` (never a shell string).
 
@@ -91,4 +92,13 @@ class ContainerRunnerPort(ABC):
         pypa/pip-audit#732) — no other scanner needs this, so it is scoped
         as a narrow per-call opt-in rather than a global relaxation.
 
+        `env` (PR4, appended-and-defaulted, additive — no existing caller
+        needs to change): non-secret environment variables ONLY (e.g.
+        `HOME`, `GIT_TERMINAL_PROMPT`). Docker exposes a container's
+        environment via `docker inspect` / `Config.Env` — implementations
+        and callers MUST NOT place a plaintext credential or secret value
+        here. Implementations MUST NOT emit `env` keys or values as OTel
+        span attributes, Prometheus metric labels, or log fields. When
+        `env` is `None` (the default), behavior MUST be byte-for-byte
+        identical to calling `.run()` without this parameter at all.
         """

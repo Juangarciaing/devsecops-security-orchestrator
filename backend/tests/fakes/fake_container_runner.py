@@ -34,6 +34,7 @@ class RecordedRun:
     timeout_seconds: int
     tmp_exec: bool = False
     cleanup_anonymous_volumes: bool = False
+    env: dict[str, str] | None = None
 
 
 @dataclass(slots=True)
@@ -60,6 +61,7 @@ class FakeContainerRunner(ContainerRunnerPort):
         timeout_seconds: int,
         tmp_exec: bool = False,
         cleanup_anonymous_volumes: bool = False,
+        env: dict[str, str] | None = None,
     ) -> RunResult:
         self.calls.append(
             RecordedRun(
@@ -73,6 +75,7 @@ class FakeContainerRunner(ContainerRunnerPort):
                 timeout_seconds=timeout_seconds,
                 tmp_exec=tmp_exec,
                 cleanup_anonymous_volumes=cleanup_anonymous_volumes,
+                env=env,
             )
         )
         if self._results:
