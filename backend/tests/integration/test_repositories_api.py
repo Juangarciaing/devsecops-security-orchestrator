@@ -84,7 +84,8 @@ async def _seed_repository(
                 name=name,
                 clone_url=f"https://github.com/{owner}/{name}.git",
                 default_branch="main",
-                credential_ref=None,
+                credential_kind=None,
+                credential_ciphertext=None,
                 is_active=True,
                 created_at=_NOW,
                 updated_at=_NOW,
@@ -281,7 +282,6 @@ def test_post_creates_repository_returns_201(migrated_schema: None) -> None:
         body = response.json()
         assert body["owner"] == "acme-post"
         assert body["is_active"] is True
-        assert body["credential_ref"] is None
 
     asyncio.run(_run_with_client(scenario))
 
@@ -487,29 +487,6 @@ def test_patch_null_default_branch_returns_422(migrated_schema: None) -> None:
 
         assert response.status_code == 422
         assert response.headers["content-type"] == "application/problem+json"
-
-    asyncio.run(_run_with_client(scenario))
-
-
-def test_patch_null_credential_ref_clears_field(migrated_schema: None) -> None:
-    async def scenario(
-        client: httpx.AsyncClient, sessionmaker: async_sessionmaker[AsyncSession]
-    ) -> None:
-        member = await _seed_user(
-            sessionmaker, "member-patch-null-cred@example.com", UserRole.MEMBER
-        )
-        repo = await _seed_repository(
-            sessionmaker, "acme-patch-null-cred", "widgets-patch-null-cred"
-        )
-
-        response = await client.patch(
-            f"/api/v1/repositories/{repo.id}",
-            json={"credential_ref": None},
-            headers=_auth_header(member),
-        )
-
-        assert response.status_code == 200
-        assert response.json()["credential_ref"] is None
 
     asyncio.run(_run_with_client(scenario))
 

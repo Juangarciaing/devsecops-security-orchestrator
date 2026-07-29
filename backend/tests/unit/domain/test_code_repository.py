@@ -6,7 +6,7 @@ import uuid
 from datetime import UTC, datetime
 
 from orchestrator.domain.entities.code_repository import CodeRepository
-from orchestrator.domain.value_objects.enums import RepositoryProvider
+from orchestrator.domain.value_objects.enums import CredentialKind, RepositoryProvider
 
 
 def _make_repository(**overrides: object) -> CodeRepository:
@@ -18,7 +18,8 @@ def _make_repository(**overrides: object) -> CodeRepository:
         "name": "widgets",
         "clone_url": "https://github.com/acme/widgets.git",
         "default_branch": "main",
-        "credential_ref": None,
+        "credential_kind": None,
+        "credential_ciphertext": None,
         "is_active": True,
         "created_at": now,
         "updated_at": now,
@@ -63,7 +64,8 @@ def test_fields_are_stored_as_provided() -> None:
         name="widgets",
         clone_url="https://gitlab.com/acme/widgets.git",
         default_branch="develop",
-        credential_ref="vault://secret/widgets",
+        credential_kind=CredentialKind.PERSONAL_ACCESS_TOKEN,
+        credential_ciphertext="gAAAAA...opaque",
         is_active=True,
         created_at=now,
         updated_at=now,
@@ -75,16 +77,27 @@ def test_fields_are_stored_as_provided() -> None:
     assert repo.name == "widgets"
     assert repo.clone_url == "https://gitlab.com/acme/widgets.git"
     assert repo.default_branch == "develop"
-    assert repo.credential_ref == "vault://secret/widgets"
+    assert repo.credential_kind is CredentialKind.PERSONAL_ACCESS_TOKEN
+    assert repo.credential_ciphertext == "gAAAAA...opaque"
     assert repo.is_active is True
     assert repo.created_at == now
     assert repo.updated_at == now
 
 
-def test_credential_ref_may_be_none() -> None:
-    repo = _make_repository(credential_ref=None)
+def test_credential_kind_and_ciphertext_may_be_none() -> None:
+    """A public repository with no stored credential — both fields `None`."""
+    repo = _make_repository(credential_kind=None, credential_ciphertext=None)
 
-    assert repo.credential_ref is None
+    assert repo.credential_kind is None
+    assert repo.credential_ciphertext is None
+
+
+def test_code_repository_has_no_credential_ref_attribute() -> None:
+    """The old inert `credential_ref` field is dropped entirely (design
+    decision), not repurposed — it must not exist on the entity at all."""
+    repo = _make_repository()
+
+    assert not hasattr(repo, "credential_ref")
 
 
 def test_is_active_can_be_false() -> None:

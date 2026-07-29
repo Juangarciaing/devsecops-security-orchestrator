@@ -26,7 +26,8 @@ def _make_entity(**overrides: object) -> CodeRepository:
         "name": "devsecops-security-orchestrator",
         "clone_url": "https://github.com/gentleman-programming/devsecops-security-orchestrator.git",
         "default_branch": "main",
-        "credential_ref": None,
+        "credential_kind": None,
+        "credential_ciphertext": None,
         "is_active": True,
         "created_at": now,
         "updated_at": now,
@@ -36,13 +37,12 @@ def _make_entity(**overrides: object) -> CodeRepository:
 
 
 def test_round_trip_preserves_all_fields() -> None:
-    entity = _make_entity(credential_ref="vault://secret/orchestrator")
+    entity = _make_entity()
 
     schema = CodeRepositoryRead.from_entity(entity)
     round_tripped = schema.to_entity()
 
     assert round_tripped == entity
-    assert schema.credential_ref == "vault://secret/orchestrator"
     assert schema.is_active is True
 
 
@@ -53,7 +53,6 @@ def test_round_trip_preserves_all_fields_with_different_values() -> None:
         name="widgets",
         clone_url="https://gitlab.com/acme/widgets.git",
         default_branch="develop",
-        credential_ref=None,
         is_active=False,
     )
 
@@ -62,7 +61,6 @@ def test_round_trip_preserves_all_fields_with_different_values() -> None:
 
     assert round_tripped == entity
     assert schema.provider is RepositoryProvider.GITLAB
-    assert schema.credential_ref is None
     assert schema.is_active is False
 
 
@@ -77,36 +75,10 @@ def test_invalid_provider_raises_validation_error() -> None:
             name="widgets",
             clone_url="https://example.com/acme/widgets.git",
             default_branch="main",
-            credential_ref=None,
             is_active=True,
             created_at=now,
             updated_at=now,
         )
-
-
-def test_create_schema_accepts_omitted_credential_ref() -> None:
-    schema = CodeRepositoryCreate(
-        provider=RepositoryProvider.GITHUB,
-        owner="acme",
-        name="widgets",
-        clone_url="https://github.com/acme/widgets.git",
-        default_branch="main",
-    )
-
-    assert schema.credential_ref is None
-
-
-def test_create_schema_accepts_explicit_credential_ref() -> None:
-    schema = CodeRepositoryCreate(
-        provider=RepositoryProvider.GITHUB,
-        owner="acme",
-        name="widgets",
-        clone_url="https://github.com/acme/widgets.git",
-        default_branch="main",
-        credential_ref="vault://secret/widgets",
-    )
-
-    assert schema.credential_ref == "vault://secret/widgets"
 
 
 def test_create_schema_rejects_is_active() -> None:
@@ -126,12 +98,10 @@ def test_update_schema_accepts_mutable_fields_only() -> None:
     schema = CodeRepositoryUpdate(
         clone_url="https://github.com/acme/widgets-new.git",
         default_branch="develop",
-        credential_ref="vault://secret/widgets-new",
     )
 
     assert schema.clone_url == "https://github.com/acme/widgets-new.git"
     assert schema.default_branch == "develop"
-    assert schema.credential_ref == "vault://secret/widgets-new"
 
 
 def test_update_schema_all_fields_are_optional() -> None:
@@ -139,7 +109,6 @@ def test_update_schema_all_fields_are_optional() -> None:
 
     assert schema.clone_url is None
     assert schema.default_branch is None
-    assert schema.credential_ref is None
 
 
 @pytest.mark.parametrize("identity_field", ["provider", "owner", "name"])

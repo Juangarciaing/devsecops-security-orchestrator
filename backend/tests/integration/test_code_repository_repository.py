@@ -18,7 +18,7 @@ import pytest
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from orchestrator.domain.entities.code_repository import CodeRepository
-from orchestrator.domain.value_objects.enums import RepositoryProvider
+from orchestrator.domain.value_objects.enums import CredentialKind, RepositoryProvider
 from orchestrator.infrastructure.db.engine import resolve_database_url
 from orchestrator.infrastructure.db.repositories.code_repository_repository import (
     CodeRepositoryNotFoundError,
@@ -38,7 +38,8 @@ def _make_repository(**overrides: object) -> CodeRepository:
         "name": "widgets",
         "clone_url": "https://github.com/acme/widgets.git",
         "default_branch": "main",
-        "credential_ref": None,
+        "credential_kind": None,
+        "credential_ciphertext": None,
         "is_active": True,
         "created_at": _NOW,
         "updated_at": _NOW,
@@ -176,14 +177,16 @@ async def _update_mutates_only_mutable_columns() -> None:
             assert to_update is not None
             to_update.clone_url = "https://github.com/acme-update/widgets-update-new.git"
             to_update.default_branch = "develop"
-            to_update.credential_ref = "vault://secret/widgets-update"
+            to_update.credential_kind = CredentialKind.PERSONAL_ACCESS_TOKEN
+            to_update.credential_ciphertext = "sealed:opaque-ciphertext"
 
             updated = await repository.update(to_update)
             await session.commit()
 
             assert updated.clone_url == "https://github.com/acme-update/widgets-update-new.git"
             assert updated.default_branch == "develop"
-            assert updated.credential_ref == "vault://secret/widgets-update"
+            assert updated.credential_kind == CredentialKind.PERSONAL_ACCESS_TOKEN
+            assert updated.credential_ciphertext == "sealed:opaque-ciphertext"
             # Identity untouched.
             assert updated.owner == "acme-update"
             assert updated.name == "widgets-update"

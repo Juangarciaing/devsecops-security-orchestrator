@@ -10,7 +10,7 @@ import uuid
 from datetime import datetime
 
 from sqlalchemy import Enum as SAEnum
-from sqlalchemy import ForeignKey, String, func
+from sqlalchemy import ForeignKey, String, Uuid, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from orchestrator.domain.value_objects.enums import ScanRunStatus
@@ -39,3 +39,4 @@ class ScanRunModel(Base):
     created_at: Mapped[datetime] = mapped_column(server_default=func.now(), nullable=False)
     started_at: Mapped[datetime | None] = mapped_column(nullable=True)
     completed_at: Mapped[datetime | None] = mapped_column(nullable=True)
+    triggered_by_user_id: Mapped[uuid.UUID | None] = mapped_column(Uuid(), nullable=True)

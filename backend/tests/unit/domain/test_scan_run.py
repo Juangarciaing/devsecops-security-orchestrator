@@ -69,3 +69,38 @@ def test_scan_run_defaults_started_and_completed_to_none() -> None:
 
     assert run.started_at is None
     assert run.completed_at is None
+
+
+def test_scan_run_defaults_triggered_by_user_id_to_none() -> None:
+    """A webhook-triggered scan (design D8) never has an authenticated actor."""
+    now = datetime.now(UTC)
+
+    run = ScanRun(
+        id=uuid.uuid4(),
+        repository_id=uuid.uuid4(),
+        status=ScanRunStatus.PENDING,
+        trigger="webhook",
+        commit_sha="abc123",
+        ref="refs/heads/main",
+        created_at=now,
+    )
+
+    assert run.triggered_by_user_id is None
+
+
+def test_scan_run_stores_triggered_by_user_id_for_manual_trigger() -> None:
+    now = datetime.now(UTC)
+    user_id = uuid.uuid4()
+
+    run = ScanRun(
+        id=uuid.uuid4(),
+        repository_id=uuid.uuid4(),
+        status=ScanRunStatus.PENDING,
+        trigger="manual",
+        commit_sha="abc123",
+        ref="refs/heads/main",
+        created_at=now,
+        triggered_by_user_id=user_id,
+    )
+
+    assert run.triggered_by_user_id == user_id

@@ -28,3 +28,6 @@ class ScanRun:
     created_at: datetime
     started_at: datetime | None = None
     completed_at: datetime | None = None
+    # The authenticated user who triggered a manual scan; `None` for a
+    # webhook-triggered (`trigger="webhook"`) scan (design D8).
+    triggered_by_user_id: uuid.UUID | None = None

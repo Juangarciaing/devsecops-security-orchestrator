@@ -16,8 +16,7 @@ class InvalidRepositoryUpdateError(Exception):
 
     `clone_url` and `default_branch` are NOT NULL on the `CodeRepository`
     entity — an explicit `null` for either is an invalid request, not a
-    legitimate "clear this field" request (unlike `credential_ref`, which is
-    genuinely nullable).
+    legitimate "clear this field" request.
     """
 
 
@@ -30,8 +29,7 @@ async def update_repository(
 
     Uses `model_fields_set` to distinguish "omitted" (leave unchanged) from
     "explicitly set to null" (apply the null, or reject if the field isn't
-    nullable) — this matters for `credential_ref`, which is nullable.
-    Identity fields are never touched; they are not exposed by
+    nullable). Identity fields are never touched; they are not exposed by
     `CodeRepositoryUpdate`.
 
     Raises `InvalidRepositoryUpdateError` if `clone_url` or `default_branch`
@@ -55,8 +53,6 @@ async def update_repository(
         repository.clone_url = update.clone_url  # type: ignore[assignment]
     if "default_branch" in fields_set:
         repository.default_branch = update.default_branch  # type: ignore[assignment]
-    if "credential_ref" in fields_set:
-        repository.credential_ref = update.credential_ref
 
     repository.updated_at = datetime.now(UTC).replace(tzinfo=None)
     return await repository_port.update(repository)

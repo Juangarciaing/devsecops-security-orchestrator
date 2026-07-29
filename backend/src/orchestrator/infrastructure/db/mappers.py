@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from orchestrator.domain.entities.api_key import ApiKey
 from orchestrator.domain.entities.code_repository import CodeRepository
+from orchestrator.domain.entities.credential_access_log import CredentialAccessLog
 from orchestrator.domain.entities.finding import Finding
 from orchestrator.domain.entities.scan_run import ScanRun
 from orchestrator.domain.entities.scan_task import ScanTask
@@ -16,6 +17,7 @@ from orchestrator.domain.entities.user import User
 from orchestrator.domain.entities.webhook_delivery import WebhookDelivery
 from orchestrator.infrastructure.db.models.api_key import ApiKeyModel
 from orchestrator.infrastructure.db.models.code_repository import CodeRepositoryModel
+from orchestrator.infrastructure.db.models.credential_access_log import CredentialAccessLogModel
 from orchestrator.infrastructure.db.models.finding import FindingModel
 from orchestrator.infrastructure.db.models.scan_run import ScanRunModel
 from orchestrator.infrastructure.db.models.scan_task import ScanTaskModel
@@ -32,7 +34,8 @@ def code_repository_to_entity(model: CodeRepositoryModel) -> CodeRepository:
         name=model.name,
         clone_url=model.clone_url,
         default_branch=model.default_branch,
-        credential_ref=model.credential_ref,
+        credential_kind=model.credential_kind,
+        credential_ciphertext=model.credential_ciphertext,
         is_active=model.is_active,
         created_at=model.created_at,
         updated_at=model.updated_at,
@@ -48,7 +51,8 @@ def code_repository_to_model(entity: CodeRepository) -> CodeRepositoryModel:
         name=entity.name,
         clone_url=entity.clone_url,
         default_branch=entity.default_branch,
-        credential_ref=entity.credential_ref,
+        credential_kind=entity.credential_kind,
+        credential_ciphertext=entity.credential_ciphertext,
         is_active=entity.is_active,
         created_at=entity.created_at,
         updated_at=entity.updated_at,
@@ -67,6 +71,7 @@ def scan_run_to_entity(model: ScanRunModel) -> ScanRun:
         created_at=model.created_at,
         started_at=model.started_at,
         completed_at=model.completed_at,
+        triggered_by_user_id=model.triggered_by_user_id,
     )
 
 
@@ -82,6 +87,7 @@ def scan_run_to_model(entity: ScanRun) -> ScanRunModel:
         created_at=entity.created_at,
         started_at=entity.started_at,
         completed_at=entity.completed_at,
+        triggered_by_user_id=entity.triggered_by_user_id,
     )
 
 
@@ -238,4 +244,32 @@ def webhook_delivery_to_model(entity: WebhookDelivery) -> WebhookDeliveryModel:
         repository_full_name=entity.repository_full_name,
         ref=entity.ref,
         commit_sha=entity.commit_sha,
+    )
+
+
+def credential_access_log_to_entity(model: CredentialAccessLogModel) -> CredentialAccessLog:
+    """Convert a `CredentialAccessLogModel` into a domain `CredentialAccessLog` entity."""
+    return CredentialAccessLog(
+        id=model.id,
+        repository_id=model.repository_id,
+        credential_kind=model.credential_kind,
+        actor=model.actor,
+        outcome=model.outcome,
+        accessed_at=model.accessed_at,
+        scan_task_id=model.scan_task_id,
+        actor_user_id=model.actor_user_id,
+    )
+
+
+def credential_access_log_to_model(entity: CredentialAccessLog) -> CredentialAccessLogModel:
+    """Convert a domain `CredentialAccessLog` entity into a `CredentialAccessLogModel`."""
+    return CredentialAccessLogModel(
+        id=entity.id,
+        repository_id=entity.repository_id,
+        credential_kind=entity.credential_kind,
+        actor=entity.actor,
+        outcome=entity.outcome,
+        accessed_at=entity.accessed_at,
+        scan_task_id=entity.scan_task_id,
+        actor_user_id=entity.actor_user_id,
     )

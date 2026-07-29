@@ -11,12 +11,15 @@ from datetime import UTC, datetime
 
 from orchestrator.domain.entities.api_key import ApiKey
 from orchestrator.domain.entities.code_repository import CodeRepository
+from orchestrator.domain.entities.credential_access_log import CredentialAccessLog
 from orchestrator.domain.entities.finding import Finding
 from orchestrator.domain.entities.scan_run import ScanRun
 from orchestrator.domain.entities.scan_task import ScanTask
 from orchestrator.domain.entities.user import User
 from orchestrator.domain.entities.webhook_delivery import WebhookDelivery
 from orchestrator.domain.value_objects.enums import (
+    CredentialAccessOutcome,
+    CredentialKind,
     FindingSeverity,
     FindingStatus,
     RepositoryProvider,
@@ -31,6 +34,8 @@ from orchestrator.infrastructure.db.mappers import (
     api_key_to_model,
     code_repository_to_entity,
     code_repository_to_model,
+    credential_access_log_to_entity,
+    credential_access_log_to_model,
     finding_to_entity,
     finding_to_model,
     scan_run_to_entity,
@@ -54,7 +59,8 @@ def test_code_repository_round_trip() -> None:
         name="widgets",
         clone_url="https://github.com/acme/widgets.git",
         default_branch="main",
-        credential_ref="vault://secret/widgets",
+        credential_kind=CredentialKind.PERSONAL_ACCESS_TOKEN,
+        credential_ciphertext="gAAAAA...opaque",
         is_active=True,
         created_at=_NOW,
         updated_at=_NOW,
@@ -66,7 +72,7 @@ def test_code_repository_round_trip() -> None:
     assert round_tripped == entity
 
 
-def test_code_repository_round_trip_with_no_credential_ref_and_inactive() -> None:
+def test_code_repository_round_trip_with_no_credential_and_inactive() -> None:
     entity = CodeRepository(
         id=uuid.uuid4(),
         provider=RepositoryProvider.GITLAB,
@@ -74,7 +80,8 @@ def test_code_repository_round_trip_with_no_credential_ref_and_inactive() -> Non
         name="gadgets",
         clone_url="https://gitlab.com/acme/gadgets.git",
         default_branch="develop",
-        credential_ref=None,
+        credential_kind=None,
+        credential_ciphertext=None,
         is_active=False,
         created_at=_NOW,
         updated_at=_NOW,
@@ -84,7 +91,8 @@ def test_code_repository_round_trip_with_no_credential_ref_and_inactive() -> Non
     round_tripped = code_repository_to_entity(model)
 
     assert round_tripped == entity
-    assert round_tripped.credential_ref is None
+    assert round_tripped.credential_kind is None
+    assert round_tripped.credential_ciphertext is None
     assert round_tripped.is_active is False
 
 
@@ -99,12 +107,32 @@ def test_scan_run_round_trip() -> None:
         created_at=_NOW,
         started_at=_NOW,
         completed_at=None,
+        triggered_by_user_id=uuid.uuid4(),
     )
 
     model = scan_run_to_model(entity)
     round_tripped = scan_run_to_entity(model)
 
     assert round_tripped == entity
+
+
+def test_scan_run_round_trip_with_no_triggered_by_user_id() -> None:
+    """A webhook-triggered scan never has an authenticated actor (design D8)."""
+    entity = ScanRun(
+        id=uuid.uuid4(),
+        repository_id=uuid.uuid4(),
+        status=ScanRunStatus.PENDING,
+        trigger="webhook",
+        commit_sha="abc123",
+        ref="refs/heads/main",
+        created_at=_NOW,
+    )
+
+    model = scan_run_to_model(entity)
+    round_tripped = scan_run_to_entity(model)
+
+    assert round_tripped == entity
+    assert round_tripped.triggered_by_user_id is None
 
 
 def test_scan_task_round_trip() -> None:
@@ -250,3 +278,40 @@ def test_webhook_delivery_round_trip_with_null_delivery_id_on_rejected_signature
 
     assert round_tripped == entity
     assert round_tripped.delivery_id is None
+
+
+def test_credential_access_log_round_trip() -> None:
+    entity = CredentialAccessLog(
+        id=uuid.uuid4(),
+        repository_id=uuid.uuid4(),
+        credential_kind=CredentialKind.PERSONAL_ACCESS_TOKEN,
+        actor="webhook",
+        outcome=CredentialAccessOutcome.USED,
+        accessed_at=_NOW,
+        scan_task_id=uuid.uuid4(),
+        actor_user_id=None,
+    )
+
+    model = credential_access_log_to_model(entity)
+    round_tripped = credential_access_log_to_entity(model)
+
+    assert round_tripped == entity
+
+
+def test_credential_access_log_round_trip_manual_actor() -> None:
+    entity = CredentialAccessLog(
+        id=uuid.uuid4(),
+        repository_id=uuid.uuid4(),
+        credential_kind=CredentialKind.PERSONAL_ACCESS_TOKEN,
+        actor="manual",
+        outcome=CredentialAccessOutcome.DECRYPT_FAILED,
+        accessed_at=_NOW,
+        scan_task_id=None,
+        actor_user_id=uuid.uuid4(),
+    )
+
+    model = credential_access_log_to_model(entity)
+    round_tripped = credential_access_log_to_entity(model)
+
+    assert round_tripped == entity
+    assert round_tripped.scan_task_id is None

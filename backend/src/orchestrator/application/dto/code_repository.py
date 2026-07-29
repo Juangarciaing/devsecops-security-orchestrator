@@ -21,6 +21,12 @@ class CodeRepositoryCreate(BaseModel):
 
     No `is_active` field: a newly registered repository always starts active
     (`True`), set server-side by the use case — never client-controlled.
+
+    No credential field yet: sealing a submitted credential into
+    `credential_kind`/`credential_ciphertext` is wired in a follow-up slice
+    (secrets-manager PR3) — this schema only covers the persistence shape
+    added in PR2, so every repository created through this schema is
+    credential-less (public repos), matching current behavior.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -30,7 +36,6 @@ class CodeRepositoryCreate(BaseModel):
     name: str
     clone_url: str
     default_branch: str
-    credential_ref: str | None = None
 
 
 class CodeRepositoryRead(BaseModel):
@@ -44,7 +49,6 @@ class CodeRepositoryRead(BaseModel):
     name: str
     clone_url: str
     default_branch: str
-    credential_ref: str | None
     is_active: bool
     created_at: datetime
     updated_at: datetime
@@ -59,7 +63,6 @@ class CodeRepositoryRead(BaseModel):
             name=entity.name,
             clone_url=entity.clone_url,
             default_branch=entity.default_branch,
-            credential_ref=entity.credential_ref,
             is_active=entity.is_active,
             created_at=entity.created_at,
             updated_at=entity.updated_at,
@@ -74,7 +77,8 @@ class CodeRepositoryRead(BaseModel):
             name=self.name,
             clone_url=self.clone_url,
             default_branch=self.default_branch,
-            credential_ref=self.credential_ref,
+            credential_kind=None,
+            credential_ciphertext=None,
             is_active=self.is_active,
             created_at=self.created_at,
             updated_at=self.updated_at,
@@ -94,4 +98,3 @@ class CodeRepositoryUpdate(BaseModel):
 
     clone_url: str | None = None
     default_branch: str | None = None
-    credential_ref: str | None = None
