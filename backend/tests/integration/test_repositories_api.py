@@ -9,6 +9,7 @@ from datetime import datetime
 
 import httpx
 import pytest
+from cryptography.fernet import Fernet
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from orchestrator.api.main import create_app
@@ -26,6 +27,7 @@ from orchestrator.domain.value_objects.enums import (
     ScanTaskStatus,
     UserRole,
 )
+from orchestrator.infrastructure.config.settings import get_settings
 from orchestrator.infrastructure.db.engine import resolve_database_url
 from orchestrator.infrastructure.db.repositories.code_repository_repository import (
     SqlAlchemyCodeRepositoryRepository,
@@ -321,6 +323,125 @@ def test_post_duplicate_soft_deleted_identity_returns_409_no_reactivation(
         )
 
         assert response.status_code == 409
+
+    asyncio.run(_run_with_client(scenario))
+
+
+# ---------------------------------------------------------------------------
+# POST/PATCH credential (secrets-manager PR3) — seal-before-persist,
+# write-only response semantics, fail-closed, GitHub-only guard.
+# ---------------------------------------------------------------------------
+
+
+def _with_credential_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("CREDENTIAL_ENCRYPTION_KEY", Fernet.generate_key().decode("ascii"))
+    get_settings.cache_clear()
+
+
+def test_post_with_credential_seals_and_never_echoes_value(
+    migrated_schema: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _with_credential_key(monkeypatch)
+
+    async def scenario(
+        client: httpx.AsyncClient, sessionmaker: async_sessionmaker[AsyncSession]
+    ) -> None:
+        member = await _seed_user(sessionmaker, "member-cred-post@example.com", UserRole.MEMBER)
+        payload = _create_payload(owner="acme-cred-post", name="widgets-cred-post")
+        payload["credential"] = "ghp_supersecrettoken"
+
+        response = await client.post(
+            "/api/v1/repositories", json=payload, headers=_auth_header(member)
+        )
+
+        assert response.status_code == 201
+        body = response.json()
+        assert body["has_credential"] is True
+        assert body["credential_kind"] == "personal_access_token"
+        assert "credential" not in body
+        assert "credential_ciphertext" not in body
+        assert "ghp_supersecrettoken" not in response.text
+
+    asyncio.run(_run_with_client(scenario))
+
+
+def test_post_without_credential_encryption_key_returns_400_and_writes_no_row(
+    migrated_schema: None,
+) -> None:
+    async def scenario(
+        client: httpx.AsyncClient, sessionmaker: async_sessionmaker[AsyncSession]
+    ) -> None:
+        member = await _seed_user(sessionmaker, "member-cred-missing@example.com", UserRole.MEMBER)
+        payload = _create_payload(owner="acme-cred-missing", name="widgets-cred-missing")
+        payload["credential"] = "ghp_supersecrettoken"
+
+        response = await client.post(
+            "/api/v1/repositories", json=payload, headers=_auth_header(member)
+        )
+
+        assert response.status_code == 400
+        assert response.headers["content-type"] == "application/problem+json"
+        assert "ghp_supersecrettoken" not in response.text
+
+        list_response = await client.get("/api/v1/repositories", headers=_auth_header(member))
+        owners = {item["owner"] for item in list_response.json()}
+        assert "acme-cred-missing" not in owners
+
+    asyncio.run(_run_with_client(scenario))
+
+
+def test_post_credential_for_gitlab_repository_returns_422(
+    migrated_schema: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _with_credential_key(monkeypatch)
+
+    async def scenario(
+        client: httpx.AsyncClient, sessionmaker: async_sessionmaker[AsyncSession]
+    ) -> None:
+        member = await _seed_user(sessionmaker, "member-cred-gitlab@example.com", UserRole.MEMBER)
+        payload = {
+            "provider": "gitlab",
+            "owner": "acme-cred-gitlab",
+            "name": "widgets-cred-gitlab",
+            "clone_url": "https://gitlab.com/acme-cred-gitlab/widgets-cred-gitlab.git",
+            "default_branch": "main",
+            "credential": "ghp_supersecrettoken",
+        }
+
+        response = await client.post(
+            "/api/v1/repositories", json=payload, headers=_auth_header(member)
+        )
+
+        assert response.status_code == 422
+        assert response.headers["content-type"] == "application/problem+json"
+        assert "ghp_supersecrettoken" not in response.text
+
+    asyncio.run(_run_with_client(scenario))
+
+
+def test_patch_credential_reseals_and_never_echoes_value(
+    migrated_schema: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _with_credential_key(monkeypatch)
+
+    async def scenario(
+        client: httpx.AsyncClient, sessionmaker: async_sessionmaker[AsyncSession]
+    ) -> None:
+        member = await _seed_user(sessionmaker, "member-cred-patch@example.com", UserRole.MEMBER)
+        repo = await _seed_repository(sessionmaker, "acme-cred-patch", "widgets-cred-patch")
+
+        response = await client.patch(
+            f"/api/v1/repositories/{repo.id}",
+            json={"credential": "ghp_newtoken"},
+            headers=_auth_header(member),
+        )
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["has_credential"] is True
+        assert body["credential_kind"] == "personal_access_token"
+        assert "credential" not in body
+        assert "ghp_newtoken" not in response.text
 
     asyncio.run(_run_with_client(scenario))
 
