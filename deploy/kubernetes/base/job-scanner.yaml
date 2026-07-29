@@ -1,0 +1,69 @@
+# Example rendering of the scanner Job shape `KubernetesSplitScanExecution`
+# (Module 13c PR6) creates at runtime. The REAL Job names are bounded and
+# task-derived (`scan-{scan_task_id.hex[:20]}-{checkout|scanner}`, produced
+# by `_bounded_name()` in `kubernetes_scan_execution.py`) — this file's
+# `scan-example-*` names are a fixed, versioned example proving the SAME
+# shape renders and hardens correctly; per-scan substitution happens at
+# runtime via `KubernetesJobRunnerPort.create_job()`, not via Kustomize.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: scan-example-scanner
+  labels:
+    app.kubernetes.io/name: security-orchestrator
+    component: scanner
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: 150
+  ttlSecondsAfterFinished: 300
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: security-orchestrator
+        component: scanner
+    spec:
+      serviceAccountName: scanner
+      restartPolicy: Never
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: scanner
+          image: "ghcr.io/gitleaks/gitleaks:v8.30.1@sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f"
+          command:
+            - detect
+            - --no-git
+            - --source
+            - /workspace/checkout
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              memory: "512Mi"
+              cpu: "1000m"
+            limits:
+              memory: "512Mi"
+              cpu: "1000m"
+              ephemeral-storage: "256Mi"
+          volumeMounts:
+            - name: workspace
+              mountPath: /workspace
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: workspace
+          persistentVolumeClaim:
+            claimName: scan-example-pvc
+            readOnly: true
+        - name: tmp
+          emptyDir:
+            sizeLimit: 64Mi

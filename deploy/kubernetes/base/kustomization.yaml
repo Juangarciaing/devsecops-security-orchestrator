@@ -1,0 +1,24 @@
+# Module 13c PR7 — Kustomize base for the split checkout/scanner Kubernetes
+# backend: namespace, dedicated ServiceAccounts, least-privilege RBAC,
+# NetworkPolicy egress enforcement, and an example hardened PVC/Job pair
+# proving the exact shape `KubernetesSplitScanExecution` (PR6) creates at
+# runtime. See `overlays/example/` for a customization example.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: security-scans
+
+labels:
+  - pairs:
+      app.kubernetes.io/part-of: devsecops-security-orchestrator
+      app.kubernetes.io/managed-by: kustomize
+    includeSelectors: false
+
+resources:
+  - namespace.yaml
+  - serviceaccounts.yaml
+  - rbac.yaml
+  - networkpolicies.yaml
+  - pvc.yaml
+  - job-checkout.yaml
+  - job-scanner.yaml

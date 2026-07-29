@@ -1,0 +1,9 @@
+# Allowlisted namespace for split checkout/scanner Jobs (Module 13c PR7).
+# Selecting Kubernetes for a scan is restricted to this exact namespace —
+# see the spec's "Secure Workload Identity and Manifests" requirement.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: security-scans
+  labels:
+    app.kubernetes.io/name: security-orchestrator

@@ -1,0 +1,23 @@
+# Example rendering of the bounded, per-scan ephemeral PVC shape
+# `PvcSpec` (Module 13c PR6/PR7) requests at runtime. The real per-scan PVC
+# is created directly via `KubernetesJobRunnerPort.create_pvc()` with a
+# bounded task-derived name (`scan-{task_id.hex[:20]}-pvc`); this static
+# manifest proves the SAME shape — access mode, `storageClassName` — renders
+# and passes the fail-closed preflight (`kubernetes_preflight.py`) before
+# anything like it is ever submitted.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: scan-example-pvc
+  labels:
+    app.kubernetes.io/name: security-orchestrator
+spec:
+  accessModes:
+    - ReadWriteOnce
+  # Must reference a StorageClass proven by kubernetes_preflight.py to
+  # support ReadWriteOnce + WaitForFirstConsumer binding before Kubernetes
+  # is ever considered available/selectable.
+  storageClassName: scan-workspace
+  resources:
+    requests:
+      storage: 1Gi
