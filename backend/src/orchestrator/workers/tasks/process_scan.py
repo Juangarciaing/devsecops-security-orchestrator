@@ -85,6 +85,7 @@ from orchestrator.domain.value_objects.enums import (
     ScanRunStatus,
     ScanTaskStatus,
 )
+from orchestrator.domain.value_objects.scan_subject import ScanSubject, ScanSubjectKind
 from orchestrator.infrastructure.config.settings import get_settings
 from orchestrator.infrastructure.container.docker_container_runner import DockerContainerRunner
 from orchestrator.infrastructure.container.scan_execution_factory import create_scan_execution
@@ -371,14 +372,18 @@ async def _complete_scan(
     Zero `findings` (a clean repo) is a valid, successful outcome (D4/spec) —
     NOT treated as failure (`bulk_upsert_findings` no-ops on an empty list).
 
-    Persistence is ONE `bulk_upsert_findings(repository_id, scan_run_id,
-    findings)` call (Module 7 D4/D6) — REPLACES the former per-finding
-    `create()` loop. This is what actually gives cross-run dedup on re-scans:
-    a `Finding` whose `(repository_id, fingerprint)` was already seen has its
+    Persistence is ONE `bulk_upsert_findings(subject, scan_run_id, findings)`
+    call (Module 7 D4/D6) — REPLACES the former per-finding `create()` loop.
+    This is what actually gives cross-run dedup on re-scans: a `Finding`
+    whose `(subject, fingerprint)` was already seen has its
     `last_seen_scan_run_id` advanced (and `status` left untouched — suppressed
     stays suppressed) instead of inserting a duplicate row; a brand-new
     fingerprint inserts with `first_seen_scan_run_id == last_seen_scan_run_id
     == scan_run_id`.
+
+    `repository_id` is always wrapped as a `ScanSubject` — this worker path
+    only ever completes repository-subject scans; target-subject dispatch is
+    dast-scanner PR7's job, not this one.
     """
     scan_task_repo = SqlAlchemyScanTaskRepository(session)
     scan_run_repo = SqlAlchemyScanRunRepository(session)
@@ -390,7 +395,8 @@ async def _complete_scan(
         return False, 0.0
 
     await scan_run_repo.update_commit_sha(scan_run_id, head_sha)
-    await finding_repo.bulk_upsert_findings(repository_id, scan_run_id, findings)
+    subject = ScanSubject(ScanSubjectKind.REPOSITORY, repository_id)
+    await finding_repo.bulk_upsert_findings(subject, scan_run_id, findings)
 
     completed_at = datetime.now(UTC).replace(tzinfo=None)
     await scan_task_repo.update_status(

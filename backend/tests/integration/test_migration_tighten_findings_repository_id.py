@@ -1,10 +1,16 @@
 """Alembic migration round-trip for tightening `findings.repository_id` to
 `NOT NULL` (Module 7 PR3, task 4.11) against a live Postgres.
 
-Spec scenario: `upgrade head` (through `072bb3e01833`) leaves
-`repository_id` as `NOT NULL`; `first_seen_scan_run_id`/`last_seen_scan_run_id`
-are unaffected (still nullable — `ON DELETE SET NULL`). `downgrade -1`
-restores `repository_id` to nullable exactly as PR2's migration left it.
+Spec scenario: upgrading to `072bb3e01833` leaves `repository_id` as
+`NOT NULL`; `first_seen_scan_run_id`/`last_seen_scan_run_id` are unaffected
+(still nullable — `ON DELETE SET NULL`). `downgrade -1` restores
+`repository_id` to nullable exactly as PR2's migration left it.
+
+Targets `072bb3e01833` explicitly rather than `head` (same fix as
+`test_migration_add_repository_id_scan_run_tracking.py`) — dast-scanner
+design D1/D2 (`5e9b7a1c2d3e`) intentionally loosens `repository_id` back to
+nullable at head to admit target-subject rows, so this migration's own
+NOT NULL invariant only holds at its own revision, not at head anymore.
 """
 
 from __future__ import annotations
@@ -51,8 +57,8 @@ async def _findings_columns() -> dict[str, dict[str, object]]:
         await engine.dispose()
 
 
-def test_upgrade_head_tightens_repository_id_to_not_null(db_env: None) -> None:
-    _run_alembic("upgrade", "head")
+def test_upgrade_to_this_revision_tightens_repository_id_to_not_null(db_env: None) -> None:
+    _run_alembic("upgrade", "072bb3e01833")
     try:
         columns = asyncio.run(_findings_columns())
 

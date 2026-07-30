@@ -13,6 +13,7 @@ from datetime import datetime
 
 from orchestrator.domain.entities.finding import Finding
 from orchestrator.domain.value_objects.enums import FindingSeverity, FindingStatus, ScannerType
+from orchestrator.domain.value_objects.scan_subject import ScanSubject
 
 
 @dataclass(frozen=True, slots=True)
@@ -76,12 +77,13 @@ class FindingPort(ABC):
 
     @abstractmethod
     async def bulk_upsert_findings(
-        self, repository_id: uuid.UUID, scan_run_id: uuid.UUID, findings: list[Finding]
+        self, subject: ScanSubject, scan_run_id: uuid.UUID, findings: list[Finding]
     ) -> None:
         """DB-atomically insert-or-update `findings` for one scan pass.
 
-        Dedup key is `(repository_id, fingerprint)` (Module 7 D4). On INSERT
-        (no existing row for that key): stamps `repository_id` and
+        Dedup key is `(subject, fingerprint)` (Module 7 D4; dast-scanner
+        design D2 made the subject polymorphic). On INSERT (no existing row
+        for that key): stamps `subject`'s id on its column and
         `first_seen_scan_run_id = last_seen_scan_run_id = scan_run_id`. On
         CONFLICT (an existing row already has that key): advances ONLY
         `last_seen_scan_run_id` (and `updated_at`) — every other field,
@@ -89,10 +91,14 @@ class FindingPort(ABC):
         suppressed across re-scans.
 
         MUST be race-safe under concurrent calls for the same
-        `(repository_id, fingerprint)` — implementations MUST use a
-        DB-atomic upsert (e.g. `INSERT ... ON CONFLICT ... DO UPDATE`), never
-        a read-then-write check (TOCTOU race under concurrent same-repo
-        scans).
+        `(subject, fingerprint)` — implementations MUST use a DB-atomic
+        upsert (e.g. `INSERT ... ON CONFLICT ... DO UPDATE`), never a
+        read-then-write check (TOCTOU race under concurrent same-subject
+        scans). MUST conflict against the partial unique index matching
+        `subject.kind` (`uq_findings_repository_fingerprint` /
+        `uq_findings_scan_target_fingerprint`), never a single shared index —
+        NULL is distinct in Postgres, so the wrong index would silently never
+        dedup the other subject kind.
         """
 
     @abstractmethod

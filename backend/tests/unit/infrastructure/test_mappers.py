@@ -171,6 +171,15 @@ def test_scan_run_round_trip_with_no_triggered_by_user_id() -> None:
     assert round_tripped.triggered_by_user_id is None
 
 
+def test_scan_run_round_trip_with_target_subject() -> None:
+    target_id = uuid.uuid4()
+    entity = ScanRun(
+        id=uuid.uuid4(), repository_id=None, scan_target_id=target_id,
+        status=ScanRunStatus.PENDING, trigger="manual", commit_sha=None, ref=None, created_at=_NOW,
+    )
+    assert scan_run_to_entity(scan_run_to_model(entity)) == entity
+
+
 def test_scan_task_round_trip() -> None:
     entity = ScanTask(
         id=uuid.uuid4(),
@@ -237,6 +246,16 @@ def test_finding_round_trip_with_null_repository_and_scan_run_tracking() -> None
     assert round_tripped.repository_id is None
     assert round_tripped.first_seen_scan_run_id is None
     assert round_tripped.last_seen_scan_run_id is None
+
+
+def test_finding_round_trip_with_target_subject() -> None:
+    target_id = uuid.uuid4()
+    entity = Finding(
+        id=uuid.uuid4(), scan_task_id=uuid.uuid4(), severity=FindingSeverity.HIGH,
+        rule_id="rule", title="target", fingerprint="target-fp", created_at=_NOW, updated_at=_NOW,
+        repository_id=None, scan_target_id=target_id,
+    )
+    assert finding_to_entity(finding_to_model(entity)) == entity
 
 
 def test_user_round_trip() -> None:

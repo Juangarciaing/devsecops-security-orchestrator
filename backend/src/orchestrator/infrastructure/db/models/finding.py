@@ -1,26 +1,27 @@
 """`FindingModel` ORM mapping.
 
 Mirrors `domain.entities.finding.Finding`. Belongs to one `ScanTaskModel` via
-`scan_task_id`, `ON DELETE CASCADE`. Also carries a denormalized
-`repository_id` (`ON DELETE CASCADE`) so dedup can be scoped per-repository
-(`UNIQUE (repository_id, fingerprint)`) instead of per-scan-task.
-`first_seen_scan_run_id`/`last_seen_scan_run_id` track which `ScanRun`
-first/most-recently observed this fingerprint (`ON DELETE SET NULL`).
+`scan_task_id`, `ON DELETE CASCADE`. Also carries a denormalized polymorphic
+subject pair, `repository_id`/`scan_target_id` (both `ON DELETE CASCADE`,
+exactly one non-null — dast-scanner design D1/D2), so dedup can be scoped
+per-subject instead of per-scan-task. `first_seen_scan_run_id`/
+`last_seen_scan_run_id` track which `ScanRun` first/most-recently observed
+this fingerprint (`ON DELETE SET NULL`).
 
-`repository_id` is `nullable=False` (Module 7 PR3, task 4.11 — tightened from
-PR2's temporary `nullable=True`): `bulk_upsert_findings` (`FindingPort`,
-`SqlAlchemyFindingRepository`) is now the write path and always stamps it on
-every insert, so the column-level guarantee finally matches design D3's
-literal wording. See `alembic/versions/072bb3e01833_tighten_findings_repository_id_to_not_.py`
-for the tightening migration (safe: PR2's own migration already backfills
-`repository_id` for any pre-existing rows, and the `findings` table carries
-no production data).
+`repository_id`/`scan_target_id` are both `nullable=True` (dast-scanner
+design D1/D2 — `repository_id` was briefly tightened to `nullable=False` in
+Module 7 PR3, then loosened again here to admit target-subject rows).
+Because Postgres treats NULL as distinct in a plain `UNIQUE` constraint, a
+single `UNIQUE (repository_id, fingerprint)` would never dedup a
+target-subject row. Dedup is instead two partial unique indexes, each scoped
+to its own non-null subject column — see `__table_args__` below.
+`bulk_upsert_findings` (`FindingPort`, `SqlAlchemyFindingRepository`) selects
+which index to conflict against based on the write's `ScanSubject.kind`.
 
 `first_seen_scan_run_id`/`last_seen_scan_run_id` stay `nullable=True` — a
 `NOT NULL` column combined with `ON DELETE SET NULL` would raise an
 `IntegrityError` the moment a referenced `ScanRun` is deleted (e.g. via the
 `code_repositories -> scan_runs` cascade in `test_cascade_delete.py`).
-`UNIQUE (repository_id, fingerprint)` is unaffected by any of this.
 
 `raw_evidence` is `JSONB` (Postgres) — falls back to generic `JSON` on
 SQLite so unit tests can exercise `Base.metadata.create_all` without a live DB.
@@ -32,7 +33,7 @@ import uuid
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import JSON, ForeignKey, String, Text, UniqueConstraint, func
+from sqlalchemy import JSON, ForeignKey, Index, String, Text, func, text
 from sqlalchemy import Enum as SAEnum
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
@@ -45,14 +46,36 @@ class FindingModel(Base):
     """ORM mapping for the `findings` table."""
 
     __tablename__ = "findings"
-    __table_args__ = (UniqueConstraint("repository_id", "fingerprint"),)
+    # Dedup key is polymorphic (design D2): `repository_id`/`scan_target_id`
+    # are both nullable, so a plain `UniqueConstraint` would treat NULLs as
+    # distinct and never dedup a target-subject row. Two partial unique
+    # indexes, each scoped to its own non-null subject column, replace it.
+    __table_args__ = (
+        Index(
+            "uq_findings_repository_fingerprint",
+            "repository_id",
+            "fingerprint",
+            unique=True,
+            postgresql_where=text("repository_id IS NOT NULL"),
+        ),
+        Index(
+            "uq_findings_scan_target_fingerprint",
+            "scan_target_id",
+            "fingerprint",
+            unique=True,
+            postgresql_where=text("scan_target_id IS NOT NULL"),
+        ),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
     scan_task_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("scan_tasks.id", ondelete="CASCADE"), nullable=False
     )
-    repository_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("code_repositories.id", ondelete="CASCADE"), nullable=False, index=True
+    repository_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("code_repositories.id", ondelete="CASCADE"), nullable=True, index=True
+    )
+    scan_target_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("scan_targets.id", ondelete="CASCADE"), nullable=True, index=True
     )
     first_seen_scan_run_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("scan_runs.id", ondelete="SET NULL"), nullable=True

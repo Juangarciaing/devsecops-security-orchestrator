@@ -27,6 +27,7 @@ from orchestrator.domain.value_objects.enums import (
     ScanTaskStatus,
     UserRole,
 )
+from orchestrator.domain.value_objects.scan_subject import ScanSubject, ScanSubjectKind
 from orchestrator.infrastructure.config.settings import get_settings
 from orchestrator.infrastructure.db.engine import resolve_database_url
 from orchestrator.infrastructure.db.repositories.code_repository_repository import (
@@ -184,7 +185,9 @@ async def _seed_completed_scan_with_findings(
         ]
         async with sessionmaker() as session:
             finding_repo = SqlAlchemyFindingRepository(session)
-            await finding_repo.bulk_upsert_findings(repository_id, scan_run_id, findings)
+            await finding_repo.bulk_upsert_findings(
+                ScanSubject(ScanSubjectKind.REPOSITORY, repository_id), scan_run_id, findings
+            )
             await session.commit()
 
     return scan_run_id
@@ -913,7 +916,9 @@ async def _seed_completed_run_with_fingerprinted_findings(
         ]
         async with sessionmaker() as session:
             finding_repo = SqlAlchemyFindingRepository(session)
-            await finding_repo.bulk_upsert_findings(repository_id, scan_run_id, findings)
+            await finding_repo.bulk_upsert_findings(
+                ScanSubject(ScanSubjectKind.REPOSITORY, repository_id), scan_run_id, findings
+            )
             await session.commit()
 
     return scan_run_id

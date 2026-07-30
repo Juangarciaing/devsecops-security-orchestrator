@@ -34,6 +34,7 @@ from orchestrator.domain.value_objects.enums import (
     ScanRunStatus,
     ScanTaskStatus,
 )
+from orchestrator.domain.value_objects.scan_subject import ScanSubject, ScanSubjectKind
 from orchestrator.infrastructure.db.engine import resolve_database_url
 from orchestrator.infrastructure.db.models.finding import FindingModel
 from orchestrator.infrastructure.db.repositories.code_repository_repository import (
@@ -152,7 +153,9 @@ async def _bulk_upsert_first_scan_inserts_and_stamps_first_and_last_seen() -> No
 
         async with sessionmaker() as session:
             finding_repo = SqlAlchemyFindingRepository(session)
-            await finding_repo.bulk_upsert_findings(repository_id, scan_run_id, [finding])
+            await finding_repo.bulk_upsert_findings(
+                ScanSubject(ScanSubjectKind.REPOSITORY, repository_id), scan_run_id, [finding]
+            )
             await session.commit()
 
         async with sessionmaker() as session:
@@ -203,7 +206,9 @@ async def _bulk_upsert_reseen_fingerprint_advances_last_seen_and_preserves_statu
 
         async with sessionmaker() as session:
             finding_repo = SqlAlchemyFindingRepository(session)
-            await finding_repo.bulk_upsert_findings(repository_id, run1_id, [finding_v1])
+            await finding_repo.bulk_upsert_findings(
+                ScanSubject(ScanSubjectKind.REPOSITORY, repository_id), run1_id, [finding_v1]
+            )
             await session.commit()
 
         # Suppress the finding between the two scans — a re-scan must not
@@ -226,7 +231,9 @@ async def _bulk_upsert_reseen_fingerprint_advances_last_seen_and_preserves_statu
         finding_v2 = _make_finding(task2_id, fingerprint=shared_fp)  # status defaults to OPEN
         async with sessionmaker() as session:
             finding_repo = SqlAlchemyFindingRepository(session)
-            await finding_repo.bulk_upsert_findings(repository_id, run2_id, [finding_v2])
+            await finding_repo.bulk_upsert_findings(
+                ScanSubject(ScanSubjectKind.REPOSITORY, repository_id), run2_id, [finding_v2]
+            )
             await session.commit()
 
         async with sessionmaker() as session:
@@ -278,7 +285,9 @@ async def _bulk_upsert_new_fingerprint_on_second_scan_adds_exactly_one_row() -> 
         async with sessionmaker() as session:
             finding_repo = SqlAlchemyFindingRepository(session)
             await finding_repo.bulk_upsert_findings(
-                repository_id, run1_id, [_make_finding(task1_id, fingerprint=fp_a)]
+                ScanSubject(ScanSubjectKind.REPOSITORY, repository_id),
+                run1_id,
+                [_make_finding(task1_id, fingerprint=fp_a)],
             )
             await session.commit()
 
@@ -286,7 +295,7 @@ async def _bulk_upsert_new_fingerprint_on_second_scan_adds_exactly_one_row() -> 
         async with sessionmaker() as session:
             finding_repo = SqlAlchemyFindingRepository(session)
             await finding_repo.bulk_upsert_findings(
-                repository_id,
+                ScanSubject(ScanSubjectKind.REPOSITORY, repository_id),
                 run2_id,
                 [
                     _make_finding(task2_id, fingerprint=fp_a),
@@ -347,7 +356,9 @@ async def _bulk_upsert_concurrent_calls_same_fingerprint_are_race_safe() -> None
             # the DB level, not serialized on one shared connection.
             async with sessionmaker() as session:
                 finding_repo = SqlAlchemyFindingRepository(session)
-                await finding_repo.bulk_upsert_findings(repository_id, scan_run_id, [finding])
+                await finding_repo.bulk_upsert_findings(
+                    ScanSubject(ScanSubjectKind.REPOSITORY, repository_id), scan_run_id, [finding]
+                )
                 await session.commit()
 
         # Real concurrency: both INSERT ... ON CONFLICT statements race
@@ -407,7 +418,9 @@ async def _update_status_persists_through_the_live_orm_path_without_missing_gree
 
         async with sessionmaker() as session:
             finding_repo = SqlAlchemyFindingRepository(session)
-            await finding_repo.bulk_upsert_findings(repository_id, scan_run_id, [finding])
+            await finding_repo.bulk_upsert_findings(
+                ScanSubject(ScanSubjectKind.REPOSITORY, repository_id), scan_run_id, [finding]
+            )
             await session.commit()
 
         async with sessionmaker() as session:
@@ -508,8 +521,12 @@ async def _list_by_last_seen_scan_run_returns_only_members_paginated() -> None:
 
         async with sessionmaker() as session:
             finding_repo = SqlAlchemyFindingRepository(session)
-            await finding_repo.bulk_upsert_findings(repository_id, run1_id, run1_findings)
-            await finding_repo.bulk_upsert_findings(repository_id, run2_id, run2_findings)
+            await finding_repo.bulk_upsert_findings(
+                ScanSubject(ScanSubjectKind.REPOSITORY, repository_id), run1_id, run1_findings
+            )
+            await finding_repo.bulk_upsert_findings(
+                ScanSubject(ScanSubjectKind.REPOSITORY, repository_id), run2_id, run2_findings
+            )
             await session.commit()
 
         async with sessionmaker() as session:
@@ -586,7 +603,9 @@ async def _list_findings_combined_filters_and_scanner_type_join() -> None:
         async with sessionmaker() as session:
             finding_repo = SqlAlchemyFindingRepository(session)
             await finding_repo.bulk_upsert_findings(
-                repository_id, run_id, [secrets_finding, sast_finding]
+                ScanSubject(ScanSubjectKind.REPOSITORY, repository_id),
+                run_id,
+                [secrets_finding, sast_finding],
             )
             await session.commit()
 
@@ -685,7 +704,9 @@ async def _trend_counts_three_runs_second_introduces_two_high_findings() -> None
         ]
         async with sessionmaker() as session:
             finding_repo = SqlAlchemyFindingRepository(session)
-            await finding_repo.bulk_upsert_findings(repository_id, run2_id, findings)
+            await finding_repo.bulk_upsert_findings(
+                ScanSubject(ScanSubjectKind.REPOSITORY, repository_id), run2_id, findings
+            )
             await session.commit()
 
         async with sessionmaker() as session:
@@ -763,7 +784,7 @@ async def _trend_counts_reappeared_finding_stays_attributed_to_its_first_seen_ru
         async with sessionmaker() as session:
             finding_repo = SqlAlchemyFindingRepository(session)
             await finding_repo.bulk_upsert_findings(
-                repository_id,
+                ScanSubject(ScanSubjectKind.REPOSITORY, repository_id),
                 run1_id,
                 [_make_finding(task1_id, fingerprint=shared_fp, severity=FindingSeverity.CRITICAL)],
             )
@@ -775,7 +796,7 @@ async def _trend_counts_reappeared_finding_stays_attributed_to_its_first_seen_ru
         async with sessionmaker() as session:
             finding_repo = SqlAlchemyFindingRepository(session)
             await finding_repo.bulk_upsert_findings(
-                repository_id,
+                ScanSubject(ScanSubjectKind.REPOSITORY, repository_id),
                 run3_id,
                 [_make_finding(task3_id, fingerprint=shared_fp, severity=FindingSeverity.CRITICAL)],
             )
@@ -842,7 +863,7 @@ async def _trend_counts_scanner_type_filter_narrows_introduced_counts() -> None:
         async with sessionmaker() as session:
             finding_repo = SqlAlchemyFindingRepository(session)
             await finding_repo.bulk_upsert_findings(
-                repository_id,
+                ScanSubject(ScanSubjectKind.REPOSITORY, repository_id),
                 run_id,
                 [
                     _make_finding(
@@ -899,7 +920,7 @@ async def _trend_counts_scanner_type_filter_still_emits_empty_bucket_when_no_mat
         async with sessionmaker() as session:
             finding_repo = SqlAlchemyFindingRepository(session)
             await finding_repo.bulk_upsert_findings(
-                repository_id,
+                ScanSubject(ScanSubjectKind.REPOSITORY, repository_id),
                 run_id,
                 [_make_finding(secrets_task_id, fingerprint="fp-secrets-only")],
             )
@@ -949,7 +970,7 @@ async def _trend_counts_limit_caps_distinct_scan_runs_not_grouped_rows() -> None
         async with sessionmaker() as session:
             finding_repo = SqlAlchemyFindingRepository(session)
             await finding_repo.bulk_upsert_findings(
-                repository_id,
+                ScanSubject(ScanSubjectKind.REPOSITORY, repository_id),
                 run1_id,
                 [
                     _make_finding(task1_id, fingerprint="fp-high", severity=FindingSeverity.HIGH),
@@ -997,7 +1018,7 @@ async def _open_counts_by_severity_returns_exact_present_moment_snapshot() -> No
         async with sessionmaker() as session:
             finding_repo = SqlAlchemyFindingRepository(session)
             await finding_repo.bulk_upsert_findings(
-                repository_id,
+                ScanSubject(ScanSubjectKind.REPOSITORY, repository_id),
                 run_id,
                 [
                     _make_finding(
@@ -1079,7 +1100,7 @@ async def _diff_between_runs_partitions_added_resolved_and_carried_exactly() -> 
         async with sessionmaker() as session:
             finding_repo = SqlAlchemyFindingRepository(session)
             await finding_repo.bulk_upsert_findings(
-                repository_id,
+                ScanSubject(ScanSubjectKind.REPOSITORY, repository_id),
                 baseline_id,
                 [
                     _make_finding(baseline_task_id, fingerprint="fp-resolved"),
@@ -1094,7 +1115,7 @@ async def _diff_between_runs_partitions_added_resolved_and_carried_exactly() -> 
         async with sessionmaker() as session:
             finding_repo = SqlAlchemyFindingRepository(session)
             await finding_repo.bulk_upsert_findings(
-                repository_id,
+                ScanSubject(ScanSubjectKind.REPOSITORY, repository_id),
                 latest_id,
                 [
                     _make_finding(latest_task_id, fingerprint="fp-carried"),
@@ -1155,7 +1176,7 @@ async def _diff_between_runs_reobserved_finding_lands_in_carried_never_added() -
         async with sessionmaker() as session:
             finding_repo = SqlAlchemyFindingRepository(session)
             await finding_repo.bulk_upsert_findings(
-                repository_id,
+                ScanSubject(ScanSubjectKind.REPOSITORY, repository_id),
                 baseline_id,
                 [_make_finding(baseline_task_id, fingerprint="fp-reobserved")],
             )
@@ -1164,7 +1185,7 @@ async def _diff_between_runs_reobserved_finding_lands_in_carried_never_added() -
         async with sessionmaker() as session:
             finding_repo = SqlAlchemyFindingRepository(session)
             await finding_repo.bulk_upsert_findings(
-                repository_id,
+                ScanSubject(ScanSubjectKind.REPOSITORY, repository_id),
                 latest_id,
                 [_make_finding(latest_task_id, fingerprint="fp-reobserved")],
             )
@@ -1212,7 +1233,7 @@ async def _diff_between_runs_latest_zero_findings_added_and_carried_empty_resolv
         async with sessionmaker() as session:
             finding_repo = SqlAlchemyFindingRepository(session)
             await finding_repo.bulk_upsert_findings(
-                repository_id,
+                ScanSubject(ScanSubjectKind.REPOSITORY, repository_id),
                 baseline_id,
                 [
                     _make_finding(baseline_task_id, fingerprint="fp-baseline-1"),
@@ -1268,7 +1289,7 @@ async def _diff_between_runs_excludes_finding_resolved_before_baseline() -> None
         async with sessionmaker() as session:
             finding_repo = SqlAlchemyFindingRepository(session)
             await finding_repo.bulk_upsert_findings(
-                repository_id,
+                ScanSubject(ScanSubjectKind.REPOSITORY, repository_id),
                 ancient_id,
                 [_make_finding(ancient_task_id, fingerprint="fp-long-gone")],
             )
