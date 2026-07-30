@@ -16,8 +16,9 @@ open).
 - **Auth & RBAC** — JWT (HS256) login, `admin`/`member` roles, admin-only
   user provisioning, reusable FastAPI DI guards.
 - **Repository management** — register/list/update/soft-delete GitHub repos;
-  identity is `(provider, owner, name)`, credentials are an opaque pointer
-  (no secrets manager yet — public repos only for now).
+  identity is `(provider, owner, name)`. A repository can optionally carry an
+  encrypted personal-access-token credential for private scanning (see
+  "Private-repository credentials" below).
 - **Real scan execution** — four scanners run in hardened, ephemeral sibling
   containers via a shared `ScannerAdapterPort` + registry (`ContainerRunnerPort`
   behind a bounded Docker-socket boundary — the worker holds the socket,
@@ -70,13 +71,24 @@ open).
   selecting it fails worker startup outright, since no adapter is wired to a
   real cluster yet — Docker remains the sole active execution path, unchanged
   (see "Kubernetes Jobs execution" below).
+- **Private-repository credentials (secrets manager)** — a repository's
+  GitHub personal access token is envelope-encrypted at rest (Fernet, behind
+  a framework-free `CredentialStorePort`) and decrypted once per scan inside
+  the worker; it is never returned in an API response, log line, span
+  attribute, or container argv/`docker inspect` output. Nullable and
+  fail-closed: the `credential_encryption_key` setting is optional — an
+  unset key leaves public-repo scanning completely unaffected and rejects
+  any attempt to store a credential with a clear error. Every decrypt-and-use
+  appends one row to an append-only credential-access audit log (repository,
+  actor, outcome, timestamp — never the secret). See "Private-repository
+  credentials" below.
 
 Not yet built: a DAST scanner slot (TruffleHog and/or a URL-target scanner
 still under consideration), an *outbound* GitHub Checks API integration
-(posting scan results back to a PR/commit as a native GitHub check — blocked
-on the secrets manager below, since it needs GitHub App/installation-token
-auth this project doesn't have; the *internal* policy-gate equivalent is
-built, see above), a proper secrets manager for private-repo credentials, and
+(posting scan results back to a PR/commit as a native GitHub check — still
+blocked on GitHub App/installation-token auth this project doesn't have,
+which is a separate concern from the personal-access-token secrets manager
+above; the *internal* policy-gate equivalent is built, see above), and
 real-time push (still polling). The Kubernetes Jobs backend (Module 13c) is
 built and tested but not yet enabled in production — see "Kubernetes Jobs
 execution" below and `## Roadmap`.
@@ -229,6 +241,41 @@ itself is idempotent and tested).
 `deploy/kubernetes/` holds the Kustomize base and an example overlay; render
 it locally with `kustomize build deploy/kubernetes/overlays/example` — no
 cluster access required, it's static rendering.
+
+### Private-repository credentials
+
+Cross-cutting addition delivered after the original 13-module plan (not a
+"Module 14" — it touches `domain/`, `application/`, `infrastructure/`,
+`workers/`, the DB schema, and the frontend, the same way Modules 13a-c did).
+A `CodeRepository` can now carry one GitHub personal access token so private
+repos can be scanned end to end.
+
+**Setup.** Set `credential_encryption_key` in `backend/.env` to a urlsafe-base64,
+32-byte Fernet key:
+
+```bash
+python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+```
+
+This setting is **nullable and fail-closed**: leave it unset and every
+public-repo behavior stays byte-for-byte unchanged (no credential can ever be
+stored). Once set, registering or updating a repository with a
+`credential` field encrypts it (Fernet, envelope-style) before it ever
+reaches the database; every read/list response exposes only
+`has_credential`/`credential_kind`, never the plaintext value. Only GitHub
+repositories may carry a credential — a credential submitted for any other
+provider is rejected before encryption.
+
+**Delivery.** The token reaches the checkout container as a git-credential-store
+file streamed over the Docker API (`put_archive`), never as `clone_url` argv,
+an environment variable, or a `docker inspect`-visible value; the file is
+shredded before the workspace is ever handed to a scanner container.
+
+**Audit log.** Every time a stored credential is decrypted for a scan, exactly
+one append-only row is written (repository, actor — `"webhook"` or the
+triggering user — outcome, timestamp). A decrypt failure (wrong/rotated key)
+fails that one scan with a credential-free error and leaves the repository
+`is_active=true`; it is never auto-deactivated.
 
 ## Tests
 
