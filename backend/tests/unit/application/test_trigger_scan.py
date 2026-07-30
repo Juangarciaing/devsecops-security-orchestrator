@@ -262,6 +262,52 @@ def test_trigger_scan_propagates_an_explicit_webhook_trigger() -> None:
     assert run.trigger == "webhook"
 
 
+def test_trigger_scan_stores_triggered_by_user_id_for_manual_trigger() -> None:
+    repository_port = _FakeCodeRepositoryRepository()
+    repository = _make_repository()
+    repository_port.seed(repository)
+    scan_run_port = _FakeScanRunRepository()
+    scan_task_port = _FakeScanTaskRepository()
+    user_id = uuid.uuid4()
+
+    run, created = asyncio.run(
+        trigger_scan(
+            repository_port,
+            scan_run_port,
+            scan_task_port,
+            repository.id,
+            commit_sha="abc123",
+            trigger="manual",
+            triggered_by_user_id=user_id,
+        )
+    )
+
+    assert created is True
+    assert run.triggered_by_user_id == user_id
+
+
+def test_trigger_scan_defaults_triggered_by_user_id_to_none_for_webhook() -> None:
+    repository_port = _FakeCodeRepositoryRepository()
+    repository = _make_repository()
+    repository_port.seed(repository)
+    scan_run_port = _FakeScanRunRepository()
+    scan_task_port = _FakeScanTaskRepository()
+
+    run, created = asyncio.run(
+        trigger_scan(
+            repository_port,
+            scan_run_port,
+            scan_task_port,
+            repository.id,
+            commit_sha="abc123",
+            trigger="webhook",
+        )
+    )
+
+    assert created is True
+    assert run.triggered_by_user_id is None
+
+
 def test_trigger_scan_returns_existing_run_when_active_task_exists() -> None:
     repository_port = _FakeCodeRepositoryRepository()
     repository = _make_repository()

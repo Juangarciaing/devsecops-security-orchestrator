@@ -281,6 +281,37 @@ def test_trigger_scan_creates_run_returns_202_and_enqueues(migrated_schema: None
     uuid.UUID(spy.calls[0])  # a valid scan_task_id was passed
 
 
+def test_trigger_scan_persists_authenticated_user_as_triggered_by_user_id(
+    migrated_schema: None,
+) -> None:
+    """secrets-manager PR6/D8: a manually triggered scan records the
+    authenticated principal on `ScanRun.triggered_by_user_id` — the worker's
+    credential-access audit trail (PR6) attributes a decrypt-and-use to this
+    user, not just the literal `"manual"`."""
+
+    async def scenario(
+        client: httpx.AsyncClient, sessionmaker: async_sessionmaker[AsyncSession]
+    ) -> None:
+        member = await _seed_user(sessionmaker, "member-trigger-actor@example.com", UserRole.MEMBER)
+        repo = await _seed_repository(sessionmaker, "acme-trigger-actor", "widgets-trigger-actor")
+
+        response = await client.post(
+            f"/api/v1/repositories/{repo.id}/scans",
+            json={"commit_sha": "abc123"},
+            headers=_auth_header(member),
+        )
+
+        assert response.status_code == 202
+        run_id = uuid.UUID(response.json()["id"])
+
+        async with sessionmaker() as session:
+            run = await SqlAlchemyScanRunRepository(session).get_by_id(run_id)
+            assert run is not None
+            assert run.triggered_by_user_id == member.id
+
+    asyncio.run(_run_with_client(scenario, _DelaySpy()))
+
+
 def test_trigger_scan_admin_role_is_also_allowed(migrated_schema: None) -> None:
     async def scenario(
         client: httpx.AsyncClient, sessionmaker: async_sessionmaker[AsyncSession]

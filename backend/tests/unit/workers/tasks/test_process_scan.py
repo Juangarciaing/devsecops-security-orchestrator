@@ -50,7 +50,7 @@ def _fake_run_async[T](coro_factory: Callable[[AsyncSession | None], Awaitable[T
 
 
 async def _fake_load_and_start(
-    _session: AsyncSession, _scan_task_id: uuid.UUID
+    _session: AsyncSession, _scan_task_id: uuid.UUID, _settings: object
 ) -> tuple[str, str, uuid.UUID, uuid.UUID, ScannerType]:
     return _CLONE_URL, _REF, _SCAN_RUN_ID, _REPOSITORY_ID, ScannerType.SECRETS
 
@@ -63,6 +63,7 @@ def _fake_checkout_and_scan(
     _runner: object,
     _docker_client: object,
     _settings: object,
+    _credential: object = None,
 ) -> tuple[str, list[Finding]]:
     return _HEAD_SHA, []
 
@@ -128,7 +129,41 @@ def test_checkout_and_scan_uses_the_production_execution_factory(
     )
 
     assert (head_sha, findings) == (_HEAD_SHA, [])
-    execution.execute.assert_called_once_with(_CLONE_URL, _REF, _TASK_ID, ScannerType.SECRETS)
+    execution.execute.assert_called_once_with(
+        _CLONE_URL, _REF, _TASK_ID, ScannerType.SECRETS, credential=None
+    )
+
+
+def test_checkout_and_scan_threads_a_resolved_credential_into_execute(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """secrets-manager PR6: the `Secret` resolved by `_load_and_start` is
+    threaded straight through `_checkout_and_scan` into
+    `ScanExecutionPort.execute(..., credential=...)` (PR5's additive param) —
+    NEVER dropped on the floor."""
+    from orchestrator.domain.ports.scan_execution_port import ScanExecutionResult
+    from orchestrator.domain.value_objects.secret import Secret
+    from orchestrator.workers.tasks import process_scan
+
+    execution = MagicMock()
+    execution.execute.return_value = ScanExecutionResult(head_sha=_HEAD_SHA, findings=[])
+    monkeypatch.setattr(process_scan, "create_scan_execution", lambda *_args: execution)
+    secret = Secret("ghp_supersecrettoken")
+
+    process_scan._checkout_and_scan(
+        _CLONE_URL,
+        _REF,
+        _TASK_ID,
+        ScannerType.SECRETS,
+        MagicMock(),
+        MagicMock(),
+        MagicMock(),
+        secret,
+    )
+
+    execution.execute.assert_called_once_with(
+        _CLONE_URL, _REF, _TASK_ID, ScannerType.SECRETS, credential=secret
+    )
 
 
 def test_process_scan_task_emits_a_write_back_span_with_db_attributes(
@@ -231,3 +266,278 @@ def test_checkout_and_scan_container_and_checkout_spans_nest_under_the_task_span
     assert checkout_span.context is not None
     assert checkout_span.context.span_id in parent_ids
     assert task_span_id in parent_ids
+
+
+# ---------------------------------------------------------------------------
+# `_resolve_credential` — unseal + audit classification (secrets-manager
+# PR6, design D9). Unit-level: operates on fake/real ports directly, no DB
+# needed — `test_process_scan_credentials.py` (integration) proves the same
+# logic end to end through the real `_load_and_start`/live Postgres.
+# ---------------------------------------------------------------------------
+
+
+def _make_settings(*, credential_encryption_key: str | None) -> object:
+    from orchestrator.infrastructure.config.settings import Settings
+
+    return Settings(
+        _env_file=None,
+        database_url="postgresql://x:x@localhost/x",
+        redis_url="redis://localhost:6379/0",
+        secret_key="s",
+        jwt_secret_key="j",
+        credential_encryption_key=credential_encryption_key,
+    )
+
+
+def _make_credentialed_repository(**overrides: object) -> object:
+    from datetime import UTC, datetime
+
+    from orchestrator.domain.entities.code_repository import CodeRepository
+    from orchestrator.domain.value_objects.enums import CredentialKind, RepositoryProvider
+
+    defaults: dict[str, object] = {
+        "id": uuid.uuid4(),
+        "provider": RepositoryProvider.GITHUB,
+        "owner": "acme",
+        "name": "widgets",
+        "clone_url": "https://github.com/acme/widgets.git",
+        "default_branch": "main",
+        "credential_kind": CredentialKind.PERSONAL_ACCESS_TOKEN,
+        "credential_ciphertext": "sealed-ciphertext",
+        "is_active": True,
+        "created_at": datetime.now(UTC).replace(tzinfo=None),
+        "updated_at": datetime.now(UTC).replace(tzinfo=None),
+    }
+    defaults.update(overrides)
+    return CodeRepository(**defaults)  # type: ignore[arg-type]
+
+
+class _FakeCredentialAccessLogPort:
+    """Records every `append()` call — no DB needed for this unit-level suite."""
+
+    def __init__(self) -> None:
+        self.entries: list[object] = []
+
+    async def append(self, entry: object) -> None:
+        self.entries.append(entry)
+
+
+def test_resolve_credential_returns_none_for_a_public_repository_unaudited() -> None:
+    """Task 6.7/requirement 6: a public repo (`credential_ciphertext is
+    None`) never calls `unseal()` or appends an audit row — byte-for-byte
+    the same code path as before this PR."""
+    from orchestrator.domain.entities.code_repository import CodeRepository
+    from orchestrator.domain.value_objects.enums import RepositoryProvider
+    from orchestrator.workers.tasks.process_scan import _resolve_credential
+
+    repository = CodeRepository(
+        id=uuid.uuid4(),
+        provider=RepositoryProvider.GITHUB,
+        owner="acme",
+        name="widgets",
+        clone_url="https://github.com/acme/widgets.git",
+        default_branch="main",
+        credential_kind=None,
+        credential_ciphertext=None,
+        is_active=True,
+        created_at=None,  # type: ignore[arg-type]
+        updated_at=None,  # type: ignore[arg-type]
+    )
+    audit_log = _FakeCredentialAccessLogPort()
+
+    class _ExplodingCredentialStore:
+        def unseal(self, _sealed: object) -> object:
+            raise AssertionError("unseal() must never be called for a public repository")
+
+    secret = asyncio.run(
+        _resolve_credential(
+            audit_log,  # type: ignore[arg-type]
+            _ExplodingCredentialStore(),  # type: ignore[arg-type]
+            _make_settings(credential_encryption_key=None),  # type: ignore[arg-type]
+            repository,  # type: ignore[arg-type]
+            _TASK_ID,
+            actor="manual",
+            actor_user_id=None,
+        )
+    )
+
+    assert secret is None
+    assert audit_log.entries == []
+
+
+def test_resolve_credential_appends_used_and_returns_the_secret_on_success() -> None:
+    """Task 6.3: a credentialed repository unseals successfully -> exactly
+    one `CredentialAccessLog` row, `outcome=USED`."""
+    from cryptography.fernet import Fernet
+
+    from orchestrator.domain.value_objects.enums import CredentialAccessOutcome, CredentialKind
+    from orchestrator.infrastructure.security.credential_store import FernetCredentialStore
+    from orchestrator.workers.tasks.process_scan import _resolve_credential
+
+    key = Fernet.generate_key().decode("ascii")
+    store = FernetCredentialStore(encryption_key=key)
+    sealed = store.seal("ghp_supersecrettoken", CredentialKind.PERSONAL_ACCESS_TOKEN)
+    repository = _make_credentialed_repository(credential_ciphertext=sealed.ciphertext)
+    audit_log = _FakeCredentialAccessLogPort()
+
+    secret = asyncio.run(
+        _resolve_credential(
+            audit_log,  # type: ignore[arg-type]
+            store,  # type: ignore[arg-type]
+            _make_settings(credential_encryption_key=key),  # type: ignore[arg-type]
+            repository,  # type: ignore[arg-type]
+            _TASK_ID,
+            actor="manual",
+            actor_user_id=None,
+        )
+    )
+
+    assert secret is not None
+    assert secret.reveal() == "ghp_supersecrettoken"
+    assert len(audit_log.entries) == 1
+    assert audit_log.entries[0].outcome == CredentialAccessOutcome.USED  # type: ignore[attr-defined]
+
+
+def test_resolve_credential_threads_webhook_actor_with_no_user_id() -> None:
+    """Task 6.5/6.6: a webhook-triggered scan audits `actor="webhook"` with
+    no `actor_user_id`."""
+    from cryptography.fernet import Fernet
+
+    from orchestrator.domain.value_objects.enums import CredentialKind
+    from orchestrator.infrastructure.security.credential_store import FernetCredentialStore
+    from orchestrator.workers.tasks.process_scan import _resolve_credential
+
+    key = Fernet.generate_key().decode("ascii")
+    store = FernetCredentialStore(encryption_key=key)
+    sealed = store.seal("ghp_supersecrettoken", CredentialKind.PERSONAL_ACCESS_TOKEN)
+    repository = _make_credentialed_repository(credential_ciphertext=sealed.ciphertext)
+    audit_log = _FakeCredentialAccessLogPort()
+
+    asyncio.run(
+        _resolve_credential(
+            audit_log,  # type: ignore[arg-type]
+            store,  # type: ignore[arg-type]
+            _make_settings(credential_encryption_key=key),  # type: ignore[arg-type]
+            repository,  # type: ignore[arg-type]
+            _TASK_ID,
+            actor="webhook",
+            actor_user_id=None,
+        )
+    )
+
+    entry = audit_log.entries[0]
+    assert entry.actor == "webhook"  # type: ignore[attr-defined]
+    assert entry.actor_user_id is None  # type: ignore[attr-defined]
+
+
+def test_resolve_credential_threads_manual_actor_and_user_id() -> None:
+    """Task 6.5/6.6: a manually triggered scan audits `actor="manual"` with
+    the authenticated `triggered_by_user_id` threaded through as
+    `actor_user_id`."""
+    from cryptography.fernet import Fernet
+
+    from orchestrator.domain.value_objects.enums import CredentialKind
+    from orchestrator.infrastructure.security.credential_store import FernetCredentialStore
+    from orchestrator.workers.tasks.process_scan import _resolve_credential
+
+    key = Fernet.generate_key().decode("ascii")
+    store = FernetCredentialStore(encryption_key=key)
+    sealed = store.seal("ghp_supersecrettoken", CredentialKind.PERSONAL_ACCESS_TOKEN)
+    repository = _make_credentialed_repository(credential_ciphertext=sealed.ciphertext)
+    audit_log = _FakeCredentialAccessLogPort()
+    user_id = uuid.uuid4()
+
+    asyncio.run(
+        _resolve_credential(
+            audit_log,  # type: ignore[arg-type]
+            store,  # type: ignore[arg-type]
+            _make_settings(credential_encryption_key=key),  # type: ignore[arg-type]
+            repository,  # type: ignore[arg-type]
+            _TASK_ID,
+            actor="manual",
+            actor_user_id=user_id,
+        )
+    )
+
+    entry = audit_log.entries[0]
+    assert entry.actor == "manual"  # type: ignore[attr-defined]
+    assert entry.actor_user_id == user_id  # type: ignore[attr-defined]
+
+
+def test_resolve_credential_appends_decrypt_failed_and_raises_credential_free() -> None:
+    """Task 6.7: a wrong/rotated key raises `CredentialUnsealError` inside
+    the adapter -> `_resolve_credential` appends `outcome=DECRYPT_FAILED` and
+    raises `CredentialUnavailableError` with a message that never mentions
+    the ciphertext, the plaintext, or the key."""
+    from cryptography.fernet import Fernet
+
+    from orchestrator.domain.value_objects.enums import CredentialAccessOutcome, CredentialKind
+    from orchestrator.infrastructure.security.credential_store import FernetCredentialStore
+    from orchestrator.workers.tasks.process_scan import (
+        CredentialUnavailableError,
+        _resolve_credential,
+    )
+
+    sealing_key = Fernet.generate_key().decode("ascii")
+    sealing_store = FernetCredentialStore(encryption_key=sealing_key)
+    sealed = sealing_store.seal("ghp_supersecrettoken", CredentialKind.PERSONAL_ACCESS_TOKEN)
+    repository = _make_credentialed_repository(credential_ciphertext=sealed.ciphertext)
+    audit_log = _FakeCredentialAccessLogPort()
+
+    wrong_key = Fernet.generate_key().decode("ascii")
+    wrong_store = FernetCredentialStore(encryption_key=wrong_key)
+
+    with pytest.raises(CredentialUnavailableError) as exc_info:
+        asyncio.run(
+            _resolve_credential(
+                audit_log,  # type: ignore[arg-type]
+                wrong_store,  # type: ignore[arg-type]
+                _make_settings(credential_encryption_key=wrong_key),  # type: ignore[arg-type]
+                repository,  # type: ignore[arg-type]
+                _TASK_ID,
+                actor="manual",
+                actor_user_id=None,
+            )
+        )
+
+    assert "ghp_supersecrettoken" not in str(exc_info.value)
+    assert sealed.ciphertext not in str(exc_info.value)
+    assert len(audit_log.entries) == 1
+    assert audit_log.entries[0].outcome == CredentialAccessOutcome.DECRYPT_FAILED  # type: ignore[attr-defined]
+
+
+def test_resolve_credential_appends_key_unavailable_without_calling_unseal() -> None:
+    """Task 6.9: `Settings.credential_encryption_key` unset (but the
+    repository row is still sealed) is a DISTINCT outcome from a
+    wrong-key/corrupted decrypt failure — checked explicitly BEFORE
+    `unseal()` is ever called (there is only one `CredentialUnsealError`
+    type; the missing-key case cannot be told apart from the exception
+    alone), never crashes the worker process."""
+    from orchestrator.domain.value_objects.enums import CredentialAccessOutcome
+    from orchestrator.workers.tasks.process_scan import (
+        CredentialUnavailableError,
+        _resolve_credential,
+    )
+
+    repository = _make_credentialed_repository()
+    audit_log = _FakeCredentialAccessLogPort()
+
+    class _ExplodingCredentialStore:
+        def unseal(self, _sealed: object) -> object:
+            raise AssertionError("unseal() must not be called when the key is unavailable")
+
+    with pytest.raises(CredentialUnavailableError):
+        asyncio.run(
+            _resolve_credential(
+                audit_log,  # type: ignore[arg-type]
+                _ExplodingCredentialStore(),  # type: ignore[arg-type]
+                _make_settings(credential_encryption_key=None),  # type: ignore[arg-type]
+                repository,  # type: ignore[arg-type]
+                _TASK_ID,
+                actor="manual",
+                actor_user_id=None,
+            )
+        )
+
+    assert len(audit_log.entries) == 1
+    assert audit_log.entries[0].outcome == CredentialAccessOutcome.KEY_UNAVAILABLE  # type: ignore[attr-defined]

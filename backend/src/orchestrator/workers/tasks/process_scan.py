@@ -32,6 +32,23 @@ is sync, Module 6 D3) and runs OUTSIDE any async DB session/event loop —
   to the EXACT SAME retry/backoff loop Module 5 already built — this module
   only changes WHAT the task body does when it runs, never the surrounding
   state-machine/retry plumbing.
+- `CredentialUnavailableError` (secrets-manager PR6, design D9): a stored
+  credential could not be unsealed for this attempt (wrong/rotated key,
+  corrupted ciphertext, or an unset `credential_encryption_key`) — also
+  DETERMINISTIC, straight to `failed`, no retry, and the repository is NEVER
+  automatically deactivated (spec: "Decrypt Failure Is Credential-Free and
+  Non-Deactivating").
+
+## Credential resolution (secrets-manager PR6, design D9)
+
+`_load_and_start` unseals a repository's stored credential (if any) INSIDE
+the same transaction as the `pending -> running` transition and appends
+exactly one `CredentialAccessLog` row per attempt (`USED` /
+`DECRYPT_FAILED` / `KEY_UNAVAILABLE`, via `_resolve_credential`) — a public
+repository (`credential_ciphertext is None`) never touches this path at all
+(spec: "Public Repository Checkout Unaffected"). The resulting `Secret` (or
+`None`) is threaded through `_checkout_and_scan` into
+`ScanExecutionPort.execute(..., credential=...)` (PR5).
 
 `container_runner`/`docker_client` are test-only injection kwargs (mirrors
 Module 5's `simulate_failure`/`fail_attempts` precedent): production callers
@@ -56,14 +73,27 @@ from celery.utils.log import get_task_logger
 from opentelemetry import trace
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from orchestrator.domain.entities.credential_access_log import CredentialAccessLog
 from orchestrator.domain.entities.finding import Finding
-from orchestrator.domain.value_objects.enums import ScannerType, ScanRunStatus, ScanTaskStatus
+from orchestrator.domain.ports.credential_store_port import (
+    CredentialUnsealError,
+    SealedCredential,
+)
+from orchestrator.domain.value_objects.enums import (
+    CredentialAccessOutcome,
+    ScannerType,
+    ScanRunStatus,
+    ScanTaskStatus,
+)
 from orchestrator.infrastructure.config.settings import get_settings
 from orchestrator.infrastructure.container.docker_container_runner import DockerContainerRunner
 from orchestrator.infrastructure.container.scan_execution_factory import create_scan_execution
 from orchestrator.infrastructure.db.repositories.code_repository_repository import (
     CodeRepositoryNotFoundError,
     SqlAlchemyCodeRepositoryRepository,
+)
+from orchestrator.infrastructure.db.repositories.credential_access_log_repository import (
+    SqlAlchemyCredentialAccessLogRepository,
 )
 from orchestrator.infrastructure.db.repositories.finding_repository import (
     SqlAlchemyFindingRepository,
@@ -87,6 +117,7 @@ from orchestrator.infrastructure.scanners.ast_sast_adapter import SastFailedErro
 from orchestrator.infrastructure.scanners.gitleaks_adapter import GitleaksFailedError
 from orchestrator.infrastructure.scanners.pip_audit_adapter import PipAuditFailedError
 from orchestrator.infrastructure.scanners.semgrep_adapter import SemgrepFailedError
+from orchestrator.infrastructure.security.credential_store import FernetCredentialStore
 from orchestrator.infrastructure.vcs.git_checkout import CheckoutFailedError
 from orchestrator.workers.backoff import backoff_jitter
 from orchestrator.workers.celery_app import celery_app
@@ -95,7 +126,11 @@ from orchestrator.workers.db import run_async
 if TYPE_CHECKING:
     from docker import DockerClient
 
+    from orchestrator.domain.entities.code_repository import CodeRepository
     from orchestrator.domain.ports.container_runner_port import ContainerRunnerPort
+    from orchestrator.domain.ports.credential_access_log_port import CredentialAccessLogPort
+    from orchestrator.domain.ports.credential_store_port import CredentialStorePort
+    from orchestrator.domain.value_objects.secret import Secret
     from orchestrator.infrastructure.config.settings import Settings
 
 logger = get_task_logger(__name__)
@@ -112,23 +147,119 @@ class TransientScanError(RuntimeError):
     """
 
 
+class CredentialUnavailableError(RuntimeError):
+    """A repository's stored credential could not be unsealed for this scan
+    attempt (secrets-manager PR6, design D9): wrong/rotated encryption key,
+    corrupted ciphertext, or an unset `credential_encryption_key`.
+
+    DETERMINISTIC (D5) — a retry cannot fix a decrypt failure, so this goes
+    straight to `failed` like `CheckoutFailedError`. The message is
+    credential-free by construction: it never carries the ciphertext, the
+    decrypted plaintext, or key material. The repository is NEVER
+    automatically deactivated (spec: "Decrypt Failure Is Credential-Free and
+    Non-Deactivating").
+    """
+
+
+async def _resolve_credential(
+    credential_access_log_port: CredentialAccessLogPort,
+    credential_store: CredentialStorePort,
+    settings: Settings,
+    repository: CodeRepository,
+    scan_task_id: uuid.UUID,
+    *,
+    actor: str,
+    actor_user_id: uuid.UUID | None,
+) -> Secret | None:
+    """Resolve `repository`'s stored credential for one scan attempt (D9).
+
+    Returns `None` unchanged when the repository has no stored credential —
+    a public repository never appends an audit row or calls `unseal()`
+    (spec: "Public Repository Checkout Unaffected").
+
+    When a credential IS stored, appends exactly ONE `CredentialAccessLog`
+    row for this attempt:
+    - `KEY_UNAVAILABLE` when `Settings.credential_encryption_key` is unset.
+      Checked explicitly BEFORE calling `unseal()` — `FernetCredentialStore`
+      raises the SAME `CredentialUnsealError` for a missing key as for a
+      wrong/corrupted one (there is only one unseal-failure exception type,
+      design D2), so this case is distinguished here, not by inspecting the
+      exception.
+    - `DECRYPT_FAILED` for any other `CredentialUnsealError` (wrong/rotated
+      key, corrupted ciphertext).
+    - `USED` on success.
+
+    Raises `CredentialUnavailableError` (credential-free) for the first two
+    outcomes — callers must fail the scan deterministically without ever
+    touching `repository.is_active`.
+    """
+    if repository.credential_ciphertext is None:
+        return None
+
+    kind = repository.credential_kind
+    assert kind is not None  # invariant: ciphertext implies a credential_kind
+
+    async def _append(outcome: CredentialAccessOutcome) -> None:
+        await credential_access_log_port.append(
+            CredentialAccessLog(
+                id=uuid.uuid4(),
+                repository_id=repository.id,
+                scan_task_id=scan_task_id,
+                credential_kind=kind,
+                actor=actor,
+                actor_user_id=actor_user_id,
+                outcome=outcome,
+                accessed_at=datetime.now(UTC).replace(tzinfo=None),
+            )
+        )
+
+    if settings.credential_encryption_key is None:
+        await _append(CredentialAccessOutcome.KEY_UNAVAILABLE)
+        raise CredentialUnavailableError(
+            "credential storage is not configured on this deployment; the scan cannot proceed"
+        )
+
+    sealed = SealedCredential(kind=kind, ciphertext=repository.credential_ciphertext)
+    try:
+        secret = credential_store.unseal(sealed)
+    except CredentialUnsealError:
+        await _append(CredentialAccessOutcome.DECRYPT_FAILED)
+        raise CredentialUnavailableError(
+            "stored credential could not be decrypted; re-enter the credential for this repository"
+        ) from None
+
+    await _append(CredentialAccessOutcome.USED)
+    return secret
+
+
 async def _load_and_start(
-    session: AsyncSession, scan_task_id: uuid.UUID
-) -> tuple[str, str, uuid.UUID, uuid.UUID, ScannerType, bool, bool]:
+    session: AsyncSession, scan_task_id: uuid.UUID, settings: Settings
+) -> tuple[str, str, uuid.UUID, uuid.UUID, ScannerType, bool, bool, Secret | None]:
     """Load the repo's `clone_url` + the run's `ref`; transition `pending -> running`.
 
-    Returns `(clone_url, ref, scan_run_id, repository_id, scanner_type)`.
-    Idempotent on the `pending -> running` transition, matching Module 5's
-    original convention.
+    Returns `(clone_url, ref, scan_run_id, repository_id, scanner_type,
+    transitioned, terminal, credential)`. Idempotent on the `pending ->
+    running` transition, matching Module 5's original convention.
 
     `repository_id`/`scanner_type` are returned so `_checkout_and_scan`
     (factory-routed, Module 13c PR5b) and `_complete_scan`
     (`bulk_upsert_findings`, Module 7 D4/D6) don't need to re-load `task`/
     `repository` themselves.
+
+    `credential` (secrets-manager PR6, design D9): `None` for a public
+    repository, byte-for-byte unchanged from before this PR. For a
+    credentialed repository, `_resolve_credential` unseals it and appends
+    ONE `CredentialAccessLog` row INSIDE the same transaction/commit as the
+    `pending -> running` update (or, on a retry with no fresh transition,
+    committed on its own) — every non-terminal attempt is audited, not just
+    the first. A decrypt/key failure raises `CredentialUnavailableError`
+    AFTER that commit still lands (the audit row and any `running`
+    transition are never rolled back by a later failure).
     """
     scan_task_repo = SqlAlchemyScanTaskRepository(session)
     scan_run_repo = SqlAlchemyScanRunRepository(session)
     code_repository_repo = SqlAlchemyCodeRepositoryRepository(session)
+    credential_access_log_repo = SqlAlchemyCredentialAccessLogRepository(session)
 
     task = await scan_task_repo.get_by_id(scan_task_id)
     if task is None:
@@ -147,7 +278,32 @@ async def _load_and_start(
         ScanTaskStatus.FAILED,
         ScanTaskStatus.SKIPPED,
     )
-    if transitioned:
+
+    credential: Secret | None = None
+    has_credential = repository.credential_ciphertext is not None
+
+    if not terminal and has_credential:
+        credential_store = FernetCredentialStore(encryption_key=settings.credential_encryption_key)
+        try:
+            credential = await _resolve_credential(
+                credential_access_log_repo,
+                credential_store,
+                settings,
+                repository,
+                scan_task_id,
+                actor=run.trigger,
+                actor_user_id=run.triggered_by_user_id,
+            )
+        finally:
+            if transitioned:
+                await scan_task_repo.update_status(
+                    scan_task_id, ScanTaskStatus.RUNNING, started_at=now
+                )
+                await scan_run_repo.update_status(
+                    task.scan_run_id, ScanRunStatus.RUNNING, started_at=now
+                )
+            await session.commit()
+    elif not terminal and transitioned:
         await scan_task_repo.update_status(scan_task_id, ScanTaskStatus.RUNNING, started_at=now)
         await scan_run_repo.update_status(task.scan_run_id, ScanRunStatus.RUNNING, started_at=now)
         await session.commit()
@@ -160,6 +316,7 @@ async def _load_and_start(
         task.scanner_type,
         transitioned,
         terminal,
+        credential,
     )
 
 
@@ -171,6 +328,7 @@ def _checkout_and_scan(
     runner: ContainerRunnerPort,
     docker_client: DockerClient,
     settings: Settings,
+    credential: Secret | None = None,
 ) -> tuple[str, list[Finding]]:
     """Sync/blocking: resolve the descriptor executor, checkout, scan, parse.
     Runs OUTSIDE any async DB session/event loop (Module 6 D3).
@@ -189,9 +347,14 @@ def _checkout_and_scan(
     classify those as non-retryable (D5). Any OTHER exception (including
     `UnsupportedScannerTypeError`) is left to propagate to the caller, which
     wraps it as `TransientScanError`.
+
+    `credential` (secrets-manager PR6, additive, defaulted): the `Secret`
+    resolved by `_load_and_start`/`_resolve_credential`, threaded straight
+    through to `ScanExecutionPort.execute(..., credential=...)` (PR5). `None`
+    (the default) reproduces today's public-repo behavior byte-for-byte.
     """
     execution = create_scan_execution(runner, docker_client, settings, scanner_type)
-    result = execution.execute(clone_url, ref, scan_task_id, scanner_type)
+    result = execution.execute(clone_url, ref, scan_task_id, scanner_type, credential=credential)
     return result.head_sha, result.findings
 
 
@@ -269,6 +432,8 @@ def logical_scan_duration_seconds(started_at: datetime | None, completed_at: dat
 def _failure_category(error: Exception) -> str:
     if isinstance(error, CheckoutFailedError):
         return "checkout"
+    if isinstance(error, CredentialUnavailableError):
+        return "credential"
     if "timeout" in str(error).lower() or "timed out" in str(error).lower():
         return "timeout"
     if isinstance(error, TransientScanError):
@@ -297,9 +462,10 @@ def process_scan_task(
     try:
         try:
             with tracer.start_as_current_span("scan.load_and_start"):
-                loaded = run_async(lambda session: _load_and_start(session, task_id))
+                loaded = run_async(lambda session: _load_and_start(session, task_id, settings))
                 clone_url, ref, scan_run_id, repository_id, scanner_type = loaded[:5]
-                started, terminal = loaded[5:] if len(loaded) == 7 else (False, False)
+                started, terminal = loaded[5:7] if len(loaded) >= 7 else (False, False)
+                credential = loaded[7] if len(loaded) >= 8 else None
             if terminal:
                 return
             if started:
@@ -312,7 +478,7 @@ def process_scan_task(
                 scanner_started = monotonic()
                 try:
                     head_sha, findings = _checkout_and_scan(
-                        clone_url, ref, task_id, scanner_type, runner, client, settings
+                        clone_url, ref, task_id, scanner_type, runner, client, settings, credential
                     )
                 except (
                     CheckoutFailedError,
@@ -351,6 +517,7 @@ def process_scan_task(
         PipAuditFailedError,
         SastFailedError,
         SemgrepFailedError,
+        CredentialUnavailableError,
     ) as exc:
         error_message = str(exc)
         logger.warning("scan_task %s failed deterministically: %s", task_id, error_message)

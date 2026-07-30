@@ -77,7 +77,7 @@ def enqueue_committed_scan(task_id: str, scanner_type: ScannerType) -> None:
 async def trigger_scan_endpoint(
     repository_id: uuid.UUID,
     payload: ScanTriggerRequest | None = None,
-    _user: User = Depends(get_current_user),  # noqa: B008
+    user: User = Depends(get_current_user),  # noqa: B008
     session: AsyncSession = Depends(get_db_session),  # noqa: B008
 ) -> JSONResponse:
     repository_port = SqlAlchemyCodeRepositoryRepository(session)
@@ -98,6 +98,10 @@ async def trigger_scan_endpoint(
             commit_sha,
             scanner_type,
             trigger="manual",
+            # secrets-manager PR6/D8: the authenticated principal for THIS
+            # manual trigger — the worker's credential-access audit trail
+            # attributes a decrypt-and-use to this user, not just "manual".
+            triggered_by_user_id=user.id,
         )
     except RepositoryNotFoundError as exc:
         raise _repository_not_found() from exc

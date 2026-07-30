@@ -28,6 +28,7 @@ async def trigger_scan(
     commit_sha: str | None = None,
     scanner_type: ScannerType = ScannerType.SECRETS,
     trigger: str = "manual",
+    triggered_by_user_id: uuid.UUID | None = None,
 ) -> tuple[ScanRun, bool]:
     """Trigger a scan for `repository_id`, idempotently.
 
@@ -44,6 +45,13 @@ async def trigger_scan(
     `ScanTrigger` enum); the webhook intake (PR3) passes `trigger="webhook"`.
     When `commit_sha` is omitted, both `ScanRun.commit_sha` and
     `ScanRun.ref` default to `repository.default_branch`.
+
+    `triggered_by_user_id` (secrets-manager PR6, design D8): the
+    authenticated principal for a manually triggered scan, `None` for a
+    webhook-triggered one (the router threads its own `_user.id` here; the
+    webhook ingest use case never passes it, leaving the default). Recorded
+    on `ScanRun` so the worker's credential-access audit trail (D7/D9) can
+    attribute a decrypt-and-use to the actual user, not just `"manual"`.
 
     Never calls `.delay()` — enqueueing after commit is the router's job (D4).
     """
@@ -74,6 +82,7 @@ async def trigger_scan(
         commit_sha=resolved_commit_sha,
         ref=resolved_commit_sha,
         created_at=now,
+        triggered_by_user_id=triggered_by_user_id,
     )
     created_run = await scan_run_port.create(scan_run)
 
