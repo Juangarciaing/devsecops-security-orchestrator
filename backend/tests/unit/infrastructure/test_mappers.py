@@ -14,6 +14,7 @@ from orchestrator.domain.entities.code_repository import CodeRepository
 from orchestrator.domain.entities.credential_access_log import CredentialAccessLog
 from orchestrator.domain.entities.finding import Finding
 from orchestrator.domain.entities.scan_run import ScanRun
+from orchestrator.domain.entities.scan_target import ScanTarget
 from orchestrator.domain.entities.scan_task import ScanTask
 from orchestrator.domain.entities.user import User
 from orchestrator.domain.entities.webhook_delivery import WebhookDelivery
@@ -40,6 +41,8 @@ from orchestrator.infrastructure.db.mappers import (
     finding_to_model,
     scan_run_to_entity,
     scan_run_to_model,
+    scan_target_to_entity,
+    scan_target_to_model,
     scan_task_to_entity,
     scan_task_to_model,
     user_to_entity,
@@ -93,6 +96,39 @@ def test_code_repository_round_trip_with_no_credential_and_inactive() -> None:
     assert round_tripped == entity
     assert round_tripped.credential_kind is None
     assert round_tripped.credential_ciphertext is None
+
+
+def test_scan_target_round_trip() -> None:
+    entity = ScanTarget(
+        id=uuid.uuid4(),
+        name="acme-public-site",
+        target_url="https://example.com",
+        is_active=True,
+        created_at=_NOW,
+        updated_at=_NOW,
+    )
+
+    model = scan_target_to_model(entity)
+    round_tripped = scan_target_to_entity(model)
+
+    assert round_tripped == entity
+
+
+def test_scan_target_round_trip_when_inactive() -> None:
+    entity = ScanTarget(
+        id=uuid.uuid4(),
+        name="acme-decommissioned-site",
+        target_url="https://old.example.com",
+        is_active=False,
+        created_at=_NOW,
+        updated_at=_NOW,
+    )
+
+    model = scan_target_to_model(entity)
+    round_tripped = scan_target_to_entity(model)
+
+    assert round_tripped == entity
+    assert round_tripped.is_active is False
     assert round_tripped.is_active is False
 
 
