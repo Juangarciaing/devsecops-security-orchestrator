@@ -42,9 +42,9 @@ def _imported_module_names(source: str) -> set[str]:
 def test_credential_store_port_module_never_imports_cryptography() -> None:
     source = PORT_MODULE_PATH.read_text(encoding="utf-8")
     imported = _imported_module_names(source)
-    forbidden = {name for name in imported if name == "cryptography" or name.startswith(
-        "cryptography."
-    )}
+    forbidden = {
+        name for name in imported if name == "cryptography" or name.startswith("cryptography.")
+    }
     assert forbidden == set(), f"domain port must not import cryptography, found: {forbidden}"
 
 
