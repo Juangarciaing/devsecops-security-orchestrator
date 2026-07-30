@@ -12,6 +12,7 @@ from orchestrator.domain.entities.code_repository import CodeRepository
 from orchestrator.domain.entities.credential_access_log import CredentialAccessLog
 from orchestrator.domain.entities.finding import Finding
 from orchestrator.domain.entities.scan_run import ScanRun
+from orchestrator.domain.entities.scan_target import ScanTarget
 from orchestrator.domain.entities.scan_task import ScanTask
 from orchestrator.domain.entities.user import User
 from orchestrator.domain.entities.webhook_delivery import WebhookDelivery
@@ -20,6 +21,7 @@ from orchestrator.infrastructure.db.models.code_repository import CodeRepository
 from orchestrator.infrastructure.db.models.credential_access_log import CredentialAccessLogModel
 from orchestrator.infrastructure.db.models.finding import FindingModel
 from orchestrator.infrastructure.db.models.scan_run import ScanRunModel
+from orchestrator.infrastructure.db.models.scan_target import ScanTargetModel
 from orchestrator.infrastructure.db.models.scan_task import ScanTaskModel
 from orchestrator.infrastructure.db.models.user import UserModel
 from orchestrator.infrastructure.db.models.webhook_delivery import WebhookDeliveryModel
@@ -53,6 +55,30 @@ def code_repository_to_model(entity: CodeRepository) -> CodeRepositoryModel:
         default_branch=entity.default_branch,
         credential_kind=entity.credential_kind,
         credential_ciphertext=entity.credential_ciphertext,
+        is_active=entity.is_active,
+        created_at=entity.created_at,
+        updated_at=entity.updated_at,
+    )
+
+
+def scan_target_to_entity(model: ScanTargetModel) -> ScanTarget:
+    """Convert a `ScanTargetModel` into a domain `ScanTarget` entity."""
+    return ScanTarget(
+        id=model.id,
+        name=model.name,
+        target_url=model.target_url,
+        is_active=model.is_active,
+        created_at=model.created_at,
+        updated_at=model.updated_at,
+    )
+
+
+def scan_target_to_model(entity: ScanTarget) -> ScanTargetModel:
+    """Convert a domain `ScanTarget` entity into a `ScanTargetModel`."""
+    return ScanTargetModel(
+        id=entity.id,
+        name=entity.name,
+        target_url=entity.target_url,
         is_active=entity.is_active,
         created_at=entity.created_at,
         updated_at=entity.updated_at,

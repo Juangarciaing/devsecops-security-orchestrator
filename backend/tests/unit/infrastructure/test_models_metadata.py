@@ -16,6 +16,7 @@ from orchestrator.infrastructure.db.models.code_repository import CodeRepository
 from orchestrator.infrastructure.db.models.credential_access_log import CredentialAccessLogModel
 from orchestrator.infrastructure.db.models.finding import FindingModel
 from orchestrator.infrastructure.db.models.scan_run import ScanRunModel
+from orchestrator.infrastructure.db.models.scan_target import ScanTargetModel
 from orchestrator.infrastructure.db.models.scan_task import ScanTaskModel
 from orchestrator.infrastructure.db.models.user import UserModel
 from orchestrator.infrastructure.db.models.webhook_delivery import WebhookDeliveryModel
@@ -26,6 +27,7 @@ __all__ = [
     "CredentialAccessLogModel",
     "FindingModel",
     "ScanRunModel",
+    "ScanTargetModel",
     "ScanTaskModel",
     "UserModel",
     "WebhookDeliveryModel",
@@ -200,6 +202,33 @@ def test_scan_runs_fk_cascade(engine: sa.Engine) -> None:
         fk["referred_table"] == "code_repositories" and fk["options"].get("ondelete") == "CASCADE"
         for fk in fks
     )
+
+
+def test_scan_targets_table_is_created_with_unique_target_url(engine: sa.Engine) -> None:
+    """`ScanTarget` is a wholly independent aggregate (dast-scanner PR1) — no
+    FK to `code_repositories`, `target_url` is the dedup key."""
+    inspector = sa.inspect(engine)
+    table_names = set(inspector.get_table_names())
+    assert "scan_targets" in table_names
+
+    unique_column_sets = {
+        tuple(uc["column_names"]) for uc in inspector.get_unique_constraints("scan_targets")
+    }
+    assert ("target_url",) in unique_column_sets
+
+    fks = inspector.get_foreign_keys("scan_targets")
+    assert fks == []
+
+
+def test_scan_targets_required_columns_are_not_null(engine: sa.Engine) -> None:
+    inspector = sa.inspect(engine)
+    columns = {col["name"]: col for col in inspector.get_columns("scan_targets")}
+
+    assert columns["name"]["nullable"] is False
+    assert columns["target_url"]["nullable"] is False
+    assert columns["is_active"]["nullable"] is False
+    assert columns["created_at"]["nullable"] is False
+    assert columns["updated_at"]["nullable"] is False
 
 
 def test_webhook_deliveries_table_is_created(engine: sa.Engine) -> None:
