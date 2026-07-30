@@ -5,8 +5,14 @@ from __future__ import annotations
 import uuid
 from datetime import UTC, datetime
 
+import pytest
+
 from orchestrator.domain.entities.scan_run import ScanRun
 from orchestrator.domain.value_objects.enums import ScanRunStatus
+from orchestrator.domain.value_objects.scan_subject import (
+    InvalidScanSubjectError,
+    ScanSubjectKind,
+)
 
 
 def test_scan_run_belongs_to_one_repository() -> None:
@@ -104,3 +110,42 @@ def test_scan_run_stores_triggered_by_user_id_for_manual_trigger() -> None:
     )
 
     assert run.triggered_by_user_id == user_id
+
+
+def test_scan_run_with_target_subject_exposes_target_subject() -> None:
+    target_id = uuid.uuid4()
+
+    run = ScanRun(
+        id=uuid.uuid4(),
+        repository_id=None,
+        status=ScanRunStatus.PENDING,
+        trigger="manual",
+        commit_sha=None,
+        ref=None,
+        created_at=datetime.now(UTC),
+        scan_target_id=target_id,
+    )
+
+    assert run.subject.kind is ScanSubjectKind.SCAN_TARGET
+    assert run.subject.scan_target_id == target_id
+    assert run.subject.repository_id is None
+
+
+@pytest.mark.parametrize(
+    ("repository_id", "scan_target_id"),
+    [(uuid.uuid4(), uuid.uuid4()), (None, None)],
+)
+def test_scan_run_rejects_invalid_subject_columns(
+    repository_id: uuid.UUID | None, scan_target_id: uuid.UUID | None
+) -> None:
+    with pytest.raises(InvalidScanSubjectError):
+        ScanRun(
+            id=uuid.uuid4(),
+            repository_id=repository_id,
+            status=ScanRunStatus.PENDING,
+            trigger="manual",
+            commit_sha=None,
+            ref=None,
+            created_at=datetime.now(UTC),
+            scan_target_id=scan_target_id,
+        )
