@@ -41,7 +41,7 @@ def _wire(
     }
 
     async def load_scan(
-        _session: AsyncSession, _task_id: uuid.UUID
+        _session: AsyncSession, _task_id: uuid.UUID, _settings: object
     ) -> tuple[str, str, uuid.UUID, uuid.UUID, ScannerType, bool, bool]:
         return load
 
