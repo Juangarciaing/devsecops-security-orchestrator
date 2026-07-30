@@ -41,7 +41,8 @@ describe('RegisterRepositoryDialog', () => {
             name: 'widgets',
             clone_url: 'https://github.com/acme/widgets.git',
             default_branch: 'main',
-            credential_ref: null,
+            has_credential: false,
+            credential_kind: null,
             is_active: true,
             created_at: '2026-01-01T00:00:00Z',
             updated_at: '2026-01-01T00:00:00Z',
@@ -103,5 +104,91 @@ describe('RegisterRepositoryDialog', () => {
     await user.click(screen.getByRole('button', { name: /^register$/i }))
 
     expect(await screen.findAllByRole('alert')).not.toHaveLength(0)
+  })
+
+  it('renders a masked, empty credential input that is never pre-filled', async () => {
+    const user = userEvent.setup()
+    renderDialog()
+
+    await user.click(
+      screen.getByRole('button', { name: /register repository/i }),
+    )
+    const credentialInput = await screen.findByLabelText(
+      /personal access token/i,
+    )
+
+    expect(credentialInput).toHaveAttribute('type', 'password')
+    expect(credentialInput).toHaveValue('')
+  })
+
+  it('includes the credential in the mutation payload when provided', async () => {
+    let capturedBody: unknown
+    server.use(
+      http.post('*/api/v1/repositories', async ({ request }) => {
+        capturedBody = await request.json()
+        return HttpResponse.json(
+          {
+            id: 'r1',
+            provider: 'github',
+            owner: 'acme',
+            name: 'widgets',
+            clone_url: 'https://github.com/acme/widgets.git',
+            default_branch: 'main',
+            has_credential: true,
+            credential_kind: 'personal_access_token',
+            is_active: true,
+            created_at: '2026-01-01T00:00:00Z',
+            updated_at: '2026-01-01T00:00:00Z',
+          },
+          { status: 201 },
+        )
+      }),
+    )
+    const user = userEvent.setup()
+    renderDialog()
+
+    await openAndFill(user)
+    await user.type(
+      screen.getByLabelText(/personal access token/i),
+      'ghp_supersecret',
+    )
+    await user.click(screen.getByRole('button', { name: /^register$/i }))
+
+    await waitFor(() =>
+      expect(capturedBody).toMatchObject({ credential: 'ghp_supersecret' }),
+    )
+  })
+
+  it('omits the credential from the mutation payload when not provided', async () => {
+    let capturedBody: Record<string, unknown> | undefined
+    server.use(
+      http.post('*/api/v1/repositories', async ({ request }) => {
+        capturedBody = (await request.json()) as Record<string, unknown>
+        return HttpResponse.json(
+          {
+            id: 'r1',
+            provider: 'github',
+            owner: 'acme',
+            name: 'widgets',
+            clone_url: 'https://github.com/acme/widgets.git',
+            default_branch: 'main',
+            has_credential: false,
+            credential_kind: null,
+            is_active: true,
+            created_at: '2026-01-01T00:00:00Z',
+            updated_at: '2026-01-01T00:00:00Z',
+          },
+          { status: 201 },
+        )
+      }),
+    )
+    const user = userEvent.setup()
+    renderDialog()
+
+    await openAndFill(user)
+    await user.click(screen.getByRole('button', { name: /^register$/i }))
+
+    await waitFor(() => expect(capturedBody).not.toBeUndefined())
+    expect(capturedBody?.credential).toBeUndefined()
   })
 })
