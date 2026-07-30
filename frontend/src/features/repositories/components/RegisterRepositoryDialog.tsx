@@ -25,7 +25,7 @@ const registerRepositorySchema = z.object({
   name: z.string().min(1, 'Name is required'),
   clone_url: z.string().min(1, 'Clone URL is required'),
   default_branch: z.string().min(1, 'Default branch is required'),
-  credential_ref: z.string().optional(),
+  credential: z.string().optional(),
 })
 
 type RegisterRepositoryFormValues = z.infer<typeof registerRepositorySchema>
@@ -45,7 +45,7 @@ export function RegisterRepositoryDialog() {
 
   const onSubmit = handleSubmit((values) => {
     registerRepository.mutate(
-      { ...values, credential_ref: values.credential_ref || undefined },
+      { ...values, credential: values.credential || undefined },
       {
         onSuccess: () => {
           toast.success('Repository registered.')
@@ -125,10 +125,15 @@ export function RegisterRepositoryDialog() {
             ) : null}
           </div>
           <div className="flex flex-col gap-2">
-            <Label htmlFor="credential_ref">
-              Credential reference (optional)
+            <Label htmlFor="credential">
+              Personal access token (optional)
             </Label>
-            <Input id="credential_ref" {...register('credential_ref')} />
+            <Input
+              id="credential"
+              type="password"
+              autoComplete="off"
+              {...register('credential')}
+            />
           </div>
           {registerRepository.isError ? (
             <p role="alert" className="text-sm text-destructive">
