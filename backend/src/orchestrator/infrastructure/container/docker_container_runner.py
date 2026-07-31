@@ -58,6 +58,21 @@ def container_metric_outcome(*, timed_out: bool) -> str:
     return "timeout" if timed_out else "success"
 
 
+def _network_mode(*, network_disabled: bool, network_name: str | None) -> str | None:
+    """Fail-closed network mode resolution (dast-scanner PR4, D4).
+
+    `network_disabled=True` and a non-`None` `network_name` are mutually
+    exclusive by construction — combining them raises rather than silently
+    picking one, so a caller can never accidentally join a network while
+    also disabling it.
+    """
+    if network_disabled:
+        if network_name is not None:
+            raise ValueError("network_disabled=True is incompatible with network_name")
+        return "none"
+    return network_name  # None == today's implicit default bridge, unchanged
+
+
 class DockerContainerRunner(ContainerRunnerPort):
     """Sync `ContainerRunnerPort` adapter over the `docker` SDK (Module 6 D3).
 
@@ -83,6 +98,8 @@ class DockerContainerRunner(ContainerRunnerPort):
         tmp_exec: bool = False,
         cleanup_anonymous_volumes: bool = False,
         env: dict[str, str] | None = None,
+        network_name: str | None = None,
+        extra_tmpfs: tuple[str, ...] = (),
     ) -> RunResult:
         """One `container.run` span covers this call's entire launch-to-exit
         lifetime — the deepest point of instrumentation for the scanning step
@@ -98,13 +115,22 @@ class DockerContainerRunner(ContainerRunnerPort):
         (never passed as `environment=None`) so every existing caller's
         `containers.run(...)` call is byte-for-byte unchanged. `env` MUST
         NEVER be read into a span attribute, metric label, or log field.
+
+        `network_name` and `extra_tmpfs` (PR4) are documented on
+        `ContainerRunnerPort.run` — see that docstring for the fail-closed
+        `network_disabled`/`network_name` contract and the `extra_tmpfs`
+        merge behavior.
         """
+        network_mode = _network_mode(network_disabled=network_disabled, network_name=network_name)
         tracer = trace.get_tracer(__name__)
         with tracer.start_as_current_span("container.run") as span:
             span.set_attribute("image", image)
             span.set_attribute("network_disabled", network_disabled)
 
             start = time.monotonic()
+            tmpfs = {"/tmp": _TMPFS_MOUNT_OPTS_EXEC if tmp_exec else _TMPFS_MOUNT_OPTS}
+            for path in extra_tmpfs:
+                tmpfs[path] = _TMPFS_MOUNT_OPTS_EXEC if tmp_exec else _TMPFS_MOUNT_OPTS
             run_kwargs: dict[str, Any] = {
                 "image": image,
                 "command": command,
@@ -115,11 +141,11 @@ class DockerContainerRunner(ContainerRunnerPort):
                 "read_only": True,
                 "cap_drop": ["ALL"],
                 "security_opt": ["no-new-privileges"],
-                "network_mode": "none" if network_disabled else None,
+                "network_mode": network_mode,
                 "mem_limit": f"{limits.memory_mb}m",
                 "nano_cpus": limits.nano_cpus,
                 "pids_limit": limits.pids_limit,
-                "tmpfs": {"/tmp": _TMPFS_MOUNT_OPTS_EXEC if tmp_exec else _TMPFS_MOUNT_OPTS},
+                "tmpfs": tmpfs,
                 "detach": True,
             }
             if env is not None:

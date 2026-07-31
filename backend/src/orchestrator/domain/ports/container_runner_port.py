@@ -66,6 +66,8 @@ class ContainerRunnerPort(ABC):
         tmp_exec: bool = False,
         cleanup_anonymous_volumes: bool = False,
         env: dict[str, str] | None = None,
+        network_name: str | None = None,
+        extra_tmpfs: tuple[str, ...] = (),
     ) -> RunResult:
         """Run `image` with an argv-only `command` (never a shell string).
 
@@ -101,4 +103,17 @@ class ContainerRunnerPort(ABC):
         span attributes, Prometheus metric labels, or log fields. When
         `env` is `None` (the default), behavior MUST be byte-for-byte
         identical to calling `.run()` without this parameter at all.
+
+        `network_name` (PR4, appended-and-defaulted): join the container to
+        this pre-existing Docker network by name instead of the implicit
+        default bridge. `None` (the default) MUST reproduce today's
+        behavior byte-for-byte. Implementations MUST raise `ValueError` if
+        `network_disabled=True` is combined with a non-`None`
+        `network_name` — the two are mutually exclusive by construction
+        (fail closed rather than silently pick one).
+
+        `extra_tmpfs` (PR4, appended-and-defaulted): additional writable
+        tmpfs mount paths beyond `/tmp`, merged into whatever tmpfs
+        mechanism the runner already uses. Empty (the default) changes
+        nothing for any existing caller.
         """

@@ -35,6 +35,8 @@ class RecordedRun:
     tmp_exec: bool = False
     cleanup_anonymous_volumes: bool = False
     env: dict[str, str] | None = None
+    network_name: str | None = None
+    extra_tmpfs: tuple[str, ...] = ()
 
 
 @dataclass(slots=True)
@@ -62,6 +64,8 @@ class FakeContainerRunner(ContainerRunnerPort):
         tmp_exec: bool = False,
         cleanup_anonymous_volumes: bool = False,
         env: dict[str, str] | None = None,
+        network_name: str | None = None,
+        extra_tmpfs: tuple[str, ...] = (),
     ) -> RunResult:
         self.calls.append(
             RecordedRun(
@@ -76,6 +80,8 @@ class FakeContainerRunner(ContainerRunnerPort):
                 tmp_exec=tmp_exec,
                 cleanup_anonymous_volumes=cleanup_anonymous_volumes,
                 env=env,
+                network_name=network_name,
+                extra_tmpfs=extra_tmpfs,
             )
         )
         if self._results:
