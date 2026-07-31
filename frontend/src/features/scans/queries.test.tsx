@@ -118,7 +118,7 @@ describe('scanRefetchInterval', () => {
     ['failed', false],
     ['cancelled', false],
     [undefined, false],
-  ] as const)('status %s -> %s', (status, expected) => {
+  ] as const)('status %s -> %s (sseLive defaulted/unspecified)', (status, expected) => {
     const data =
       status === undefined
         ? undefined
@@ -129,6 +129,33 @@ describe('scanRefetchInterval', () => {
             findings_count: 0,
           }
     expect(scanRefetchInterval(data)).toBe(expected)
+  })
+
+  // Req: Polling Fallback on SSE Unavailability (design D-Frontend) — SSE
+  // live degrades polling to a 30s safety net, it never disables it.
+  it.each([
+    ['pending', true, 30_000],
+    ['running', true, 30_000],
+    ['pending', false, 2500],
+    ['running', false, 2500],
+    ['completed', true, false],
+    ['failed', true, false],
+    ['cancelled', true, false],
+  ] as const)(
+    'status %s, sseLive %s -> %s',
+    (status, sseLive, expected) => {
+      const data = {
+        ...scanRun,
+        status,
+        task_status: 'completed' as const,
+        findings_count: 0,
+      }
+      expect(scanRefetchInterval(data, sseLive)).toBe(expected)
+    },
+  )
+
+  it('returns false for undefined data regardless of sseLive', () => {
+    expect(scanRefetchInterval(undefined, true)).toBe(false)
   })
 })
 
