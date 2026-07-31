@@ -4,6 +4,7 @@ import { FindingsPage } from '@/features/findings/pages/FindingsPage'
 import { RepositoriesPage } from '@/features/repositories/pages/RepositoriesPage'
 import { RepositoryDetailPage } from '@/features/repositories/pages/RepositoryDetailPage'
 import { ScanDetailPage } from '@/features/scans/pages/ScanDetailPage'
+import { TargetsPage } from '@/features/targets/pages/TargetsPage'
 import { AppLayout } from './AppLayout'
 import { ProtectedRoute } from './ProtectedRoute'
 
@@ -26,6 +27,7 @@ export const routes: RouteObject[] = [
         element: <RepositoryDetailPage />,
       },
       { path: 'scans/:id', element: <ScanDetailPage /> },
+      { path: 'targets', element: <TargetsPage /> },
       { path: 'findings', element: <FindingsPage /> },
       { path: '*', element: <NotFound /> },
     ],

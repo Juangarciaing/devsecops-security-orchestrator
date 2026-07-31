@@ -16,6 +16,9 @@ export function AppLayout() {
             <Link to="/" className="hover:underline">
               Repositories
             </Link>
+            <Link to="/targets" className="hover:underline">
+              Scan targets
+            </Link>
             <Link to="/findings" className="hover:underline">
               Findings
             </Link>
