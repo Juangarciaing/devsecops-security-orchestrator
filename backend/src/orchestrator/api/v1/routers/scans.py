@@ -15,14 +15,17 @@ commit (see `infrastructure/db/session.py`) is then a no-op for that request.
 
 from __future__ import annotations
 
+import asyncio
 import uuid
+from collections.abc import AsyncIterator
 
-from fastapi import APIRouter, Depends, Query
-from fastapi.responses import JSONResponse
+from fastapi import APIRouter, Depends, Query, Request
+from fastapi.responses import JSONResponse, StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from orchestrator.api.v1.dependencies.auth import get_current_user
+from orchestrator.api.v1.dependencies.auth import get_current_user, get_stream_user
 from orchestrator.api.v1.dependencies.db import get_db_session
+from orchestrator.api.v1.dependencies.realtime import get_relay, require_realtime_enabled
 from orchestrator.api.v1.errors.problem import ProblemException
 from orchestrator.application.dto.finding import FindingRead
 from orchestrator.application.dto.scan_run import ScanRunRead
@@ -39,7 +42,7 @@ from orchestrator.application.use_cases.list_scan_findings import list_scan_find
 from orchestrator.application.use_cases.list_scan_runs import list_scan_runs
 from orchestrator.application.use_cases.trigger_scan import trigger_scan
 from orchestrator.domain.entities.user import User
-from orchestrator.domain.value_objects.enums import ScannerType
+from orchestrator.domain.value_objects.enums import ScannerType, ScanRunStatus
 from orchestrator.infrastructure.db.repositories.code_repository_repository import (
     SqlAlchemyCodeRepositoryRepository,
 )
@@ -52,9 +55,21 @@ from orchestrator.infrastructure.db.repositories.scan_run_repository import (
 from orchestrator.infrastructure.db.repositories.scan_task_repository import (
     SqlAlchemyScanTaskRepository,
 )
+from orchestrator.infrastructure.db.session import get_session
 from orchestrator.infrastructure.observability.metrics import record_scan_accepted
+from orchestrator.infrastructure.realtime.events import ScanStatusEvent
 
 router = APIRouter(prefix="/api/v1", tags=["scans"])
+
+# design D-Transport: `X-Accel-Buffering: no` directly mitigates nginx
+# buffering an SSE response; no `sse-starlette` dependency (see design).
+_HEARTBEAT_SECONDS = 15
+_SSE_HEADERS = {
+    "Cache-Control": "no-cache",
+    "Connection": "keep-alive",
+    "X-Accel-Buffering": "no",
+}
+_TERMINAL_SCAN_STATUSES = {ScanRunStatus.COMPLETED, ScanRunStatus.FAILED, ScanRunStatus.CANCELLED}
 
 
 def _repository_not_found() -> ProblemException:
@@ -169,3 +184,59 @@ async def list_scan_findings_endpoint(
         )
     except ListScanFindingsNotFoundError as exc:
         raise _scan_not_found() from exc
+
+
+def _frame(event: str, data: str) -> str:
+    """Pure SSE framing — byte-exact `event: X\\ndata: Y\\n\\n`, no server needed."""
+    return f"event: {event}\ndata: {data}\n\n"
+
+
+def _is_terminal(payload: str) -> bool:
+    try:
+        event = ScanStatusEvent.from_json(payload)
+    except (ValueError, KeyError):
+        return False
+    return event.status in _TERMINAL_SCAN_STATUSES
+
+
+async def _scan_run_exists(session: AsyncSession, scan_run_id: uuid.UUID) -> bool:
+    scan_run_port = SqlAlchemyScanRunRepository(session)
+    return await scan_run_port.get_by_id(scan_run_id) is not None
+
+
+@router.get(
+    "/scans/{scan_run_id}/events",
+    dependencies=[Depends(require_realtime_enabled)],  # resolved before auth/DB (design D-Gate)
+)
+async def stream_scan_events(
+    scan_run_id: uuid.UUID,
+    request: Request,
+    _user: User = Depends(get_stream_user),  # noqa: B008
+) -> StreamingResponse:
+    """SSE stream of `scan.status` events for `scan_run_id` (design D-Transport).
+
+    The existence check uses its own short-lived session, closed BEFORE the
+    stream begins — mirrors `get_stream_user`'s reasoning: a `StreamingResponse`
+    must never pin a pooled DB connection for the connection's lifetime.
+    """
+    async with get_session() as session:
+        if not await _scan_run_exists(session, scan_run_id):
+            raise _scan_not_found()
+
+    relay = get_relay(request)
+
+    async def _events() -> AsyncIterator[str]:
+        async with relay.subscribe(str(scan_run_id)) as queue:
+            while True:
+                if await request.is_disconnected():
+                    return
+                try:
+                    payload = await asyncio.wait_for(queue.get(), timeout=_HEARTBEAT_SECONDS)
+                except TimeoutError:
+                    yield ": keepalive\n\n"
+                    continue
+                yield _frame("scan.status", payload)
+                if _is_terminal(payload):
+                    return
+
+    return StreamingResponse(_events(), media_type="text/event-stream", headers=_SSE_HEADERS)

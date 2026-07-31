@@ -18,7 +18,7 @@ import pytest
 from fastapi.security import HTTPAuthorizationCredentials
 
 import orchestrator.api.v1.dependencies.auth as auth_module
-from orchestrator.api.v1.dependencies.auth import get_current_user, require_role
+from orchestrator.api.v1.dependencies.auth import get_current_user, get_stream_user, require_role
 from orchestrator.api.v1.errors.problem import ProblemException
 from orchestrator.domain.entities.user import User
 from orchestrator.domain.value_objects.enums import UserRole
@@ -135,3 +135,86 @@ def test_require_role_admin_gate_raises_403_for_member_user() -> None:
         asyncio.run(dependency(user=member))
 
     assert exc_info.value.status_code == 403
+
+
+class _FakeSessionCtx:
+    """Stand-in for `get_session()`'s `@asynccontextmanager` — proves
+    `get_stream_user` opens and closes its OWN short-lived session rather
+    than depending on `get_db_session` (design D-Auth session hazard)."""
+
+    def __init__(self) -> None:
+        self.entered = False
+        self.exited = False
+
+    async def __aenter__(self) -> object:
+        self.entered = True
+        return object()
+
+    async def __aexit__(self, *_exc_info: object) -> None:
+        self.exited = True
+
+
+def test_get_stream_user_prefers_the_header_over_the_query_token(
+    valid_env: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Threat matrix — credential exposure: the header path authenticates
+    with zero query param present, proving the query fallback is
+    browser-only, never mandatory."""
+    user = _make_user()
+    _patch_repository(monkeypatch, {user.id: user})
+    fake_ctx = _FakeSessionCtx()
+    monkeypatch.setattr(auth_module, "get_session", lambda: fake_ctx)
+    token = create_access_token(user)
+
+    result = asyncio.run(get_stream_user(credentials=_bearer(token), access_token=None))
+
+    assert result == user
+    assert fake_ctx.entered and fake_ctx.exited
+
+
+def test_get_stream_user_falls_back_to_the_query_token_when_no_header(
+    valid_env: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    user = _make_user()
+    _patch_repository(monkeypatch, {user.id: user})
+    monkeypatch.setattr(auth_module, "get_session", lambda: _FakeSessionCtx())
+    token = create_access_token(user)
+
+    result = asyncio.run(get_stream_user(credentials=None, access_token=token))
+
+    assert result == user
+
+
+def test_get_stream_user_raises_401_when_neither_header_nor_query_token_present(
+    valid_env: None,
+) -> None:
+    with pytest.raises(ProblemException) as exc_info:
+        asyncio.run(get_stream_user(credentials=None, access_token=None))
+
+    assert exc_info.value.status_code == 401
+
+
+def test_get_stream_user_raises_401_for_an_expired_or_invalid_token(
+    valid_env: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(auth_module, "get_session", lambda: _FakeSessionCtx())
+
+    with pytest.raises(ProblemException) as exc_info:
+        asyncio.run(get_stream_user(credentials=_bearer("not-a-jwt"), access_token=None))
+
+    assert exc_info.value.status_code == 401
+
+
+def test_get_stream_user_closes_its_session_even_when_auth_fails(
+    valid_env: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression guard for the D-Auth session hazard: the short-lived
+    session must be closed even on a 401, never left open."""
+    fake_ctx = _FakeSessionCtx()
+    monkeypatch.setattr(auth_module, "get_session", lambda: fake_ctx)
+    _patch_repository(monkeypatch, {})
+
+    with pytest.raises(ProblemException):
+        asyncio.run(get_stream_user(credentials=_bearer("not-a-jwt"), access_token=None))
+
+    assert fake_ctx.entered and fake_ctx.exited
