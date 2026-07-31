@@ -86,6 +86,13 @@ class Settings(BaseSettings):
     # this repo's other scanners against an arbitrary external target;
     # kept as its own knob rather than overloading `scan_timeout_seconds`.
     dast_timeout_seconds: int = 300
+    # dast-scanner PR6 (design D9): deny-by-default (Non-Goals: "Target
+    # ownership verification is explicitly out of scope"). Mirrors
+    # `credential_encryption_key`'s fail-closed precedent exactly — a fresh
+    # deployment boots with DAST triggering rejected until an operator
+    # explicitly opts in. Checked both at the API gate (`POST
+    # /targets/{id}/scans` -> 403) and, in a later PR, at the worker gate.
+    dast_enabled: bool = False
 
     # Module 10 — HMAC-SHA256 secret for verifying inbound GitHub webhook
     # deliveries. Nullable/fail-closed (D1): the app boots without it; the

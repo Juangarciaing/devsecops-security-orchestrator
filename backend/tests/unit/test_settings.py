@@ -277,6 +277,25 @@ def test_settings_dast_scanner_values_can_be_overridden(
     assert settings.dast_timeout_seconds == 600
 
 
+def test_settings_dast_enabled_defaults_to_false(valid_env: None) -> None:
+    """dast-scanner PR6/design D9: deny-by-default — a fresh deployment MUST
+    NOT be able to trigger a DAST scan without an explicit opt-in, mirroring
+    `credential_encryption_key`'s fail-closed precedent."""
+    settings = Settings(_env_file=None)
+
+    assert settings.dast_enabled is False
+
+
+def test_settings_dast_enabled_can_be_overridden(
+    monkeypatch: pytest.MonkeyPatch, valid_env: None
+) -> None:
+    monkeypatch.setenv("DAST_ENABLED", "true")
+
+    settings = Settings(_env_file=None)
+
+    assert settings.dast_enabled is True
+
+
 def test_settings_rejects_a_key_of_the_wrong_decoded_length(
     monkeypatch: pytest.MonkeyPatch, valid_env: None
 ) -> None:
