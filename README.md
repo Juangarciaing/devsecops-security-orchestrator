@@ -7,9 +7,9 @@ detection running in hardened, ephemeral containers, not a mock.
 
 Built as a portfolio-grade reference for Clean/Hexagonal architecture, async
 task orchestration, and secure-by-design container execution. Delivered in
-13 independently-shippable modules via spec-driven development; all 13 have
-shipped their core scope as of this README (module 11's DAST slot remains
-open).
+13 independently-shippable modules via spec-driven development; all 13,
+including module 11's DAST slot, have shipped their core scope as of this
+README.
 
 ## What's actually implemented
 
@@ -82,16 +82,27 @@ open).
   appends one row to an append-only credential-access audit log (repository,
   actor, outcome, timestamp — never the secret). See "Private-repository
   credentials" below.
+- **DAST scanning (Module 11)** — a fifth scan subject, `ScanTarget`
+  (register/list/update/soft-delete a URL, independent of any Git
+  repository), scanned by [OWASP ZAP](https://www.zaproxy.org/)'s baseline
+  scan in its own hardened, ephemeral container through a dedicated
+  `TargetScanExecutionPort` (the four repository scanners' `ScanExecutionPort`
+  is untouched). `ScanRun`/`Finding` gained a polymorphic subject
+  (`repository_id` XOR `scan_target_id`, DB-enforced), with dedup, trend,
+  diff, and policy-gate behavior unchanged for repository scans and
+  correctly excluding target-sourced rows by construction. **Off by
+  default** — the `dast_enabled` setting is `False` until an operator opts
+  in, checked both at the API (403) and worker gate (see "DAST scanning"
+  below).
 
-Not yet built: a DAST scanner slot (TruffleHog and/or a URL-target scanner
-still under consideration), an *outbound* GitHub Checks API integration
+The Kubernetes Jobs backend (Module 13c) is built and tested but not yet
+enabled in production — see "Kubernetes Jobs execution" below and
+`## Roadmap`. Also not yet built: an *outbound* GitHub Checks API integration
 (posting scan results back to a PR/commit as a native GitHub check — still
 blocked on GitHub App/installation-token auth this project doesn't have,
 which is a separate concern from the personal-access-token secrets manager
 above; the *internal* policy-gate equivalent is built, see above), and
-real-time push (still polling). The Kubernetes Jobs backend (Module 13c) is
-built and tested but not yet enabled in production — see "Kubernetes Jobs
-execution" below and `## Roadmap`.
+real-time push (still polling).
 
 ## Architecture
 
@@ -277,6 +288,78 @@ triggering user — outcome, timestamp). A decrypt failure (wrong/rotated key)
 fails that one scan with a credential-free error and leaves the repository
 `is_active=true`; it is never auto-deactivated.
 
+### DAST scanning (Module 11)
+
+`ScanTarget` (name + URL, no Git identity/credential fields) is a URL-based
+scan subject, independent of `CodeRepository`. It is scanned with
+[OWASP ZAP](https://www.zaproxy.org/)'s baseline scan through its own
+`TargetScanExecutionPort`/`ZapDastDockerExecution` — the four repository
+scanners' `ScanExecutionPort` and factory are untouched. `ScanRun` and
+`Finding` gained a nullable, DB-CHECK-enforced polymorphic subject
+(`repository_id` XOR `scan_target_id`, never both/neither); dedup moved to
+two partial unique indexes so re-scanning a target still deduplicates
+correctly, and the dashboard's trend/diff/policy-gate queries exclude
+target-sourced rows by construction (their `WHERE repository_id = …`
+predicates evaluate to `NULL`, never `TRUE`, for a target row — no extra
+filter was added).
+
+**Setup.** Off by default: set `dast_enabled=true` in `backend/.env` to allow
+triggering target scans (checked at both the `POST /api/v1/targets/{id}/scans`
+API gate and, redundantly, at the worker before any container/network work
+starts). Related settings, all with working defaults:
+
+| Setting | Default | Purpose |
+|---|---|---|
+| `dast_enabled` | `false` | Deny-by-default gate for triggering any target scan. |
+| `scan_zap_image` | `zap-scanner:local` | Locally built image (`docker/zap.Dockerfile`, a thin `FROM`, digest-pinned to upstream `ghcr.io/zaproxy/zaproxy:stable`). |
+| `dast_network_name` | `dast-scan-net` | Dedicated, non-default Docker bridge network every ZAP container joins — never the compose application network. |
+| `dast_timeout_seconds` | `300` | Separate timeout knob from `scan_timeout_seconds`; ZAP's spider + passive scan can run materially longer than the other scanners. |
+
+None of the five scanners (Gitleaks/pip-audit/AST-SAST/Semgrep/ZAP) surface
+their image/network settings through `docker-compose.yml` env overrides —
+all scanner configuration is Python-level `Settings` defaults, read from
+`backend/.env` alone. DAST follows that same precedent; no compose changes
+were needed.
+
+**SSRF guardrail.** Registering a target only validates URL *shape*
+(`domain.services.target_url_policy`: scheme allowlist, no userinfo, no
+IP-literal in a blocked range) — no DNS lookup happens at registration time,
+for UX reasons. Before every scan launch, `infrastructure.security.
+dns_target_resolver` re-resolves the hostname and fails closed if resolution
+errors, returns zero addresses, or if *any* resolved address falls in a
+blocked range (loopback, link-local incl. the `169.254.169.254` cloud
+metadata address, private/CGNAT/ULA, multicast/reserved, and the
+IPv4-mapped-IPv6 unwrap of all of the above). This check runs inside the ZAP
+executor itself, immediately before the container/network is created — not
+in the API layer — so there is no code path that can launch a ZAP container
+against an unvalidated URL.
+
+**Residual risks (documented, not silently accepted):**
+- **Redirect bypass.** ZAP follows HTTP redirects itself, after the guardrail
+  has already run once. A target URL that only redirects to a blocked/
+  internal address *after* the DNS check passes is not re-checked by this
+  guardrail. The actual mitigation for that gap is network isolation, not
+  the DNS check: the ZAP container runs on `dast_network_name`, a dedicated
+  bridge network distinct from the application network, so it cannot reach
+  `postgres`/`redis`/`api` by service name or bridge IP even if a redirect
+  lands somewhere internal.
+- **No target ownership verification.** Any authenticated API user can
+  register any URL (subject only to the SSRF blocklist above) — there is no
+  proof-of-ownership step (e.g. a DNS TXT record or well-known file
+  challenge) as there is none for the URL owner's consent to be scanned.
+  This is an explicit, accepted scope boundary, not an oversight.
+
+**Spike confirmation.** PR4's live-Docker hardening spike found ZAP's own
+`zap` image user needs an explicit `user="1000:1000"` override plus a
+writable `/home/zap` tmpfs (`uid=1000,gid=1000,size=512m`) — rung 3 of the
+design's fallback ladder, the only rung requiring the `ContainerRunnerPort`'s
+per-call `user=` opt-in (never a global default, never root). This exact
+configuration is what shipped in `ZapDastDockerExecution`, and it is proven
+end-to-end (not just at spike time) by two passing live-Docker integration
+tests: `test_zap_dast_execution_live.py` (executor-level, disposable HTTP
+target) and `test_process_scan_task_dast_live.py` (full worker dispatch
+through to persisted findings).
+
 ## Tests
 
 ```bash
@@ -309,6 +392,6 @@ project SDD history for the full spec/design trail per module).
 | 8 | Results API | ✅ |
 | 9 | Dashboard MVP | ✅ |
 | 10 | Webhook handling (GitHub push) | ✅ |
-| 11 | More scanners (pip-audit ✅, AST-SAST ✅, Semgrep ✅, DAST slot pending) | ⏳ |
+| 11 | More scanners (pip-audit ✅, AST-SAST ✅, Semgrep ✅, DAST/ZAP ✅) | ✅ |
 | 12 | Advanced dashboard (trends ✅, diffing ✅, internal policy gate ✅; outbound GitHub Checks API deferred) | ✅ |
 | 13 | Hardening & observability (13a: OTel distributed tracing ✅; 13b: Prometheus metrics ✅; 13c: Kubernetes Jobs backend ✅ built, fail-closed pending a real cluster adapter) | ✅ |
