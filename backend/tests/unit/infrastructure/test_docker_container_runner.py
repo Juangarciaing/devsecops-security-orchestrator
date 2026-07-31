@@ -14,7 +14,7 @@ import pytest
 import requests.exceptions
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
-from orchestrator.domain.ports.container_runner_port import ResourceLimits
+from orchestrator.domain.ports.container_runner_port import ResourceLimits, TmpfsMount
 from orchestrator.infrastructure.container.docker_container_runner import DockerContainerRunner
 
 _LIMITS = ResourceLimits(memory_mb=512, nano_cpus=1_000_000_000, pids_limit=128)
@@ -638,10 +638,11 @@ def test_run_passes_network_name_through_with_hardening_kwargs_unchanged() -> No
 
 
 def test_run_merges_extra_tmpfs_paths_alongside_tmp() -> None:
-    """dast-scanner PR4 (task 4.6): `extra_tmpfs` (appended-last, defaulted
-    `()`) adds additional writable tmpfs mount paths alongside the existing
-    `/tmp` mount — mirrors ZAP's rung-2 fallback need for a second writable
-    path beyond the named volume, without relaxing `/tmp`'s strict noexec."""
+    """dast-scanner PR4 (task 4.6), reshaped by PR5b: a plain, all-`None`
+    `TmpfsMount` (appended-last, defaulted `()`) adds an additional writable
+    tmpfs mount path alongside the existing `/tmp` mount — without relaxing
+    `/tmp`'s strict noexec — and reproduces the pre-PR5b bare-path shape's
+    behavior byte-for-byte."""
     client, _container = _make_mock_client()
     runner = DockerContainerRunner(client=client)
 
@@ -654,14 +655,89 @@ def test_run_merges_extra_tmpfs_paths_alongside_tmp() -> None:
         network_disabled=False,
         limits=_LIMITS,
         timeout_seconds=120,
-        extra_tmpfs=("/home/zap",),
+        extra_tmpfs=(TmpfsMount(path="/home/zap"),),
     )
 
     call_kwargs: dict[str, Any] = client.containers.run.call_args.kwargs
     assert "/tmp" in call_kwargs["tmpfs"]
     assert "noexec" in call_kwargs["tmpfs"]["/tmp"]
     assert "/home/zap" in call_kwargs["tmpfs"]
-    assert "noexec" in call_kwargs["tmpfs"]["/home/zap"]
+    assert call_kwargs["tmpfs"]["/home/zap"] == "rw,noexec,nosuid,size=64m"
+
+
+def test_run_extra_tmpfs_applies_uid_gid_and_size_overrides() -> None:
+    """dast-scanner PR5b (design D6 rung 3): a `TmpfsMount` with `uid`/`gid`/
+    `size_mb` set produces exactly those mount options — the PR4 spike's
+    proven ZAP requirement (`uid=1000,gid=1000,size>=512m`), which the
+    original bare-path `extra_tmpfs` shape could not express. `/tmp` itself
+    is unaffected."""
+    client, _container = _make_mock_client()
+    runner = DockerContainerRunner(client=client)
+
+    runner.run(
+        image="ghcr.io/zaproxy/zaproxy:stable",
+        command=["zap-baseline.py", "-t", "http://example.com"],
+        volume_name="dast-abc123",
+        mount_path="/zap/wrk",
+        read_only_mount=False,
+        network_disabled=False,
+        limits=_LIMITS,
+        timeout_seconds=120,
+        extra_tmpfs=(TmpfsMount(path="/home/zap", uid=1000, gid=1000, size_mb=512),),
+    )
+
+    call_kwargs: dict[str, Any] = client.containers.run.call_args.kwargs
+    assert call_kwargs["tmpfs"]["/home/zap"] == "rw,noexec,nosuid,size=512m,uid=1000,gid=1000"
+    assert call_kwargs["tmpfs"]["/tmp"] == "rw,noexec,nosuid,size=64m"
+
+
+def test_run_user_override_replaces_the_default_nonroot_user() -> None:
+    """dast-scanner PR5b (design D6 rung 3): `user="1000:1000"` reaches the
+    SDK as `user`, replacing this port's hardened default `65532:65532` for
+    THIS call only — every other hardening kwarg (ro rootfs, cap_drop,
+    no-new-privileges, limits) stays unchanged."""
+    client, _container = _make_mock_client()
+    runner = DockerContainerRunner(client=client)
+
+    runner.run(
+        image="ghcr.io/zaproxy/zaproxy:stable",
+        command=["zap-baseline.py", "-t", "http://example.com"],
+        volume_name="dast-abc123",
+        mount_path="/zap/wrk",
+        read_only_mount=False,
+        network_disabled=False,
+        limits=_LIMITS,
+        timeout_seconds=120,
+        user="1000:1000",
+    )
+
+    call_kwargs: dict[str, Any] = client.containers.run.call_args.kwargs
+    assert call_kwargs["user"] == "1000:1000"
+    assert call_kwargs["read_only"] is True
+    assert call_kwargs["cap_drop"] == ["ALL"]
+    assert call_kwargs["security_opt"] == ["no-new-privileges"]
+
+
+def test_run_user_none_reproduces_the_default_nonroot_user() -> None:
+    """`user=None` (the default) MUST reproduce today's behavior byte-for-
+    byte — no existing caller passes `user`, so every one keeps launching
+    as `65532:65532`."""
+    client, _container = _make_mock_client()
+    runner = DockerContainerRunner(client=client)
+
+    runner.run(
+        image="ghcr.io/gitleaks/gitleaks:v8.30.1",
+        command=["dir", "/checkout/checkout"],
+        volume_name="scan-abc123",
+        mount_path="/checkout",
+        read_only_mount=True,
+        network_disabled=True,
+        limits=_LIMITS,
+        timeout_seconds=120,
+    )
+
+    call_kwargs: dict[str, Any] = client.containers.run.call_args.kwargs
+    assert call_kwargs["user"] == "65532:65532"
 
 
 def test_run_never_sets_an_env_span_attribute_or_metric_label(

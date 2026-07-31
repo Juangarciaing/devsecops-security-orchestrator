@@ -21,6 +21,7 @@ from orchestrator.domain.ports.container_runner_port import (
     ContainerRunnerPort,
     ResourceLimits,
     RunResult,
+    TmpfsMount,
 )
 
 if TYPE_CHECKING:
@@ -56,6 +57,23 @@ def _is_wait_read_timeout(exc: requests.exceptions.ConnectionError) -> bool:
 def container_metric_outcome(*, timed_out: bool) -> str:
     """Map container completion to the finite metric outcome taxonomy."""
     return "timeout" if timed_out else "success"
+
+
+def _extra_tmpfs_opts(mount: TmpfsMount, *, tmp_exec: bool) -> str:
+    """Build one `extra_tmpfs` entry's mount-option string (dast-scanner
+    PR5b). An all-`None` `TmpfsMount` reproduces the plain `/tmp` default
+    byte-for-byte (`_TMPFS_MOUNT_OPTS`/`_TMPFS_MOUNT_OPTS_EXEC`'s `size=64m`,
+    no explicit `uid`/`gid`); any of `uid`/`gid`/`size_mb` set overrides
+    just that option — design D6 rung 3: ZAP's `/home/zap` needs
+    `uid=1000,gid=1000,size>=512m`, which the original bare-path
+    `extra_tmpfs` shape (PR4) could not express."""
+    size_mb = mount.size_mb if mount.size_mb is not None else 64
+    opts = ["rw", "exec" if tmp_exec else "noexec", "nosuid", f"size={size_mb}m"]
+    if mount.uid is not None:
+        opts.append(f"uid={mount.uid}")
+    if mount.gid is not None:
+        opts.append(f"gid={mount.gid}")
+    return ",".join(opts)
 
 
 def _network_mode(*, network_disabled: bool, network_name: str | None) -> str | None:
@@ -99,7 +117,8 @@ class DockerContainerRunner(ContainerRunnerPort):
         cleanup_anonymous_volumes: bool = False,
         env: dict[str, str] | None = None,
         network_name: str | None = None,
-        extra_tmpfs: tuple[str, ...] = (),
+        extra_tmpfs: tuple[TmpfsMount, ...] = (),
+        user: str | None = None,
     ) -> RunResult:
         """One `container.run` span covers this call's entire launch-to-exit
         lifetime — the deepest point of instrumentation for the scanning step
@@ -116,10 +135,11 @@ class DockerContainerRunner(ContainerRunnerPort):
         `containers.run(...)` call is byte-for-byte unchanged. `env` MUST
         NEVER be read into a span attribute, metric label, or log field.
 
-        `network_name` and `extra_tmpfs` (PR4) are documented on
-        `ContainerRunnerPort.run` — see that docstring for the fail-closed
-        `network_disabled`/`network_name` contract and the `extra_tmpfs`
-        merge behavior.
+        `network_name` and `extra_tmpfs` (PR4, `extra_tmpfs` reshaped by
+        dast-scanner PR5b) are documented on `ContainerRunnerPort.run` — see
+        that docstring for the fail-closed `network_disabled`/`network_name`
+        contract and the `extra_tmpfs` merge behavior. `user` (PR5b) is
+        documented there too — `None` reproduces `_NONROOT_USER` unchanged.
         """
         network_mode = _network_mode(network_disabled=network_disabled, network_name=network_name)
         tracer = trace.get_tracer(__name__)
@@ -129,15 +149,15 @@ class DockerContainerRunner(ContainerRunnerPort):
 
             start = time.monotonic()
             tmpfs = {"/tmp": _TMPFS_MOUNT_OPTS_EXEC if tmp_exec else _TMPFS_MOUNT_OPTS}
-            for path in extra_tmpfs:
-                tmpfs[path] = _TMPFS_MOUNT_OPTS_EXEC if tmp_exec else _TMPFS_MOUNT_OPTS
+            for mount in extra_tmpfs:
+                tmpfs[mount.path] = _extra_tmpfs_opts(mount, tmp_exec=tmp_exec)
             run_kwargs: dict[str, Any] = {
                 "image": image,
                 "command": command,
                 "volumes": {
                     volume_name: {"bind": mount_path, "mode": "ro" if read_only_mount else "rw"}
                 },
-                "user": _NONROOT_USER,
+                "user": user if user is not None else _NONROOT_USER,
                 "read_only": True,
                 "cap_drop": ["ALL"],
                 "security_opt": ["no-new-privileges"],
