@@ -98,6 +98,15 @@ describe('useScanEvents', () => {
     expect(result.current.live).toBe(false)
   })
 
+  it('never throws and stays not-live when EventSource is unsupported', () => {
+    vi.stubGlobal('EventSource', undefined)
+    const queryClient = createTestQueryClient()
+
+    const { result } = renderWithClient('s1', queryClient)
+
+    expect(result.current.live).toBe(false)
+  })
+
   it('sets live true on open and false on error', async () => {
     const queryClient = createTestQueryClient()
     const { result } = renderWithClient('s1', queryClient)

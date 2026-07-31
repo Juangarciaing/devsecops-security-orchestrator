@@ -41,6 +41,7 @@ from orchestrator.application.use_cases.list_scan_findings import (
 from orchestrator.application.use_cases.list_scan_findings import list_scan_findings
 from orchestrator.application.use_cases.list_scan_runs import list_scan_runs
 from orchestrator.application.use_cases.trigger_scan import trigger_scan
+from orchestrator.domain.entities.scan_run import ScanRun
 from orchestrator.domain.entities.user import User
 from orchestrator.domain.value_objects.enums import ScannerType, ScanRunStatus
 from orchestrator.infrastructure.db.repositories.code_repository_repository import (
@@ -199,9 +200,9 @@ def _is_terminal(payload: str) -> bool:
     return event.status in _TERMINAL_SCAN_STATUSES
 
 
-async def _scan_run_exists(session: AsyncSession, scan_run_id: uuid.UUID) -> bool:
+async def _get_scan_run(session: AsyncSession, scan_run_id: uuid.UUID) -> ScanRun | None:
     scan_run_port = SqlAlchemyScanRunRepository(session)
-    return await scan_run_port.get_by_id(scan_run_id) is not None
+    return await scan_run_port.get_by_id(scan_run_id)
 
 
 @router.get(
@@ -218,10 +219,29 @@ async def stream_scan_events(
     The existence check uses its own short-lived session, closed BEFORE the
     stream begins — mirrors `get_stream_user`'s reasoning: a `StreamingResponse`
     must never pin a pooled DB connection for the connection's lifetime.
+
+    A scan already in a terminal status when this connects gets exactly ONE
+    event reflecting its current status, then closes immediately — it MUST
+    NOT subscribe to the relay, since the transition already happened before
+    this connection existed and no future publish for it will ever arrive
+    (a subscribed connection would otherwise heartbeat forever, waiting on
+    an event that can never come).
     """
     async with get_session() as session:
-        if not await _scan_run_exists(session, scan_run_id):
-            raise _scan_not_found()
+        scan_run = await _get_scan_run(session, scan_run_id)
+    if scan_run is None:
+        raise _scan_not_found()
+
+    if scan_run.status in _TERMINAL_SCAN_STATUSES:
+        at = (scan_run.completed_at or scan_run.created_at).isoformat()
+        terminal_event = ScanStatusEvent(scan_run_id=scan_run_id, status=scan_run.status, at=at)
+
+        async def _terminal_only() -> AsyncIterator[str]:
+            yield _frame("scan.status", terminal_event.to_json())
+
+        return StreamingResponse(
+            _terminal_only(), media_type="text/event-stream", headers=_SSE_HEADERS
+        )
 
     relay = get_relay(request)
 

@@ -255,6 +255,57 @@ def test_terminal_event_closes_the_stream(
     assert relay.subscribe_calls == [str(scan_run_id)]
 
 
+def test_already_terminal_scan_sends_one_event_and_closes_without_subscribing(
+    valid_env: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Spec: connecting to a scan already in a terminal status sends exactly
+    one event reflecting its current status, then closes — it must never
+    subscribe to the relay, since the transition already happened before
+    this connection existed and no future publish for it will ever arrive."""
+    monkeypatch.setenv("REALTIME_ENABLED", "true")
+    user = _make_user()
+    scan_run_id = uuid.uuid4()
+    now = datetime.now(UTC).replace(tzinfo=None)
+    scan_run = ScanRun(
+        id=scan_run_id,
+        repository_id=uuid.uuid4(),
+        scan_target_id=None,
+        status=ScanRunStatus.COMPLETED,
+        trigger="manual",
+        commit_sha="abc123",
+        ref="abc123",
+        created_at=now,
+        started_at=now,
+        completed_at=now,
+    )
+    monkeypatch.setattr(auth_module, "get_session", _SessionSpy())
+    monkeypatch.setattr(
+        auth_module, "SqlAlchemyUserRepository", _FakeUserRepository({user.id: user})
+    )
+    monkeypatch.setattr(scans_module, "get_session", _SessionSpy())
+    monkeypatch.setattr(
+        scans_module,
+        "SqlAlchemyScanRunRepository",
+        _FakeScanRunRepository({scan_run_id: scan_run}),
+    )
+    app = create_app()
+    relay = _FakeRelay()
+    app.state.scan_event_relay = relay
+    token = create_access_token(user)
+
+    with TestClient(app) as client:
+        response = client.get(
+            f"/api/v1/scans/{scan_run_id}/events",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/event-stream")
+    assert "event: scan.status" in response.text
+    assert '"status": "completed"' in response.text
+    assert relay.subscribe_calls == []
+
+
 def test_no_pooled_session_is_held_while_streaming(
     valid_env: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:

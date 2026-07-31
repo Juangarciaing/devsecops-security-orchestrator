@@ -43,6 +43,11 @@ export function useScanEvents(id: string): { live: boolean } {
     if (!id || !token) {
       return
     }
+    // Spec: an unsupported browser (no EventSource) falls back to polling
+    // immediately, without ever throwing — `live` simply stays `false`.
+    if (typeof EventSource === 'undefined') {
+      return
+    }
 
     const source = new EventSource(streamUrl(id, token))
 
