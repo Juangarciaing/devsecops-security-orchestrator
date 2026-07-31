@@ -71,6 +71,22 @@ class Settings(BaseSettings):
     # build time). Tag-only here, mirroring `scan_sast_image`.
     scan_semgrep_image: str = "semgrep-scanner:local"
 
+    # dast-scanner PR5b — OWASP ZAP baseline DAST scanner image, built
+    # locally from `docker/zap.Dockerfile` (a thin `FROM`, digest-pinned to
+    # the upstream `ghcr.io/zaproxy/zaproxy:stable` image — no local
+    # modification). Tag-only here, mirroring `scan_semgrep_image`/
+    # `scan_pip_audit_image`.
+    scan_zap_image: str = "zap-scanner:local"
+    # Name of the dedicated, non-default Docker bridge network every ZAP
+    # scan container joins (design D4) — never the compose default bridge,
+    # so it cannot reach `postgres`/`redis`/`api` by service name or bridge
+    # IP even if URL/DNS validation is bypassed.
+    dast_network_name: str = "dast-scan-net"
+    # ZAP baseline scans (spider + passive) can run materially longer than
+    # this repo's other scanners against an arbitrary external target;
+    # kept as its own knob rather than overloading `scan_timeout_seconds`.
+    dast_timeout_seconds: int = 300
+
     # Module 10 — HMAC-SHA256 secret for verifying inbound GitHub webhook
     # deliveries. Nullable/fail-closed (D1): the app boots without it; the
     # signature verifier treats an unset secret as always-invalid, so every
