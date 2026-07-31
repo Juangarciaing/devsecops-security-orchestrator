@@ -21,6 +21,7 @@ from __future__ import annotations
 import asyncio
 import uuid
 from collections.abc import Awaitable, Callable
+from types import SimpleNamespace
 from typing import TYPE_CHECKING
 from unittest.mock import MagicMock
 
@@ -973,3 +974,409 @@ def test_process_scan_task_target_subject_write_back_span_uses_scan_target_id(
     assert write_back_attrs is not None
     assert write_back_attrs["scan_target.id"] == str(_TARGET_ID)
     assert "repository.id" not in write_back_attrs
+
+
+# ---------------------------------------------------------------------------
+# realtime-push PR2 — `publish_scan_status` call sites (design
+# D-Publish-Points): 5 call sites keyed off already-returned transition
+# booleans, and `_mark_failed`'s appended `scan_run_id` 4th tuple element.
+# ---------------------------------------------------------------------------
+
+
+def test_mark_failed_appends_scan_run_id_as_the_fourth_tuple_element(
+    monkeypatch: pytest.MonkeyPatch, valid_env: None
+) -> None:
+    """Task 2.1: `_mark_failed`'s return grows an appended `scan_run_id`
+    (realtime-push PR2) — the same additive-tuple-growth precedent as
+    `_load_and_start`'s `subject` (task 7.1) — so a caller can publish a
+    `failed` transition without needing a separately-threaded id. Consumed
+    at call sites via the `result[3] if len(result) >= 4 else None` idiom so
+    pre-existing 3-tuple test doubles (`test_process_scan_metrics.py`'s
+    `_wire`) keep working unmodified."""
+    from orchestrator.domain.value_objects.enums import ScanTaskStatus
+    from orchestrator.workers.tasks import process_scan
+
+    _target, run, task = _make_target_entities(task_status=ScanTaskStatus.RUNNING)
+    task_repo = _FakeTaskRepoForLoad(task)
+    run_repo = _FakeRunRepoForLoad(run)
+
+    monkeypatch.setattr(process_scan, "SqlAlchemyScanTaskRepository", lambda _s: task_repo)
+    monkeypatch.setattr(process_scan, "SqlAlchemyScanRunRepository", lambda _s: run_repo)
+
+    result = asyncio.run(
+        process_scan._mark_failed(_FakeSession(), task.id, "boom")  # type: ignore[arg-type]
+    )
+
+    assert len(result) == 4
+    transitioned, scanner_type, _duration, scan_run_id = result
+    assert transitioned is True
+    assert scanner_type == ScannerType.DAST
+    assert scan_run_id == run.id  # type: ignore[attr-defined]
+
+
+def test_mark_failed_still_appends_scan_run_id_when_not_transitioned(
+    monkeypatch: pytest.MonkeyPatch, valid_env: None
+) -> None:
+    """An already-terminal task (`transitioned=False`) still returns the 4th
+    element — callers gate the publish on `transitioned`, not on the tuple
+    shape."""
+    from orchestrator.domain.value_objects.enums import ScanTaskStatus
+    from orchestrator.workers.tasks import process_scan
+
+    _target, run, task = _make_target_entities(task_status=ScanTaskStatus.COMPLETED)
+    task_repo = _FakeTaskRepoForLoad(task)
+    run_repo = _FakeRunRepoForLoad(run)
+
+    monkeypatch.setattr(process_scan, "SqlAlchemyScanTaskRepository", lambda _s: task_repo)
+    monkeypatch.setattr(process_scan, "SqlAlchemyScanRunRepository", lambda _s: run_repo)
+
+    result = asyncio.run(
+        process_scan._mark_failed(_FakeSession(), task.id, "boom")  # type: ignore[arg-type]
+    )
+
+    assert len(result) == 4
+    assert result[0] is False
+    assert result[3] == run.id  # type: ignore[attr-defined]
+
+
+def _wire_publish(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    load: tuple[object, ...],
+    complete: tuple[bool, float] = (True, 30.0),
+    complete_target: tuple[bool, float] = (True, 30.0),
+    checkout: object = ("head", []),
+    target_scan: object = (),
+    failed: tuple[object, ...] = (True, ScannerType.SECRETS, 150.0, _SCAN_RUN_ID),
+) -> tuple[SimpleNamespace, list[tuple[uuid.UUID, object]]]:
+    """Wire `process_scan_task`'s DB helpers to canned fakes and record every
+    `publish_scan_status(scan_run_id, status, ...)` call — mirrors
+    `test_process_scan_metrics.py`'s `_wire()` shape."""
+    from types import SimpleNamespace
+
+    from orchestrator.workers.tasks import process_scan
+
+    publishes: list[tuple[uuid.UUID, object]] = []
+
+    async def load_scan(*_args: object) -> tuple[object, ...]:
+        return load
+
+    async def complete_scan(*_args: object) -> tuple[bool, float]:
+        return complete
+
+    async def complete_target_scan(*_args: object) -> tuple[bool, float]:
+        return complete_target
+
+    async def mark_failed(*_args: object) -> tuple[object, ...]:
+        return failed
+
+    def checkout_scan(*_args: object) -> tuple[str, list[Finding]]:
+        if isinstance(checkout, Exception):
+            raise checkout
+        return checkout  # type: ignore[return-value]
+
+    def run_target_scan(*_args: object) -> list[object]:
+        if isinstance(target_scan, Exception):
+            raise target_scan
+        return list(target_scan)  # type: ignore[arg-type]
+
+    def fake_publish(scan_run_id: uuid.UUID, status: object, *, settings: object) -> None:
+        publishes.append((scan_run_id, status))
+
+    monkeypatch.setattr(process_scan, "run_async", _fake_run_async)
+    monkeypatch.setattr(process_scan, "_load_and_start", load_scan)
+    monkeypatch.setattr(process_scan, "_complete_scan", complete_scan)
+    monkeypatch.setattr(process_scan, "_complete_target_scan", complete_target_scan)
+    monkeypatch.setattr(process_scan, "_mark_failed", mark_failed)
+    monkeypatch.setattr(process_scan, "_checkout_and_scan", checkout_scan)
+    monkeypatch.setattr(process_scan, "_run_target_scan", run_target_scan)
+    monkeypatch.setattr(process_scan, "publish_scan_status", fake_publish)
+    monkeypatch.setattr(process_scan, "record_scan_started", lambda *_a: None)
+    monkeypatch.setattr(process_scan, "record_scan_retried", lambda *_a: None)
+    monkeypatch.setattr(process_scan, "record_scan_terminal", lambda *_a: None)
+    monkeypatch.setattr(process_scan, "record_scan_findings", lambda *_a: None)
+    monkeypatch.setattr(process_scan, "record_scanner_duration", lambda *_a: None)
+
+    task = SimpleNamespace(request=SimpleNamespace(retries=0), retry=MagicMock())
+    return task, publishes
+
+
+def _invoke_wired(task: object) -> None:
+    from orchestrator.workers.tasks.process_scan import process_scan_task
+
+    process_scan_task.run.__func__(task, str(_TASK_ID), docker_client=MagicMock())  # type: ignore[attr-defined]
+
+
+def _repository_load(*, started: bool, terminal: bool = False) -> tuple[object, ...]:
+    from orchestrator.domain.value_objects.scan_subject import ScanSubject, ScanSubjectKind
+
+    return (
+        _CLONE_URL,
+        _REF,
+        _SCAN_RUN_ID,
+        _REPOSITORY_ID,
+        ScannerType.SECRETS,
+        started,
+        terminal,
+        None,
+        ScanSubject(ScanSubjectKind.REPOSITORY, _REPOSITORY_ID),
+    )
+
+
+def _target_load(*, started: bool, terminal: bool = False) -> tuple[object, ...]:
+    from orchestrator.domain.value_objects.scan_subject import ScanSubject, ScanSubjectKind
+
+    return (
+        _TARGET_URL,
+        None,
+        _SCAN_RUN_ID,
+        None,
+        ScannerType.DAST,
+        started,
+        terminal,
+        None,
+        ScanSubject(ScanSubjectKind.SCAN_TARGET, _TARGET_ID),
+    )
+
+
+def test_process_scan_task_publishes_running_after_load_and_start_commits(
+    monkeypatch: pytest.MonkeyPatch, valid_env: None
+) -> None:
+    """Task 2.3: `started is True` (the `pending -> running` transition
+    already committed by `_load_and_start`) publishes `running`."""
+    from orchestrator.domain.value_objects.enums import ScanRunStatus
+
+    task, publishes = _wire_publish(monkeypatch, load=_repository_load(started=True))
+
+    _invoke_wired(task)
+
+    assert (_SCAN_RUN_ID, ScanRunStatus.RUNNING) in publishes
+
+
+def test_process_scan_task_does_not_publish_running_when_not_started(
+    monkeypatch: pytest.MonkeyPatch, valid_env: None
+) -> None:
+    """A retry with no fresh `pending -> running` transition (`started=False`)
+    must not re-publish `running`. `complete=(False, 0.0)` isolates this
+    call site from the separate `completed` publish point."""
+    task, publishes = _wire_publish(
+        monkeypatch, load=_repository_load(started=False), complete=(False, 0.0)
+    )
+
+    _invoke_wired(task)
+
+    assert publishes == []
+
+
+def test_process_scan_task_publishes_completed_after_complete_scan_transitions(
+    monkeypatch: pytest.MonkeyPatch, valid_env: None
+) -> None:
+    """Task 2.3: the repository-subject `_complete_scan` transition
+    publishes `completed`."""
+    from orchestrator.domain.value_objects.enums import ScanRunStatus
+
+    task, publishes = _wire_publish(
+        monkeypatch, load=_repository_load(started=False), complete=(True, 42.0)
+    )
+
+    _invoke_wired(task)
+
+    assert (_SCAN_RUN_ID, ScanRunStatus.COMPLETED) in publishes
+
+
+def test_process_scan_task_publishes_completed_after_complete_target_scan_transitions(
+    monkeypatch: pytest.MonkeyPatch, valid_env: None
+) -> None:
+    """Task 2.3: the target-subject `_complete_target_scan` transition
+    publishes `completed` (dast-scanner dispatch path, sibling of the
+    repository-subject call site)."""
+    from orchestrator.domain.value_objects.enums import ScanRunStatus
+
+    task, publishes = _wire_publish(
+        monkeypatch, load=_target_load(started=False), complete_target=(True, 42.0)
+    )
+
+    _invoke_wired(task)
+
+    assert (_SCAN_RUN_ID, ScanRunStatus.COMPLETED) in publishes
+
+
+def test_process_scan_task_publishes_failed_after_deterministic_mark_failed(
+    monkeypatch: pytest.MonkeyPatch, valid_env: None
+) -> None:
+    """Task 2.3: a deterministic failure (`CheckoutFailedError` et al.)
+    publishes `failed` using `_mark_failed`'s appended `scan_run_id`."""
+    from orchestrator.domain.value_objects.enums import ScanRunStatus
+    from orchestrator.infrastructure.vcs.git_checkout import CheckoutFailedError
+
+    task, publishes = _wire_publish(
+        monkeypatch,
+        load=_repository_load(started=False),
+        checkout=CheckoutFailedError("clone failed"),
+        failed=(True, ScannerType.SECRETS, 150.0, _SCAN_RUN_ID),
+    )
+
+    _invoke_wired(task)
+
+    assert (_SCAN_RUN_ID, ScanRunStatus.FAILED) in publishes
+
+
+def test_process_scan_task_publishes_failed_after_retries_exhausted_mark_failed(
+    monkeypatch: pytest.MonkeyPatch, valid_env: None
+) -> None:
+    """Task 2.3: once retries are exhausted, the retries-exhausted
+    `_mark_failed` call site publishes `failed` too."""
+    from celery.exceptions import Retry
+
+    from orchestrator.domain.value_objects.enums import ScanRunStatus
+    from orchestrator.workers.tasks.process_scan import MAX_RETRIES, TransientScanError
+
+    task, publishes = _wire_publish(
+        monkeypatch,
+        load=_repository_load(started=False),
+        checkout=RuntimeError("daemon unavailable"),
+        failed=(True, ScannerType.SECRETS, 150.0, _SCAN_RUN_ID),
+    )
+    task.retry.side_effect = Retry()
+
+    with pytest.raises(Retry):
+        _invoke_wired(task)
+    assert publishes == []
+
+    task.request.retries = MAX_RETRIES
+    task.retry.side_effect = TransientScanError("daemon unavailable")
+    _invoke_wired(task)
+
+    assert (_SCAN_RUN_ID, ScanRunStatus.FAILED) in publishes
+
+
+def test_process_scan_task_skips_publish_when_mark_failed_returns_a_legacy_three_tuple(
+    monkeypatch: pytest.MonkeyPatch, valid_env: None
+) -> None:
+    """Threat/regression guard: a pre-existing 3-tuple `_mark_failed` test
+    double (no `scan_run_id`) must not crash the call site — the
+    `len(result) >= 4` idiom degrades to skipping the publish, never to a
+    `None`-payload publish."""
+    from orchestrator.infrastructure.scanners.gitleaks_adapter import GitleaksFailedError
+
+    task, publishes = _wire_publish(
+        monkeypatch,
+        load=_repository_load(started=False),
+        checkout=GitleaksFailedError("bad config"),
+        failed=(True, ScannerType.SECRETS, 150.0),  # legacy 3-tuple, no scan_run_id
+    )
+
+    _invoke_wired(task)
+
+    assert publishes == []
+
+
+def test_process_scan_task_survives_an_exploding_publisher_with_zero_retries(
+    monkeypatch: pytest.MonkeyPatch, valid_env: None
+) -> None:
+    """Task 2.4 (design's blanket `except Exception` + threat matrix
+    "Availability — publish failure fails a scan"): the call site invokes
+    `publish_scan_status` UNGUARDED because the REAL publisher already
+    swallows every exception internally. Proven end to end here by injecting
+    an exploding low-level Redis client and confirming the scan still
+    reaches `completed` with zero retries."""
+    from types import SimpleNamespace
+
+    from orchestrator.infrastructure.realtime import publisher as publisher_module
+    from orchestrator.workers.tasks import process_scan
+
+    monkeypatch.setenv("REALTIME_ENABLED", "true")
+
+    publish_attempts: list[str] = []
+
+    class _ExplodingClient:
+        def publish(self, *_args: object, **_kwargs: object) -> None:
+            publish_attempts.append("attempted")
+            raise RuntimeError("redis is on fire")
+
+    monkeypatch.setattr(publisher_module, "_build_client", lambda _settings: _ExplodingClient())
+
+    terminal_calls: list[object] = []
+
+    async def load_scan(*_args: object) -> tuple[object, ...]:
+        return _repository_load(started=False)
+
+    async def complete_scan(*_args: object) -> tuple[bool, float]:
+        return True, 42.0
+
+    def checkout_scan(*_args: object) -> tuple[str, list[Finding]]:
+        return "head", []
+
+    monkeypatch.setattr(process_scan, "run_async", _fake_run_async)
+    monkeypatch.setattr(process_scan, "_load_and_start", load_scan)
+    monkeypatch.setattr(process_scan, "_complete_scan", complete_scan)
+    monkeypatch.setattr(process_scan, "_checkout_and_scan", checkout_scan)
+    monkeypatch.setattr(process_scan, "record_scan_started", lambda *_a: None)
+    monkeypatch.setattr(
+        process_scan, "record_scan_terminal", lambda *args: terminal_calls.append(args)
+    )
+    monkeypatch.setattr(process_scan, "record_scan_findings", lambda *_a: None)
+    monkeypatch.setattr(process_scan, "record_scanner_duration", lambda *_a: None)
+
+    task = SimpleNamespace(request=SimpleNamespace(retries=0), retry=MagicMock())
+    _invoke_wired(task)  # must NOT raise despite the exploding client
+
+    assert publish_attempts == ["attempted"]  # the call site really was reached
+    assert task.retry.call_count == 0
+    assert terminal_calls == [(ScannerType.SECRETS, "completed", "none", 42.0)]
+
+
+def test_process_scan_task_realtime_disabled_produces_zero_publish_io(
+    monkeypatch: pytest.MonkeyPatch, valid_env: None
+) -> None:
+    """Task 2.5 (design D-Gate, enforced by the publisher's own internal
+    check — no new gate in `process_scan.py`): `realtime_enabled=False`
+    (the default) means `publish_scan_status` returns before ever building a
+    Redis client, for every one of the 5 call sites it can reach in one
+    happy-path run."""
+    from types import SimpleNamespace
+
+    from orchestrator.infrastructure.realtime import publisher as publisher_module
+    from orchestrator.workers.tasks import process_scan
+
+    def _exploding_build_client(_settings: object) -> object:
+        raise AssertionError("a disabled feature must never construct a Redis client")
+
+    monkeypatch.setattr(publisher_module, "_build_client", _exploding_build_client)
+
+    call_site_reached: list[str] = []
+    real_publish_scan_status = process_scan.publish_scan_status
+
+    def _spy_publish(*args: object, **kwargs: object) -> None:
+        call_site_reached.append("reached")
+        real_publish_scan_status(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(process_scan, "publish_scan_status", _spy_publish)
+
+    async def load_scan(*_args: object) -> tuple[object, ...]:
+        return _repository_load(started=True)
+
+    async def complete_scan(*_args: object) -> tuple[bool, float]:
+        return True, 42.0
+
+    def checkout_scan(*_args: object) -> tuple[str, list[Finding]]:
+        return "head", []
+
+    monkeypatch.setattr(process_scan, "run_async", _fake_run_async)
+    monkeypatch.setattr(process_scan, "_load_and_start", load_scan)
+    monkeypatch.setattr(process_scan, "_complete_scan", complete_scan)
+    monkeypatch.setattr(process_scan, "_checkout_and_scan", checkout_scan)
+    monkeypatch.setattr(process_scan, "record_scan_started", lambda *_a: None)
+    monkeypatch.setattr(process_scan, "record_scan_terminal", lambda *_a: None)
+    monkeypatch.setattr(process_scan, "record_scan_findings", lambda *_a: None)
+    monkeypatch.setattr(process_scan, "record_scanner_duration", lambda *_a: None)
+
+    task = SimpleNamespace(request=SimpleNamespace(retries=0), retry=MagicMock())
+    _invoke_wired(task)  # must NOT raise: realtime_enabled defaults to False
+
+    # both the `running` and `completed` call sites are reached in this
+    # happy-path run — the call sites exist and were invoked.
+    assert call_site_reached == ["reached", "reached"]
+    # `_exploding_build_client` never firing (no AssertionError propagated) is the
+    # zero-I/O proof: the publisher's own `if not settings.realtime_enabled: return`
+    # short-circuits before ever touching a Redis client.

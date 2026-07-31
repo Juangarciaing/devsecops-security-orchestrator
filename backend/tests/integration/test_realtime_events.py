@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import uuid
 
 import pytest
 import redis as sync_redis
@@ -106,3 +107,38 @@ def test_psubscribe_count_stays_at_one_regardless_of_concurrent_client_count() -
     assert numpat_after_all_disconnect == 1
     assert numpat_after_relay_stop == 0
     assert _channels() == []  # never a plain SUBSCRIBE, only PSUBSCRIBE, throughout
+
+
+def test_worker_sync_publish_reaches_the_api_async_relay_across_processes() -> None:
+    """Task 2.7 (realtime-push PR2, design's Data Flow diagram): the
+    worker-side SYNC `publish_scan_status` (its own independently-constructed
+    `redis.Redis` client, built lazily inside `publisher.py` — the same shape
+    a forked Celery child uses) actually reaches the API-side ASYNC
+    `ScanEventRelay` (its own independently-constructed `redis.asyncio.Redis`
+    client) over the real `scan:{id}:events` channel naming — the two halves
+    of this feature never share a client, a connection, or even an event
+    loop, and this is the one test that proves they still talk to each other
+    correctly through Redis."""
+    from orchestrator.domain.value_objects.enums import ScanRunStatus
+    from orchestrator.infrastructure.realtime.events import ScanStatusEvent
+    from orchestrator.infrastructure.realtime.publisher import publish_scan_status
+
+    scan_run_id = uuid.uuid4()
+
+    async def _run() -> str:
+        relay = ScanEventRelay(_settings())
+        await relay.start()
+        try:
+            async with relay.subscribe(str(scan_run_id)) as queue:
+                # Worker-side half: sync, blocking, its own real Redis client —
+                # exactly how `process_scan_task`'s sync body calls it (PR2).
+                publish_scan_status(scan_run_id, ScanRunStatus.RUNNING, settings=_settings())
+                return await asyncio.wait_for(queue.get(), timeout=5.0)
+        finally:
+            await relay.stop()
+
+    raw_payload = asyncio.run(_run())
+
+    event = ScanStatusEvent.from_json(raw_payload)
+    assert event.scan_run_id == scan_run_id
+    assert event.status == ScanRunStatus.RUNNING
