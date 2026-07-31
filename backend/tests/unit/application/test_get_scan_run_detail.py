@@ -86,6 +86,11 @@ class _FakeScanTaskRepository(ScanTaskPort):
     ) -> ScanTask | None:
         return None  # pragma: no cover — unused in tests
 
+    async def find_active_target_task(
+        self, scan_target_id: uuid.UUID, scanner_type: ScannerType
+    ) -> ScanTask | None:
+        return None  # pragma: no cover — unused in tests
+
 
 class _FakeFindingCounter:
     def __init__(self, count: int) -> None:

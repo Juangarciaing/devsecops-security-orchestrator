@@ -49,3 +49,16 @@ class ScanTaskPort(ABC):
         `repository_id`/`commit_sha` live on the owning `ScanRun`, while
         `scanner_type` lives on the `ScanTask` itself (D3).
         """
+
+    @abstractmethod
+    async def find_active_target_task(
+        self, scan_target_id: uuid.UUID, scanner_type: ScannerType
+    ) -> ScanTask | None:
+        """Return an in-flight `ScanTask` for `(scan_target_id, scanner_type)`.
+
+        Sibling of `find_active_task` for a `ScanTarget`-subject run
+        (dast-scanner PR6): a target scan has no `commit_sha`, so matching is
+        `(scan_target_id, scanner_type)` only. "In-flight" means the task's
+        `status` is `PENDING` or `RUNNING`; `scan_target_id` lives on the
+        owning `ScanRun`, `scanner_type` on the `ScanTask` itself.
+        """

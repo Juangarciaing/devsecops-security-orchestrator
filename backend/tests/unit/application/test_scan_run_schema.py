@@ -57,6 +57,25 @@ def test_round_trip_preserves_all_fields_with_timestamps_set() -> None:
     assert schema.status is ScanRunStatus.COMPLETED
 
 
+def test_round_trip_preserves_a_scan_target_subject_run() -> None:
+    """dast-scanner PR6: `ScanRunRead` MUST round-trip a target-subject run
+    (`repository_id=None`, `commit_sha=None`, `ref=None`, `scan_target_id`
+    set) — needed for `POST /targets/{id}/scans`'s response body."""
+    entity = _make_entity(
+        repository_id=None,
+        commit_sha=None,
+        ref=None,
+        scan_target_id=uuid.uuid4(),
+    )
+
+    schema = ScanRunRead.from_entity(entity)
+    round_tripped = schema.to_entity()
+
+    assert round_tripped == entity
+    assert schema.repository_id is None
+    assert schema.scan_target_id == entity.scan_target_id
+
+
 def test_invalid_status_raises_validation_error() -> None:
     now = datetime.now(UTC)
 

@@ -29,19 +29,26 @@ class ScanRunCreate(BaseModel):
 
 
 class ScanRunRead(BaseModel):
-    """Output schema mirroring the full `ScanRun` entity."""
+    """Output schema mirroring the full `ScanRun` entity.
+
+    dast-scanner PR6: `repository_id`/`commit_sha`/`ref` are nullable and
+    `scan_target_id` is added (appended last, defaulted `None`) — additive,
+    mirroring the domain entity's own polymorphic-subject extension. A
+    repository-subject run is unaffected: `scan_target_id` stays `None`.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
     id: uuid.UUID
-    repository_id: uuid.UUID
+    repository_id: uuid.UUID | None
     status: ScanRunStatus
     trigger: str
-    commit_sha: str
-    ref: str
+    commit_sha: str | None
+    ref: str | None
     created_at: datetime
     started_at: datetime | None = None
     completed_at: datetime | None = None
+    scan_target_id: uuid.UUID | None = None
 
     @classmethod
     def from_entity(cls, entity: ScanRun) -> ScanRunRead:
@@ -56,6 +63,7 @@ class ScanRunRead(BaseModel):
             created_at=entity.created_at,
             started_at=entity.started_at,
             completed_at=entity.completed_at,
+            scan_target_id=entity.scan_target_id,
         )
 
     def to_entity(self) -> ScanRun:
@@ -70,4 +78,5 @@ class ScanRunRead(BaseModel):
             created_at=self.created_at,
             started_at=self.started_at,
             completed_at=self.completed_at,
+            scan_target_id=self.scan_target_id,
         )
