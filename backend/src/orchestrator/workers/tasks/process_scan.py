@@ -73,6 +73,7 @@ from celery.utils.log import get_task_logger
 from opentelemetry import trace
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from orchestrator.application.use_cases.get_scan_target import ScanTargetNotFoundError
 from orchestrator.domain.entities.credential_access_log import CredentialAccessLog
 from orchestrator.domain.entities.finding import Finding
 from orchestrator.domain.ports.credential_store_port import (
@@ -88,7 +89,10 @@ from orchestrator.domain.value_objects.enums import (
 from orchestrator.domain.value_objects.scan_subject import ScanSubject, ScanSubjectKind
 from orchestrator.infrastructure.config.settings import get_settings
 from orchestrator.infrastructure.container.docker_container_runner import DockerContainerRunner
-from orchestrator.infrastructure.container.scan_execution_factory import create_scan_execution
+from orchestrator.infrastructure.container.scan_execution_factory import (
+    create_scan_execution,
+    create_target_scan_execution,
+)
 from orchestrator.infrastructure.db.repositories.code_repository_repository import (
     CodeRepositoryNotFoundError,
     SqlAlchemyCodeRepositoryRepository,
@@ -102,6 +106,9 @@ from orchestrator.infrastructure.db.repositories.finding_repository import (
 from orchestrator.infrastructure.db.repositories.scan_run_repository import (
     ScanRunNotFoundError,
     SqlAlchemyScanRunRepository,
+)
+from orchestrator.infrastructure.db.repositories.scan_target_repository import (
+    SqlAlchemyScanTargetRepository,
 )
 from orchestrator.infrastructure.db.repositories.scan_task_repository import (
     ScanTaskNotFoundError,
@@ -159,6 +166,19 @@ class CredentialUnavailableError(RuntimeError):
     decrypted plaintext, or key material. The repository is NEVER
     automatically deactivated (spec: "Decrypt Failure Is Credential-Free and
     Non-Deactivating").
+    """
+
+
+class DastDisabledError(RuntimeError):
+    """`settings.dast_enabled` is unset for a `ScanTarget`-subject run
+    (dast-scanner design D9, deny-by-default).
+
+    Raised by `_load_and_start`, BEFORE the `ScanTarget` row is loaded and
+    BEFORE any network/container/Docker call anywhere in this process — the
+    worker-side half of D9's two gates (the API's `POST /targets/{id}/scans`
+    403 is the other, UX-only, gate). DETERMINISTIC (mirrors
+    `CredentialUnavailableError`) — a retry cannot make a disabled feature
+    flag enabled, so this goes straight to `failed`, no retry.
     """
 
 
@@ -235,17 +255,49 @@ async def _resolve_credential(
 
 async def _load_and_start(
     session: AsyncSession, scan_task_id: uuid.UUID, settings: Settings
-) -> tuple[str, str, uuid.UUID, uuid.UUID, ScannerType, bool, bool, Secret | None]:
-    """Load the repo's `clone_url` + the run's `ref`; transition `pending -> running`.
+) -> tuple[
+    str | None,
+    str | None,
+    uuid.UUID,
+    uuid.UUID | None,
+    ScannerType,
+    bool,
+    bool,
+    Secret | None,
+    ScanSubject,
+]:
+    """Load the run's subject (repository or scan target); transition `pending -> running`.
 
-    Returns `(clone_url, ref, scan_run_id, repository_id, scanner_type,
-    transitioned, terminal, credential)`. Idempotent on the `pending ->
-    running` transition, matching Module 5's original convention.
+    Returns `(clone_url_or_target_url, ref, scan_run_id, repository_id,
+    scanner_type, transitioned, terminal, credential, subject)`. Idempotent
+    on the `pending -> running` transition, matching Module 5's original
+    convention.
 
-    `repository_id`/`scanner_type` are returned so `_checkout_and_scan`
-    (factory-routed, Module 13c PR5b) and `_complete_scan`
-    (`bulk_upsert_findings`, Module 7 D4/D6) don't need to re-load `task`/
-    `repository` themselves.
+    `subject` (dast-scanner PR7, design D5/D9) is what a caller MUST
+    dispatch on — never `scanner_type` alone (a repository-subject run with
+    an unsupported `scanner_type` like `DAST` is simply an
+    `UnsupportedScannerTypeError` on the existing repository path, unrelated
+    to this branch). `subject` is APPENDED as this tuple's 9th element
+    (accepted debt, matching secrets-manager's own explicit precedent for
+    tuple growth — see design's Open Questions: a `LoadedScan`-shaped
+    dataclass refactor is recommended future work, out of scope here).
+
+    For a `ScanSubjectKind.REPOSITORY` run, every field is byte-for-byte
+    unchanged from before this PR: position 0 is `repository.clone_url`,
+    position 1 is `run.ref`, position 3 is `repository.id`, and `credential`
+    (secrets-manager PR6, design D9) is resolved exactly as documented
+    below. For a `ScanSubjectKind.SCAN_TARGET` run, position 0 instead
+    carries the `ScanTarget.target_url`, and positions 1/3/7
+    (`ref`/`repository_id`/`credential`) are always `None` — a `ScanTarget`
+    has no ref, no repository, and no credential concept at all, so the
+    entire credential-resolution path below is skipped outright.
+
+    `settings.dast_enabled` (design D9, deny-by-default) is checked here,
+    for a non-terminal target-subject run, BEFORE the `ScanTarget` row is
+    even loaded and BEFORE any network/container/Docker call anywhere in
+    this process — raises `DastDisabledError` (deterministic, no retry;
+    this is the worker-side half of D9's two gates, the API's `POST
+    /targets/{id}/scans` 403 being the other, UX-only, gate).
 
     `credential` (secrets-manager PR6, design D9): `None` for a public
     repository, byte-for-byte unchanged from before this PR. For a
@@ -259,8 +311,6 @@ async def _load_and_start(
     """
     scan_task_repo = SqlAlchemyScanTaskRepository(session)
     scan_run_repo = SqlAlchemyScanRunRepository(session)
-    code_repository_repo = SqlAlchemyCodeRepositoryRepository(session)
-    credential_access_log_repo = SqlAlchemyCredentialAccessLogRepository(session)
 
     task = await scan_task_repo.get_by_id(scan_task_id)
     if task is None:
@@ -268,9 +318,6 @@ async def _load_and_start(
     run = await scan_run_repo.get_by_id(task.scan_run_id)
     if run is None:
         raise ScanRunNotFoundError(task.scan_run_id)
-    repository = await code_repository_repo.get_by_id(run.repository_id)
-    if repository is None:
-        raise CodeRepositoryNotFoundError(run.repository_id)
 
     now = datetime.now(UTC).replace(tzinfo=None)
     transitioned = task.status == ScanTaskStatus.PENDING
@@ -279,6 +326,43 @@ async def _load_and_start(
         ScanTaskStatus.FAILED,
         ScanTaskStatus.SKIPPED,
     )
+    subject = run.subject
+
+    if subject.kind is ScanSubjectKind.SCAN_TARGET:
+        if not terminal and not settings.dast_enabled:
+            raise DastDisabledError(
+                "DAST scanning is disabled on this deployment (dast_enabled is unset)"
+            )
+        scan_target_repo = SqlAlchemyScanTargetRepository(session)
+        target = await scan_target_repo.get_by_id(subject.scan_target_id)  # type: ignore[arg-type]
+        if target is None:
+            raise ScanTargetNotFoundError(subject.scan_target_id)
+
+        if not terminal and transitioned:
+            await scan_task_repo.update_status(scan_task_id, ScanTaskStatus.RUNNING, started_at=now)
+            await scan_run_repo.update_status(
+                task.scan_run_id, ScanRunStatus.RUNNING, started_at=now
+            )
+            await session.commit()
+
+        return (
+            target.target_url,
+            None,
+            task.scan_run_id,
+            None,
+            task.scanner_type,
+            transitioned,
+            terminal,
+            None,
+            subject,
+        )
+
+    code_repository_repo = SqlAlchemyCodeRepositoryRepository(session)
+    credential_access_log_repo = SqlAlchemyCredentialAccessLogRepository(session)
+    assert run.repository_id is not None  # invariant: subject.kind is REPOSITORY here
+    repository = await code_repository_repo.get_by_id(run.repository_id)
+    if repository is None:
+        raise CodeRepositoryNotFoundError(run.repository_id)
 
     credential: Secret | None = None
     has_credential = repository.credential_ciphertext is not None
@@ -318,6 +402,7 @@ async def _load_and_start(
         transitioned,
         terminal,
         credential,
+        subject,
     )
 
 
@@ -357,6 +442,33 @@ def _checkout_and_scan(
     execution = create_scan_execution(runner, docker_client, settings, scanner_type)
     result = execution.execute(clone_url, ref, scan_task_id, scanner_type, credential=credential)
     return result.head_sha, result.findings
+
+
+def _run_target_scan(
+    target_url: str,
+    scan_task_id: uuid.UUID,
+    scanner_type: ScannerType,
+    runner: ContainerRunnerPort,
+    docker_client: DockerClient,
+    settings: Settings,
+) -> list[Finding]:
+    """Sync/blocking: sibling of `_checkout_and_scan` for a `ScanTarget`-subject
+    run (dast-scanner design D5). Runs OUTSIDE any async DB session/event
+    loop, exactly like `_checkout_and_scan` (Module 6 D3).
+
+    The executor is resolved via `create_target_scan_execution(scanner_type,
+    ...)` — DAST-only (raises `UnsupportedScannerTypeError` for any other
+    `scanner_type`, structurally unreachable in production since
+    `trigger_scan` only ever creates a target-subject run with
+    `scanner_type=DAST`). There is no `head_sha`/checkout concept at all for
+    a target-subject run — `TargetScanExecutionResult` carries `findings`
+    only. Any exception raised here is left to propagate to the caller
+    unchanged, exactly mirroring `_checkout_and_scan`'s contract (the caller
+    classifies deterministic-vs-transient failures).
+    """
+    execution = create_target_scan_execution(runner, docker_client, settings, scanner_type)
+    result = execution.execute(target_url, scan_task_id, scanner_type)
+    return result.findings
 
 
 async def _complete_scan(
@@ -409,6 +521,47 @@ async def _complete_scan(
     return True, logical_scan_duration_seconds(task.started_at, completed_at)
 
 
+async def _complete_target_scan(
+    session: AsyncSession,
+    scan_task_id: uuid.UUID,
+    scan_run_id: uuid.UUID,
+    scan_target_id: uuid.UUID,
+    findings: list[Finding],
+) -> tuple[bool, float]:
+    """Sibling of `_complete_scan` for a `ScanTarget`-subject run (dast-scanner
+    PR7, design D5/D2).
+
+    Deliberately does NOT call `update_commit_sha` at all — a `ScanTarget`
+    has no commit/ref concept, unlike `_complete_scan`'s unconditional call
+    for a repository-subject run. Findings are persisted via
+    `bulk_upsert_findings(ScanSubject(SCAN_TARGET, scan_target_id), ...)`
+    (design D2's partial unique index), never the repository variant. Every
+    other step — `ScanTask`/`ScanRun` state-machine gating and transition —
+    mirrors `_complete_scan` exactly.
+    """
+    scan_task_repo = SqlAlchemyScanTaskRepository(session)
+    scan_run_repo = SqlAlchemyScanRunRepository(session)
+    finding_repo = SqlAlchemyFindingRepository(session)
+    task = await scan_task_repo.get_by_id(scan_task_id)
+    if task is None:
+        raise ScanTaskNotFoundError(scan_task_id)
+    if task.status != ScanTaskStatus.RUNNING:
+        return False, 0.0
+
+    subject = ScanSubject(ScanSubjectKind.SCAN_TARGET, scan_target_id)
+    await finding_repo.bulk_upsert_findings(subject, scan_run_id, findings)
+
+    completed_at = datetime.now(UTC).replace(tzinfo=None)
+    await scan_task_repo.update_status(
+        scan_task_id, ScanTaskStatus.COMPLETED, completed_at=completed_at
+    )
+    await scan_run_repo.update_status(
+        scan_run_id, ScanRunStatus.COMPLETED, completed_at=completed_at
+    )
+    await session.commit()
+    return True, logical_scan_duration_seconds(task.started_at, completed_at)
+
+
 async def _mark_failed(
     session: AsyncSession, scan_task_id: uuid.UUID, error_message: str
 ) -> tuple[bool, ScannerType, float]:
@@ -440,6 +593,8 @@ def _failure_category(error: Exception) -> str:
         return "checkout"
     if isinstance(error, CredentialUnavailableError):
         return "credential"
+    if isinstance(error, DastDisabledError):
+        return "dast_disabled"
     if "timeout" in str(error).lower() or "timed out" in str(error).lower():
         return "timeout"
     if isinstance(error, TransientScanError):
@@ -472,48 +627,117 @@ def process_scan_task(
                 clone_url, ref, scan_run_id, repository_id, scanner_type = loaded[:5]
                 started, terminal = loaded[5:7] if len(loaded) >= 7 else (False, False)
                 credential = loaded[7] if len(loaded) >= 8 else None
+                # dast-scanner PR7: `subject` (appended 9th element, accepted
+                # debt — see `_load_and_start`'s docstring) is what dispatch
+                # below branches on. A shorter tuple (pre-PR7 test doubles,
+                # e.g. `test_process_scan.py`'s monkeypatched fakes) defaults
+                # to a repository subject, reproducing today's behavior.
+                subject = (
+                    loaded[8]
+                    if len(loaded) >= 9
+                    else ScanSubject(ScanSubjectKind.REPOSITORY, repository_id)  # type: ignore[arg-type]
+                )
             if terminal:
                 return
             if started:
                 record_scan_started(scanner_type)
 
-            with tracer.start_as_current_span("scan.checkout_and_scan") as checkout_span:
-                # Module 13a threat matrix: `scanner_type` only — NEVER
-                # `clone_url`/`ref` (may embed credentials/branch secrets).
-                checkout_span.set_attribute("scanner_type", scanner_type.value)
-                scanner_started = monotonic()
-                try:
-                    head_sha, findings = _checkout_and_scan(
-                        clone_url, ref, task_id, scanner_type, runner, client, settings, credential
-                    )
-                except (
-                    CheckoutFailedError,
-                    GitleaksFailedError,
-                    PipAuditFailedError,
-                    SastFailedError,
-                    SemgrepFailedError,
-                ):
-                    raise
-                except Exception as exc:
-                    # Docker-daemon/network blip, not a deterministic checkout/scan
-                    # failure (D5) — hand off to Module 5's existing retry/backoff.
-                    raise TransientScanError(str(exc)) from exc
-                scanner_duration = monotonic() - scanner_started
+            if subject.kind is ScanSubjectKind.SCAN_TARGET:
+                # dast-scanner PR7 (design D5): `clone_url` carries the
+                # validated `target_url` for this subject — see
+                # `_load_and_start`'s docstring. No checkout, no `head_sha`.
+                assert clone_url is not None  # invariant: subject.kind is SCAN_TARGET here
+                assert subject.scan_target_id is not None
+                target_url = clone_url
+                scan_target_id = subject.scan_target_id
+                with tracer.start_as_current_span("scan.checkout_and_scan") as checkout_span:
+                    checkout_span.set_attribute("scanner_type", scanner_type.value)
+                    scanner_started = monotonic()
+                    try:
+                        findings = _run_target_scan(
+                            target_url, task_id, scanner_type, runner, client, settings
+                        )
+                    except (
+                        CheckoutFailedError,
+                        GitleaksFailedError,
+                        PipAuditFailedError,
+                        SastFailedError,
+                        SemgrepFailedError,
+                        DastDisabledError,
+                    ):
+                        raise
+                    except Exception as exc:
+                        # Docker-daemon/network blip, not a deterministic scan
+                        # failure (D5) — hand off to Module 5's retry/backoff.
+                        raise TransientScanError(str(exc)) from exc
+                    scanner_duration = monotonic() - scanner_started
 
-            with tracer.start_as_current_span("scan.write_back") as write_back_span:
-                write_back_span.set_attribute("db.system", "postgresql")
-                write_back_span.set_attribute("findings.count", len(findings))
-                write_back_span.set_attribute("repository.id", str(repository_id))
-                write_back_span.set_attribute("scan_run.id", str(scan_run_id))
-                transitioned, scan_duration = run_async(
-                    lambda session: _complete_scan(
-                        session, task_id, scan_run_id, repository_id, head_sha, findings
-                    )
-                ) or (False, 0.0)
-                if transitioned:
-                    record_scan_terminal(scanner_type, "completed", "none", scan_duration)
-                    record_scanner_duration(scanner_type, "success", scanner_duration)
-                    record_scan_findings(scanner_type, len(findings))
+                with tracer.start_as_current_span("scan.write_back") as write_back_span:
+                    write_back_span.set_attribute("db.system", "postgresql")
+                    write_back_span.set_attribute("findings.count", len(findings))
+                    # No `repository.id` for a target-subject run — this is
+                    # the target-subject-safe span attribute equivalent.
+                    write_back_span.set_attribute("scan_target.id", str(scan_target_id))
+                    write_back_span.set_attribute("scan_run.id", str(scan_run_id))
+                    transitioned, scan_duration = run_async(
+                        lambda session: _complete_target_scan(
+                            session, task_id, scan_run_id, scan_target_id, findings
+                        )
+                    ) or (False, 0.0)
+                    if transitioned:
+                        record_scan_terminal(scanner_type, "completed", "none", scan_duration)
+                        record_scanner_duration(scanner_type, "success", scanner_duration)
+                        record_scan_findings(scanner_type, len(findings))
+            else:
+                # invariant: subject.kind is REPOSITORY here (byte-for-byte
+                # unchanged repository-subject path, PR7 added no behavior).
+                assert clone_url is not None
+                assert ref is not None
+                assert repository_id is not None
+                with tracer.start_as_current_span("scan.checkout_and_scan") as checkout_span:
+                    # Module 13a threat matrix: `scanner_type` only — NEVER
+                    # `clone_url`/`ref` (may embed credentials/branch secrets).
+                    checkout_span.set_attribute("scanner_type", scanner_type.value)
+                    scanner_started = monotonic()
+                    try:
+                        head_sha, findings = _checkout_and_scan(
+                            clone_url,
+                            ref,
+                            task_id,
+                            scanner_type,
+                            runner,
+                            client,
+                            settings,
+                            credential,
+                        )
+                    except (
+                        CheckoutFailedError,
+                        GitleaksFailedError,
+                        PipAuditFailedError,
+                        SastFailedError,
+                        SemgrepFailedError,
+                    ):
+                        raise
+                    except Exception as exc:
+                        # Docker-daemon/network blip, not a deterministic checkout/scan
+                        # failure (D5) — hand off to Module 5's existing retry/backoff.
+                        raise TransientScanError(str(exc)) from exc
+                    scanner_duration = monotonic() - scanner_started
+
+                with tracer.start_as_current_span("scan.write_back") as write_back_span:
+                    write_back_span.set_attribute("db.system", "postgresql")
+                    write_back_span.set_attribute("findings.count", len(findings))
+                    write_back_span.set_attribute("repository.id", str(repository_id))
+                    write_back_span.set_attribute("scan_run.id", str(scan_run_id))
+                    transitioned, scan_duration = run_async(
+                        lambda session: _complete_scan(
+                            session, task_id, scan_run_id, repository_id, head_sha, findings
+                        )
+                    ) or (False, 0.0)
+                    if transitioned:
+                        record_scan_terminal(scanner_type, "completed", "none", scan_duration)
+                        record_scanner_duration(scanner_type, "success", scanner_duration)
+                        record_scan_findings(scanner_type, len(findings))
         finally:
             if docker_client is None:
                 client.close()
@@ -524,6 +748,7 @@ def process_scan_task(
         SastFailedError,
         SemgrepFailedError,
         CredentialUnavailableError,
+        DastDisabledError,
     ) as exc:
         error_message = str(exc)
         logger.warning("scan_task %s failed deterministically: %s", task_id, error_message)
