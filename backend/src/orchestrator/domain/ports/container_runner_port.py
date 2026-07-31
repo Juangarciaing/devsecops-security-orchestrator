@@ -42,6 +42,29 @@ class RunResult:
     timed_out: bool
 
 
+@dataclass(frozen=True, slots=True)
+class TmpfsMount:
+    """One `extra_tmpfs` entry (dast-scanner PR5b).
+
+    Replaces the original bare-path-string shape shipped in PR4 (which had
+    zero real callers — only a test exercised it, mirroring a rung-2
+    fallback the PR4 spike went on to prove insufficient): a bare path
+    cannot express per-mount uid/gid/size options, and ZAP's `/home/zap`
+    genuinely needs `uid=1000,gid=1000,size>=512m` (PR4 spike, design D6
+    rung 3) — undersizing it to this port's existing 64m default silently
+    corrupts ZAP's config mid-write.
+
+    `uid`/`gid`/`size_mb` all default to `None`, which reproduces a bare
+    path's previous behavior byte-for-byte (implementation-default mount
+    options, no explicit owner).
+    """
+
+    path: str
+    uid: int | None = None
+    gid: int | None = None
+    size_mb: int | None = None
+
+
 class ContainerRunnerPort(ABC):
     """Contract for running one hardened, ephemeral container to completion.
 
@@ -66,6 +89,9 @@ class ContainerRunnerPort(ABC):
         tmp_exec: bool = False,
         cleanup_anonymous_volumes: bool = False,
         env: dict[str, str] | None = None,
+        network_name: str | None = None,
+        extra_tmpfs: tuple[TmpfsMount, ...] = (),
+        user: str | None = None,
     ) -> RunResult:
         """Run `image` with an argv-only `command` (never a shell string).
 
@@ -101,4 +127,28 @@ class ContainerRunnerPort(ABC):
         span attributes, Prometheus metric labels, or log fields. When
         `env` is `None` (the default), behavior MUST be byte-for-byte
         identical to calling `.run()` without this parameter at all.
+
+        `network_name` (PR4, appended-and-defaulted): join the container to
+        this pre-existing Docker network by name instead of the implicit
+        default bridge. `None` (the default) MUST reproduce today's
+        behavior byte-for-byte. Implementations MUST raise `ValueError` if
+        `network_disabled=True` is combined with a non-`None`
+        `network_name` — the two are mutually exclusive by construction
+        (fail closed rather than silently pick one).
+
+        `extra_tmpfs` (PR4, reshaped by dast-scanner PR5b to `tuple[TmpfsMount,
+        ...]`): additional writable tmpfs mounts beyond `/tmp`, merged into
+        whatever tmpfs mechanism the runner already uses. Empty (the
+        default) changes nothing for any existing caller. Each `TmpfsMount`
+        may carry `uid`/`gid`/`size_mb` mount options; all `None` reproduces
+        this port's existing implementation-default tmpfs options.
+
+        `user` (dast-scanner PR5b, design D6 rung 3, appended-and-defaulted):
+        overrides this port's hardened non-root uid:gid for THIS call only.
+        `None` (the default) MUST reproduce today's behavior byte-for-byte —
+        implementations still launch as their existing default non-root
+        user. This is a narrow per-call opt-in (mirrors `tmp_exec`'s shape
+        exactly) for the one scanner proven to need it live (ZAP resolves
+        its home directory via native `getpwuid()` and ignores `$HOME`) —
+        never a global relaxation, and never permitted to select root.
         """

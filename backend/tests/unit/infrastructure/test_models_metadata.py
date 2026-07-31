@@ -140,10 +140,25 @@ def test_findings_unique_constraint_and_fk(engine: sa.Engine) -> None:
     unique_column_sets = {
         tuple(uc["column_names"]) for uc in inspector.get_unique_constraints("findings")
     }
-    # `UNIQUE(scan_task_id, fingerprint)` was replaced by `UNIQUE(repository_id,
-    # fingerprint)` in Module 7 PR2 — dedup is now per-repository, not per-task.
-    assert ("repository_id", "fingerprint") in unique_column_sets
     assert ("scan_task_id", "fingerprint") not in unique_column_sets
+
+    # dast-scanner design D2: `repository_id`/`scan_target_id` are both
+    # nullable, and NULL is distinct in a plain UNIQUE constraint — so dedup
+    # moved to two partial unique indexes, one per subject column, instead
+    # of a single `UNIQUE(repository_id, fingerprint)` constraint.
+    unique_indexes = {
+        idx["name"]: tuple(idx["column_names"])
+        for idx in inspector.get_indexes("findings")
+        if idx["unique"]
+    }
+    assert unique_indexes.get("uq_findings_repository_fingerprint") == (
+        "repository_id",
+        "fingerprint",
+    )
+    assert unique_indexes.get("uq_findings_scan_target_fingerprint") == (
+        "scan_target_id",
+        "fingerprint",
+    )
 
     fks = inspector.get_foreign_keys("findings")
     assert any(
@@ -153,12 +168,13 @@ def test_findings_unique_constraint_and_fk(engine: sa.Engine) -> None:
 
 
 def test_findings_has_repository_id_and_scan_run_tracking_columns(engine: sa.Engine) -> None:
-    """Module 7 PR2/PR3: `repository_id` (denormalized, CASCADE) plus
-    `first_seen_scan_run_id`/`last_seen_scan_run_id` (SET NULL).
+    """Module 7 PR2/PR3 introduced `repository_id` (denormalized, CASCADE)
+    plus `first_seen_scan_run_id`/`last_seen_scan_run_id` (SET NULL).
 
-    `repository_id` was `nullable=True` in PR2 (no write path guaranteed
-    population yet) and is tightened to `NOT NULL` in PR3 (task 4.11) now
-    that `bulk_upsert_findings` is the write path and always stamps it.
+    `repository_id` was briefly tightened to `NOT NULL` in PR3 (task 4.11),
+    then loosened back to `nullable=True` by dast-scanner design D1/D2 to
+    admit target-subject rows (`scan_target_id` fills the same role for a
+    `ScanTarget`-subject `Finding`; exactly one of the two is ever set).
     `first_seen`/`last_seen` MUST stay nullable regardless — they're
     `ON DELETE SET NULL`, and a `NOT NULL` column can never be a `SET NULL`
     target without risking an `IntegrityError`."""
@@ -166,7 +182,7 @@ def test_findings_has_repository_id_and_scan_run_tracking_columns(engine: sa.Eng
     columns = {col["name"]: col for col in inspector.get_columns("findings")}
 
     assert "repository_id" in columns
-    assert columns["repository_id"]["nullable"] is False
+    assert columns["repository_id"]["nullable"] is True
 
     assert "first_seen_scan_run_id" in columns
     assert columns["first_seen_scan_run_id"]["nullable"] is True

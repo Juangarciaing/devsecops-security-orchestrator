@@ -91,3 +91,22 @@ class SqlAlchemyScanTaskRepository(ScanTaskPort):
         result = await self._session.execute(stmt)
         model = result.scalars().first()
         return scan_task_to_entity(model) if model is not None else None
+
+    async def find_active_target_task(
+        self, scan_target_id: uuid.UUID, scanner_type: ScannerType
+    ) -> ScanTask | None:
+        """Sibling of `find_active_task` for a `ScanTarget`-subject run: same
+        join shape, scoped through `ScanRunModel.scan_target_id` instead of
+        `repository_id`/`commit_sha` (a target scan has no commit)."""
+        stmt = (
+            select(ScanTaskModel)
+            .join(ScanRunModel, ScanTaskModel.scan_run_id == ScanRunModel.id)
+            .where(
+                ScanRunModel.scan_target_id == scan_target_id,
+                ScanTaskModel.scanner_type == scanner_type,
+                ScanTaskModel.status.in_((ScanTaskStatus.PENDING, ScanTaskStatus.RUNNING)),
+            )
+        )
+        result = await self._session.execute(stmt)
+        model = result.scalars().first()
+        return scan_task_to_entity(model) if model is not None else None

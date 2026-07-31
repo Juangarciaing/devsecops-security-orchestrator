@@ -23,8 +23,8 @@ class ScanRunModel(Base):
     __tablename__ = "scan_runs"
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
-    repository_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("code_repositories.id", ondelete="CASCADE"), nullable=False, index=True
+    repository_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("code_repositories.id", ondelete="CASCADE"), nullable=True, index=True
     )
     status: Mapped[ScanRunStatus] = mapped_column(
         SAEnum(ScanRunStatus, name="scan_run_status", native_enum=True),
@@ -34,8 +34,11 @@ class ScanRunModel(Base):
         index=True,
     )
     trigger: Mapped[str] = mapped_column(String, nullable=False)
-    commit_sha: Mapped[str] = mapped_column(String, nullable=False)
-    ref: Mapped[str] = mapped_column(String, nullable=False)
+    commit_sha: Mapped[str | None] = mapped_column(String, nullable=True)
+    ref: Mapped[str | None] = mapped_column(String, nullable=True)
+    scan_target_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("scan_targets.id", ondelete="CASCADE"), nullable=True, index=True
+    )
     created_at: Mapped[datetime] = mapped_column(server_default=func.now(), nullable=False)
     started_at: Mapped[datetime | None] = mapped_column(nullable=True)
     completed_at: Mapped[datetime | None] = mapped_column(nullable=True)

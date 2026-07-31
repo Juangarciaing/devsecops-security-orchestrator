@@ -19,6 +19,7 @@ from orchestrator.domain.value_objects.enums import (
     ScannerType,
     ScanRunStatus,
 )
+from orchestrator.domain.value_objects.scan_subject import ScanSubject, ScanSubjectKind
 from orchestrator.infrastructure.db.mappers import finding_to_entity, finding_to_model
 from orchestrator.infrastructure.db.models.finding import FindingModel
 from orchestrator.infrastructure.db.models.scan_run import ScanRunModel
@@ -75,15 +76,20 @@ class SqlAlchemyFindingRepository(FindingPort):
         return finding_to_entity(model)
 
     async def bulk_upsert_findings(
-        self, repository_id: uuid.UUID, scan_run_id: uuid.UUID, findings: list[Finding]
+        self, subject: ScanSubject, scan_run_id: uuid.UUID, findings: list[Finding]
     ) -> None:
         """`FindingPort.bulk_upsert_findings` — DB-atomic `ON CONFLICT` upsert.
 
         Postgres-specific (`sqlalchemy.dialects.postgresql.insert`), matching
-        design D4: read-then-write would race under concurrent same-repo
+        design D4: read-then-write would race under concurrent same-subject
         scans (TOCTOU), so this relies on Postgres's atomic conflict
         resolution instead. No-op on an empty `findings` list (Postgres
         rejects a zero-row `VALUES` clause).
+
+        Conflicts against whichever partial unique index matches
+        `subject.kind` (dast-scanner design D2) — never a single shared
+        index, since NULL is distinct in Postgres and a repository-scoped
+        index would silently never dedup a target-subject row, or vice versa.
         """
         if not findings:
             return
@@ -92,7 +98,8 @@ class SqlAlchemyFindingRepository(FindingPort):
             {
                 "id": finding.id,
                 "scan_task_id": finding.scan_task_id,
-                "repository_id": repository_id,
+                "repository_id": subject.repository_id,
+                "scan_target_id": subject.scan_target_id,
                 "first_seen_scan_run_id": scan_run_id,
                 "last_seen_scan_run_id": scan_run_id,
                 "severity": finding.severity,
@@ -111,9 +118,17 @@ class SqlAlchemyFindingRepository(FindingPort):
             for finding in findings
         ]
 
+        if subject.kind is ScanSubjectKind.REPOSITORY:
+            index_elements = ["repository_id", "fingerprint"]
+            index_where = FindingModel.repository_id.isnot(None)
+        else:
+            index_elements = ["scan_target_id", "fingerprint"]
+            index_where = FindingModel.scan_target_id.isnot(None)
+
         insert_stmt = postgresql.insert(FindingModel).values(values)
         upsert_stmt = insert_stmt.on_conflict_do_update(
-            index_elements=["repository_id", "fingerprint"],
+            index_elements=index_elements,
+            index_where=index_where,
             set_={
                 "last_seen_scan_run_id": insert_stmt.excluded.last_seen_scan_run_id,
                 "updated_at": func.now(),

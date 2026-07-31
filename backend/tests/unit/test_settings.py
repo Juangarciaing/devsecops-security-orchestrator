@@ -252,6 +252,50 @@ def test_settings_rejects_a_malformed_credential_encryption_key(
     assert "credential_encryption_key" in str(exc_info.value)
 
 
+def test_settings_dast_scanner_defaults(valid_env: None) -> None:
+    """dast-scanner PR5b: the ZAP image/network/timeout knobs default
+    sensibly so a fresh checkout can build/run the DAST scanner without
+    extra config (mirrors `test_settings_scan_container_defaults`)."""
+    settings = Settings(_env_file=None)
+
+    assert settings.scan_zap_image == "zap-scanner:local"
+    assert settings.dast_network_name == "dast-scan-net"
+    assert settings.dast_timeout_seconds == 300
+
+
+def test_settings_dast_scanner_values_can_be_overridden(
+    monkeypatch: pytest.MonkeyPatch, valid_env: None
+) -> None:
+    monkeypatch.setenv("SCAN_ZAP_IMAGE", "zap-scanner:pinned@sha256:" + "c" * 64)
+    monkeypatch.setenv("DAST_NETWORK_NAME", "dast-custom-net")
+    monkeypatch.setenv("DAST_TIMEOUT_SECONDS", "600")
+
+    settings = Settings(_env_file=None)
+
+    assert settings.scan_zap_image == "zap-scanner:pinned@sha256:" + "c" * 64
+    assert settings.dast_network_name == "dast-custom-net"
+    assert settings.dast_timeout_seconds == 600
+
+
+def test_settings_dast_enabled_defaults_to_false(valid_env: None) -> None:
+    """dast-scanner PR6/design D9: deny-by-default — a fresh deployment MUST
+    NOT be able to trigger a DAST scan without an explicit opt-in, mirroring
+    `credential_encryption_key`'s fail-closed precedent."""
+    settings = Settings(_env_file=None)
+
+    assert settings.dast_enabled is False
+
+
+def test_settings_dast_enabled_can_be_overridden(
+    monkeypatch: pytest.MonkeyPatch, valid_env: None
+) -> None:
+    monkeypatch.setenv("DAST_ENABLED", "true")
+
+    settings = Settings(_env_file=None)
+
+    assert settings.dast_enabled is True
+
+
 def test_settings_rejects_a_key_of_the_wrong_decoded_length(
     monkeypatch: pytest.MonkeyPatch, valid_env: None
 ) -> None:

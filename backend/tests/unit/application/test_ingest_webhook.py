@@ -127,6 +127,11 @@ class _FakeScanTaskRepository(ScanTaskPort):
     ) -> ScanTask | None:
         return None
 
+    async def find_active_target_task(
+        self, scan_target_id: uuid.UUID, scanner_type: ScannerType
+    ) -> ScanTask | None:
+        return None  # pragma: no cover — unused in these tests, only present to satisfy the ABC
+
 
 class _FakeWebhookDeliveryRepository(WebhookDeliveryPort):
     def __init__(self) -> None:

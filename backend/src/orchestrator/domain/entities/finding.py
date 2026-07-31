@@ -50,3 +50,4 @@ class Finding:
     repository_id: uuid.UUID | None = None
     first_seen_scan_run_id: uuid.UUID | None = None
     last_seen_scan_run_id: uuid.UUID | None = None
+    scan_target_id: uuid.UUID | None = None

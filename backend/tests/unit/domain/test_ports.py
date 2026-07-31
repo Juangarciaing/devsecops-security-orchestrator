@@ -92,6 +92,14 @@ def test_scan_task_port_declares_find_active_task() -> None:
     assert inspect.iscoroutinefunction(ScanTaskPort.find_active_task)
 
 
+def test_scan_task_port_declares_find_active_target_task() -> None:
+    """dast-scanner PR6: `ScanTaskPort` gains `find_active_target_task` — the
+    target-subject idempotency check `trigger_scan` uses instead of
+    `find_active_task` (which needs a `commit_sha` a target scan never has)."""
+    assert "find_active_target_task" in ScanTaskPort.__abstractmethods__
+    assert inspect.iscoroutinefunction(ScanTaskPort.find_active_target_task)
+
+
 def test_scan_run_port_declares_list_paginated() -> None:
     """`ScanRunPort` gains `list_paginated` — powers `GET /scans` (design deviation #7:
     the list endpoint was never paginated before this module)."""

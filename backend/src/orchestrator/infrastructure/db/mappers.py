@@ -98,6 +98,7 @@ def scan_run_to_entity(model: ScanRunModel) -> ScanRun:
         started_at=model.started_at,
         completed_at=model.completed_at,
         triggered_by_user_id=model.triggered_by_user_id,
+        scan_target_id=model.scan_target_id,
     )
 
 
@@ -114,6 +115,7 @@ def scan_run_to_model(entity: ScanRun) -> ScanRunModel:
         started_at=entity.started_at,
         completed_at=entity.completed_at,
         triggered_by_user_id=entity.triggered_by_user_id,
+        scan_target_id=entity.scan_target_id,
     )
 
 
@@ -163,6 +165,7 @@ def finding_to_entity(model: FindingModel) -> Finding:
         repository_id=model.repository_id,
         first_seen_scan_run_id=model.first_seen_scan_run_id,
         last_seen_scan_run_id=model.last_seen_scan_run_id,
+        scan_target_id=model.scan_target_id,
     )
 
 
@@ -186,6 +189,7 @@ def finding_to_model(entity: Finding) -> FindingModel:
         repository_id=entity.repository_id,
         first_seen_scan_run_id=entity.first_seen_scan_run_id,
         last_seen_scan_run_id=entity.last_seen_scan_run_id,
+        scan_target_id=entity.scan_target_id,
     )
 
 

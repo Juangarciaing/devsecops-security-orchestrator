@@ -14,7 +14,7 @@ import pytest
 import requests.exceptions
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
-from orchestrator.domain.ports.container_runner_port import ResourceLimits
+from orchestrator.domain.ports.container_runner_port import ResourceLimits, TmpfsMount
 from orchestrator.infrastructure.container.docker_container_runner import DockerContainerRunner
 
 _LIMITS = ResourceLimits(memory_mb=512, nano_cpus=1_000_000_000, pids_limit=128)
@@ -545,6 +545,199 @@ def test_run_passes_env_dict_to_the_docker_sdk_when_provided() -> None:
 
     call_kwargs: dict[str, Any] = client.containers.run.call_args.kwargs
     assert call_kwargs["environment"] == {"HOME": "/workspace", "GIT_TERMINAL_PROMPT": "0"}
+
+
+def test_run_network_name_none_reproduces_todays_behavior_byte_for_byte() -> None:
+    """dast-scanner PR4 (task 4.2): calling `.run()` without `network_name`
+    (the default `None`) MUST produce byte-identical `containers.run` kwargs
+    to explicitly passing `network_name=None` — no existing caller (every
+    scanner descriptor) observes any behavior change from this addition."""
+    client_omitted, _container_omitted = _make_mock_client()
+    runner_omitted = DockerContainerRunner(client=client_omitted)
+    runner_omitted.run(
+        image="ghcr.io/gitleaks/gitleaks:v8.30.1",
+        command=["dir", "/checkout/checkout"],
+        volume_name="scan-1",
+        mount_path="/checkout",
+        read_only_mount=True,
+        network_disabled=False,
+        limits=_LIMITS,
+        timeout_seconds=120,
+    )
+    kwargs_omitted: dict[str, Any] = client_omitted.containers.run.call_args.kwargs
+
+    client_explicit, _container_explicit = _make_mock_client()
+    runner_explicit = DockerContainerRunner(client=client_explicit)
+    runner_explicit.run(
+        image="ghcr.io/gitleaks/gitleaks:v8.30.1",
+        command=["dir", "/checkout/checkout"],
+        volume_name="scan-1",
+        mount_path="/checkout",
+        read_only_mount=True,
+        network_disabled=False,
+        limits=_LIMITS,
+        timeout_seconds=120,
+        network_name=None,
+    )
+    kwargs_explicit: dict[str, Any] = client_explicit.containers.run.call_args.kwargs
+
+    assert kwargs_omitted == kwargs_explicit
+    assert kwargs_explicit["network_mode"] is None
+
+
+def test_run_network_disabled_true_with_network_name_raises_value_error() -> None:
+    """dast-scanner PR4 (task 4.3): fail-closed — `network_disabled=True` is
+    incompatible with a non-`None` `network_name`; the two must never be
+    combined (a disabled network can't also join a named bridge)."""
+    client, _container = _make_mock_client()
+    runner = DockerContainerRunner(client=client)
+
+    with pytest.raises(ValueError, match="network_disabled=True is incompatible with network_name"):
+        runner.run(
+            image="ghcr.io/gitleaks/gitleaks:v8.30.1",
+            command=["dir", "/checkout/checkout"],
+            volume_name="scan-1",
+            mount_path="/checkout",
+            read_only_mount=True,
+            network_disabled=True,
+            limits=_LIMITS,
+            timeout_seconds=120,
+            network_name="dast-net",
+        )
+    client.containers.run.assert_not_called()
+
+
+def test_run_passes_network_name_through_with_hardening_kwargs_unchanged() -> None:
+    """dast-scanner PR4 (task 4.4): `network_name="dast-net"` reaches the SDK
+    as `network_mode`, and every other hardening kwarg (uid, ro rootfs,
+    cap_drop, no-new-privileges, resource limits) is unaffected."""
+    client, _container = _make_mock_client()
+    runner = DockerContainerRunner(client=client)
+
+    runner.run(
+        image="ghcr.io/zaproxy/zaproxy:stable",
+        command=["zap-baseline.py", "-t", "http://example.com"],
+        volume_name="dast-abc123",
+        mount_path="/zap/wrk",
+        read_only_mount=False,
+        network_disabled=False,
+        limits=_LIMITS,
+        timeout_seconds=120,
+        network_name="dast-net",
+    )
+
+    call_kwargs: dict[str, Any] = client.containers.run.call_args.kwargs
+    assert call_kwargs["network_mode"] == "dast-net"
+    assert call_kwargs["user"] == "65532:65532"
+    assert call_kwargs["read_only"] is True
+    assert call_kwargs["cap_drop"] == ["ALL"]
+    assert call_kwargs["security_opt"] == ["no-new-privileges"]
+    assert call_kwargs["mem_limit"] == "512m"
+    assert call_kwargs["nano_cpus"] == 1_000_000_000
+    assert call_kwargs["pids_limit"] == 128
+
+
+def test_run_merges_extra_tmpfs_paths_alongside_tmp() -> None:
+    """dast-scanner PR4 (task 4.6), reshaped by PR5b: a plain, all-`None`
+    `TmpfsMount` (appended-last, defaulted `()`) adds an additional writable
+    tmpfs mount path alongside the existing `/tmp` mount — without relaxing
+    `/tmp`'s strict noexec — and reproduces the pre-PR5b bare-path shape's
+    behavior byte-for-byte."""
+    client, _container = _make_mock_client()
+    runner = DockerContainerRunner(client=client)
+
+    runner.run(
+        image="ghcr.io/zaproxy/zaproxy:stable",
+        command=["zap-baseline.py", "-t", "http://example.com"],
+        volume_name="dast-abc123",
+        mount_path="/zap/wrk",
+        read_only_mount=False,
+        network_disabled=False,
+        limits=_LIMITS,
+        timeout_seconds=120,
+        extra_tmpfs=(TmpfsMount(path="/home/zap"),),
+    )
+
+    call_kwargs: dict[str, Any] = client.containers.run.call_args.kwargs
+    assert "/tmp" in call_kwargs["tmpfs"]
+    assert "noexec" in call_kwargs["tmpfs"]["/tmp"]
+    assert "/home/zap" in call_kwargs["tmpfs"]
+    assert call_kwargs["tmpfs"]["/home/zap"] == "rw,noexec,nosuid,size=64m"
+
+
+def test_run_extra_tmpfs_applies_uid_gid_and_size_overrides() -> None:
+    """dast-scanner PR5b (design D6 rung 3): a `TmpfsMount` with `uid`/`gid`/
+    `size_mb` set produces exactly those mount options — the PR4 spike's
+    proven ZAP requirement (`uid=1000,gid=1000,size>=512m`), which the
+    original bare-path `extra_tmpfs` shape could not express. `/tmp` itself
+    is unaffected."""
+    client, _container = _make_mock_client()
+    runner = DockerContainerRunner(client=client)
+
+    runner.run(
+        image="ghcr.io/zaproxy/zaproxy:stable",
+        command=["zap-baseline.py", "-t", "http://example.com"],
+        volume_name="dast-abc123",
+        mount_path="/zap/wrk",
+        read_only_mount=False,
+        network_disabled=False,
+        limits=_LIMITS,
+        timeout_seconds=120,
+        extra_tmpfs=(TmpfsMount(path="/home/zap", uid=1000, gid=1000, size_mb=512),),
+    )
+
+    call_kwargs: dict[str, Any] = client.containers.run.call_args.kwargs
+    assert call_kwargs["tmpfs"]["/home/zap"] == "rw,noexec,nosuid,size=512m,uid=1000,gid=1000"
+    assert call_kwargs["tmpfs"]["/tmp"] == "rw,noexec,nosuid,size=64m"
+
+
+def test_run_user_override_replaces_the_default_nonroot_user() -> None:
+    """dast-scanner PR5b (design D6 rung 3): `user="1000:1000"` reaches the
+    SDK as `user`, replacing this port's hardened default `65532:65532` for
+    THIS call only — every other hardening kwarg (ro rootfs, cap_drop,
+    no-new-privileges, limits) stays unchanged."""
+    client, _container = _make_mock_client()
+    runner = DockerContainerRunner(client=client)
+
+    runner.run(
+        image="ghcr.io/zaproxy/zaproxy:stable",
+        command=["zap-baseline.py", "-t", "http://example.com"],
+        volume_name="dast-abc123",
+        mount_path="/zap/wrk",
+        read_only_mount=False,
+        network_disabled=False,
+        limits=_LIMITS,
+        timeout_seconds=120,
+        user="1000:1000",
+    )
+
+    call_kwargs: dict[str, Any] = client.containers.run.call_args.kwargs
+    assert call_kwargs["user"] == "1000:1000"
+    assert call_kwargs["read_only"] is True
+    assert call_kwargs["cap_drop"] == ["ALL"]
+    assert call_kwargs["security_opt"] == ["no-new-privileges"]
+
+
+def test_run_user_none_reproduces_the_default_nonroot_user() -> None:
+    """`user=None` (the default) MUST reproduce today's behavior byte-for-
+    byte — no existing caller passes `user`, so every one keeps launching
+    as `65532:65532`."""
+    client, _container = _make_mock_client()
+    runner = DockerContainerRunner(client=client)
+
+    runner.run(
+        image="ghcr.io/gitleaks/gitleaks:v8.30.1",
+        command=["dir", "/checkout/checkout"],
+        volume_name="scan-abc123",
+        mount_path="/checkout",
+        read_only_mount=True,
+        network_disabled=True,
+        limits=_LIMITS,
+        timeout_seconds=120,
+    )
+
+    call_kwargs: dict[str, Any] = client.containers.run.call_args.kwargs
+    assert call_kwargs["user"] == "65532:65532"
 
 
 def test_run_never_sets_an_env_span_attribute_or_metric_label(

@@ -260,6 +260,207 @@ async def _suppress_finding(finding_id: uuid.UUID) -> None:
         await engine.dispose()
 
 
+async def _seed_scan_target(**overrides: object) -> uuid.UUID:
+    from orchestrator.domain.entities.scan_target import ScanTarget
+    from orchestrator.infrastructure.db.repositories.scan_target_repository import (
+        SqlAlchemyScanTargetRepository,
+    )
+
+    unique = uuid.uuid4().hex[:8]
+    defaults: dict[str, object] = {
+        "id": uuid.uuid4(),
+        "name": f"target-{unique}",
+        "target_url": f"https://public-{unique}.example.com",
+        "is_active": True,
+        "created_at": _NOW,
+        "updated_at": _NOW,
+    }
+    defaults.update(overrides)
+
+    engine = create_async_engine(resolve_database_url())
+    sessionmaker = async_sessionmaker(engine, expire_on_commit=False)
+    try:
+        async with sessionmaker() as session:
+            target = await SqlAlchemyScanTargetRepository(session).create(
+                ScanTarget(**defaults)  # type: ignore[arg-type]
+            )
+            await session.commit()
+            return target.id
+    finally:
+        await engine.dispose()
+
+
+def _make_target_scan_run(scan_target_id: uuid.UUID, **overrides: object) -> ScanRun:
+    defaults: dict[str, object] = {
+        "id": uuid.uuid4(),
+        "repository_id": None,
+        "status": ScanRunStatus.PENDING,
+        "trigger": "manual",
+        "commit_sha": None,
+        "ref": None,
+        "created_at": _NOW,
+        "started_at": None,
+        "completed_at": None,
+        "scan_target_id": scan_target_id,
+    }
+    defaults.update(overrides)
+    return ScanRun(**defaults)  # type: ignore[arg-type]
+
+
+async def _seed_pending_target_task(scan_target_id: uuid.UUID) -> tuple[uuid.UUID, uuid.UUID]:
+    """Create a target-subject pending `ScanRun`/`ScanTask` (`scanner_type=DAST`).
+
+    Returns `(task_id, run_id)`, mirroring `_seed_pending_task`'s shape for a
+    repository-subject run.
+    """
+    engine = create_async_engine(resolve_database_url())
+    sessionmaker = async_sessionmaker(engine, expire_on_commit=False)
+    try:
+        async with sessionmaker() as session:
+            run = await SqlAlchemyScanRunRepository(session).create(
+                _make_target_scan_run(scan_target_id)
+            )
+            await session.commit()
+            run_id = run.id
+
+        async with sessionmaker() as session:
+            task = await SqlAlchemyScanTaskRepository(session).create(
+                _make_scan_task(run_id, scanner_type=ScannerType.DAST)
+            )
+            await session.commit()
+            task_id = task.id
+
+        return task_id, run_id
+    finally:
+        await engine.dispose()
+
+
+async def _delete_scan_target(scan_target_id: uuid.UUID) -> None:
+    """`migrated_schema`'s teardown downgrades the polymorphic-subject
+    migration, which requires `findings.repository_id`/`scan_runs.ref`/
+    `commit_sha`/`repository_id` to go back to `NOT NULL` — impossible while
+    a target-subject row (NULL `ref`/`commit_sha`/`repository_id`) survives.
+    Deleting the `ScanTarget` row cascades (`ondelete=CASCADE`, design D1) to
+    every `ScanRun`/`ScanTask`/`Finding` this test created, so the shared
+    fixture's downgrade keeps working regardless of test outcome — mirrors
+    `test_finding_dedup_partial_index.py`'s precedent exactly."""
+    from sqlalchemy import delete
+
+    from orchestrator.infrastructure.db.models.scan_target import ScanTargetModel
+
+    engine = create_async_engine(resolve_database_url())
+    sessionmaker = async_sessionmaker(engine, expire_on_commit=False)
+    try:
+        async with sessionmaker() as session:
+            await session.execute(
+                delete(ScanTargetModel).where(ScanTargetModel.id == scan_target_id)
+            )
+            await session.commit()
+    finally:
+        await engine.dispose()
+
+
+def test_process_scan_task_marks_failed_when_dast_disabled_with_zero_container_calls(
+    migrated_schema: None,
+) -> None:
+    """Task 7.2 (design D9): `settings.dast_enabled=False` (the default) for
+    a target-subject run fails deterministically via `DastDisabledError`,
+    raised by `_load_and_start` BEFORE any container call. Proven here with
+    a `FakeContainerRunner` subclass that explodes on any `.run()` call — if
+    the worker-side gate ever regressed to checking `dast_enabled` AFTER
+    starting a container, this test would fail loudly instead of silently
+    passing."""
+    from orchestrator.workers.tasks.process_scan import process_scan_task
+
+    target_id = asyncio.run(_seed_scan_target())
+    try:
+        task_id, run_id = asyncio.run(_seed_pending_target_task(target_id))
+
+        class _ExplodingContainerRunner(FakeContainerRunner):
+            def run(self, **_kwargs: object) -> RunResult:
+                raise AssertionError(
+                    "container .run() must never be called while dast_enabled is unset"
+                )
+
+        fake_runner = _ExplodingContainerRunner()
+        docker_client = MagicMock()
+
+        result = process_scan_task.apply(
+            args=(str(task_id),),
+            kwargs={"container_runner": fake_runner, "docker_client": docker_client},
+        )
+        result.get()
+
+        task, run, findings = asyncio.run(_load_state(task_id, run_id))
+        assert task.status == ScanTaskStatus.FAILED
+        assert task.error_message is not None
+        assert "disabled" in task.error_message.lower()
+        assert run.status == ScanRunStatus.FAILED
+        assert len(findings) == 0
+        assert len(fake_runner.calls) == 0
+    finally:
+        asyncio.run(_delete_scan_target(target_id))
+
+
+def test_process_scan_task_target_subject_completes_and_skips_commit_sha(
+    migrated_schema: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Task 7.3/7.4: a target-subject run's completion skips
+    `update_commit_sha` entirely (`ScanRun.commit_sha` stays `None` — a
+    `ScanTarget` has no commit concept) and persists findings scoped to
+    `ScanSubject(SCAN_TARGET, ...)`. `TargetScanExecutionPort.execute` is
+    monkeypatched to a canned in-memory result — the real ZAP/Docker
+    end-to-end proof is the separate live test (task 7.5)."""
+    from orchestrator.domain.entities.finding import Finding
+    from orchestrator.domain.ports.target_scan_execution_port import TargetScanExecutionResult
+    from orchestrator.domain.value_objects.enums import FindingSeverity
+    from orchestrator.infrastructure.config.settings import get_settings
+    from orchestrator.workers.tasks import process_scan
+    from orchestrator.workers.tasks.process_scan import process_scan_task
+
+    monkeypatch.setenv("DAST_ENABLED", "true")
+    get_settings.cache_clear()
+
+    target_id = asyncio.run(_seed_scan_target())
+    try:
+        task_id, run_id = asyncio.run(_seed_pending_target_task(target_id))
+
+        finding = Finding(
+            id=uuid.uuid4(),
+            scan_task_id=task_id,
+            severity=FindingSeverity.MEDIUM,
+            rule_id="zap-10202",
+            title="Absence of Anti-CSRF Tokens",
+            fingerprint="zap-fingerprint-1",
+            created_at=_NOW,
+            updated_at=_NOW,
+        )
+
+        execution = MagicMock()
+        execution.execute.return_value = TargetScanExecutionResult(findings=[finding])
+        monkeypatch.setattr(process_scan, "create_target_scan_execution", lambda *_args: execution)
+
+        fake_runner = FakeContainerRunner()
+        docker_client = MagicMock()
+
+        result = process_scan_task.apply(
+            args=(str(task_id),),
+            kwargs={"container_runner": fake_runner, "docker_client": docker_client},
+        )
+        result.get()
+
+        task, run, findings = asyncio.run(_load_state(task_id, run_id))
+        assert task.status == ScanTaskStatus.COMPLETED
+        assert task.error_message is None
+        assert run.status == ScanRunStatus.COMPLETED
+        assert run.commit_sha is None  # never touched for a target-subject completion
+        assert len(findings) == 1
+        assert findings[0].rule_id == "zap-10202"
+        assert len(fake_runner.calls) == 0  # the executor itself was monkeypatched away
+    finally:
+        asyncio.run(_delete_scan_target(target_id))
+
+
 def test_process_scan_task_happy_path_persists_real_findings_and_resolved_sha(
     migrated_schema: None,
 ) -> None:

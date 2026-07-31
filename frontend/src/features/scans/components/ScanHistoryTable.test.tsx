@@ -11,6 +11,7 @@ const scan: ScanRun = {
   trigger: 'manual',
   commit_sha: 'main',
   ref: 'main',
+  scan_target_id: null,
   created_at: '2026-01-01T00:00:00Z',
   started_at: '2026-01-01T00:00:01Z',
   completed_at: '2026-01-01T00:00:10Z',

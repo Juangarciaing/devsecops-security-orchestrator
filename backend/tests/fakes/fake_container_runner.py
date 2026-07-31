@@ -15,6 +15,7 @@ from orchestrator.domain.ports.container_runner_port import (
     ContainerRunnerPort,
     ResourceLimits,
     RunResult,
+    TmpfsMount,
 )
 
 _DEFAULT_RESULT = RunResult(exit_code=0, stdout="", stderr="", timed_out=False)
@@ -35,6 +36,9 @@ class RecordedRun:
     tmp_exec: bool = False
     cleanup_anonymous_volumes: bool = False
     env: dict[str, str] | None = None
+    network_name: str | None = None
+    extra_tmpfs: tuple[TmpfsMount, ...] = ()
+    user: str | None = None
 
 
 @dataclass(slots=True)
@@ -62,6 +66,9 @@ class FakeContainerRunner(ContainerRunnerPort):
         tmp_exec: bool = False,
         cleanup_anonymous_volumes: bool = False,
         env: dict[str, str] | None = None,
+        network_name: str | None = None,
+        extra_tmpfs: tuple[TmpfsMount, ...] = (),
+        user: str | None = None,
     ) -> RunResult:
         self.calls.append(
             RecordedRun(
@@ -76,6 +83,9 @@ class FakeContainerRunner(ContainerRunnerPort):
                 tmp_exec=tmp_exec,
                 cleanup_anonymous_volumes=cleanup_anonymous_volumes,
                 env=env,
+                network_name=network_name,
+                extra_tmpfs=extra_tmpfs,
+                user=user,
             )
         )
         if self._results:

@@ -19,14 +19,24 @@ from orchestrator.infrastructure.container.pip_audit_docker_execution import Pip
 from orchestrator.infrastructure.container.scan_execution_factory import (
     UnsupportedScannerTypeError,
     create_scan_execution,
+    create_target_scan_execution,
 )
 from orchestrator.infrastructure.container.semgrep_docker_execution import SemgrepDockerExecution
+from orchestrator.infrastructure.container.zap_dast_execution import ZapDastDockerExecution
 
 _SUPPORTED_CASES = [
     (ScannerType.SECRETS, GitleaksDockerExecution),
     (ScannerType.SAST, AstSastDockerExecution),
     (ScannerType.SEMGREP, SemgrepDockerExecution),
     (ScannerType.SCA, PipAuditDockerExecution),
+]
+
+_NON_DAST_SCANNER_TYPES = [
+    ScannerType.SAST,
+    ScannerType.SCA,
+    ScannerType.SECRETS,
+    ScannerType.SEMGREP,
+    ScannerType.IAC,
 ]
 
 
@@ -61,3 +71,27 @@ def test_factory_module_never_exposes_legacy_docker_execution() -> None:
     import orchestrator.infrastructure.container.scan_execution_factory as factory_module
 
     assert not hasattr(factory_module, "LegacyDockerExecution")
+
+
+# ---------------------------------------------------------------------------
+# `create_target_scan_execution` — DAST-only, symmetric fail-closed check
+# (dast-scanner design D5, PR5b-ii tasks 5.7/5.14/5.16)
+# ---------------------------------------------------------------------------
+
+
+def test_create_target_scan_execution_selects_the_zap_executor_for_dast() -> None:
+    execution = create_target_scan_execution(
+        MagicMock(), MagicMock(), SimpleNamespace(), ScannerType.DAST
+    )
+
+    assert execution.__class__ is ZapDastDockerExecution
+
+
+@pytest.mark.parametrize("scanner_type", _NON_DAST_SCANNER_TYPES)
+def test_create_target_scan_execution_rejects_every_non_dast_scanner_type(
+    scanner_type: ScannerType,
+) -> None:
+    """A target-subject run can never be SAST/SCA/SECRETS/SEMGREP/IAC —
+    mirrors `create_scan_execution`'s fail-closed contract, in reverse."""
+    with pytest.raises(UnsupportedScannerTypeError, match=scanner_type.value):
+        create_target_scan_execution(MagicMock(), MagicMock(), SimpleNamespace(), scanner_type)

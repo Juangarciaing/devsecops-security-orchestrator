@@ -9,11 +9,15 @@ export type ScanTaskStatus =
 
 export interface ScanRun {
   id: string
-  repository_id: string
+  // Nullable in place: a scan run's subject is either a repository (git
+  // checkout) or a scan target (DAST, no checkout) — backend PR6 (design
+  // D1/D5). Exactly one of `repository_id`/`scan_target_id` is set.
+  repository_id: string | null
   status: ScanRunStatus
   trigger: string
-  commit_sha: string
-  ref: string
+  commit_sha: string | null
+  ref: string | null
+  scan_target_id: string | null
   created_at: string
   started_at: string | null
   completed_at: string | null

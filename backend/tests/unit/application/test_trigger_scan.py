@@ -14,12 +14,15 @@ from datetime import UTC, datetime
 import pytest
 
 from orchestrator.application.use_cases.get_repository import RepositoryNotFoundError
+from orchestrator.application.use_cases.get_scan_target import ScanTargetNotFoundError
 from orchestrator.application.use_cases.trigger_scan import trigger_scan
 from orchestrator.domain.entities.code_repository import CodeRepository
 from orchestrator.domain.entities.scan_run import ScanRun
+from orchestrator.domain.entities.scan_target import ScanTarget
 from orchestrator.domain.entities.scan_task import ScanTask
 from orchestrator.domain.ports.code_repository_port import CodeRepositoryPort
 from orchestrator.domain.ports.scan_run_port import ScanRunPort
+from orchestrator.domain.ports.scan_target_port import ScanTargetPort
 from orchestrator.domain.ports.scan_task_port import ScanTaskPort
 from orchestrator.domain.value_objects.enums import (
     RepositoryProvider,
@@ -27,6 +30,7 @@ from orchestrator.domain.value_objects.enums import (
     ScanRunStatus,
     ScanTaskStatus,
 )
+from orchestrator.domain.value_objects.scan_subject import InvalidScanSubjectError
 
 _NOW = datetime.now(UTC).replace(tzinfo=None)
 
@@ -106,6 +110,7 @@ class _FakeScanTaskRepository(ScanTaskPort):
         self.created: list[ScanTask] = []
         self._by_id: dict[uuid.UUID, ScanTask] = {}
         self._runs_by_task: dict[uuid.UUID, tuple[uuid.UUID, str]] = {}
+        self._targets_by_task: dict[uuid.UUID, uuid.UUID] = {}
 
     async def get_by_id(self, scan_task_id: uuid.UUID) -> ScanTask | None:
         return self._by_id.get(scan_task_id)
@@ -142,6 +147,57 @@ class _FakeScanTaskRepository(ScanTaskPort):
     ) -> None:
         self._runs_by_task[task_id] = (repository_id, commit_sha)
 
+    async def find_active_target_task(
+        self, scan_target_id: uuid.UUID, scanner_type: ScannerType
+    ) -> ScanTask | None:
+        for task in self._by_id.values():
+            if (
+                task.scanner_type == scanner_type
+                and task.status in (ScanTaskStatus.PENDING, ScanTaskStatus.RUNNING)
+                and self._targets_by_task.get(task.id) == scan_target_id
+            ):
+                return task
+        return None
+
+    def register_target_for_task(self, task_id: uuid.UUID, scan_target_id: uuid.UUID) -> None:
+        self._targets_by_task[task_id] = scan_target_id
+
+
+class _FakeScanTargetRepository(ScanTargetPort):
+    def __init__(self) -> None:
+        self._by_id: dict[uuid.UUID, ScanTarget] = {}
+
+    def seed(self, target: ScanTarget) -> None:
+        self._by_id[target.id] = target
+
+    async def get_by_id(self, target_id: uuid.UUID) -> ScanTarget | None:
+        return self._by_id.get(target_id)
+
+    async def get_by_url(self, target_url: str) -> ScanTarget | None:
+        for target in self._by_id.values():
+            if target.target_url == target_url:
+                return target
+        return None
+
+    async def list_all(self) -> list[ScanTarget]:
+        return list(self._by_id.values())
+
+    async def list_active(self) -> list[ScanTarget]:
+        return [t for t in self._by_id.values() if t.is_active]
+
+    async def create(self, target: ScanTarget) -> ScanTarget:
+        self._by_id[target.id] = target
+        return target
+
+    async def update(self, target: ScanTarget) -> ScanTarget:
+        self._by_id[target.id] = target
+        return target
+
+    async def soft_delete(self, target_id: uuid.UUID) -> None:
+        target = self._by_id.get(target_id)
+        if target is not None:
+            target.is_active = False
+
 
 def _make_repository(**overrides: object) -> CodeRepository:
     defaults: dict[str, object] = {
@@ -159,6 +215,19 @@ def _make_repository(**overrides: object) -> CodeRepository:
     }
     defaults.update(overrides)
     return CodeRepository(**defaults)  # type: ignore[arg-type]
+
+
+def _make_target(**overrides: object) -> ScanTarget:
+    defaults: dict[str, object] = {
+        "id": uuid.uuid4(),
+        "name": "acme-public-site",
+        "target_url": "https://public.example.com",
+        "is_active": True,
+        "created_at": _NOW,
+        "updated_at": _NOW,
+    }
+    defaults.update(overrides)
+    return ScanTarget(**defaults)  # type: ignore[arg-type]
 
 
 def test_trigger_scan_raises_not_found_for_absent_repository() -> None:
@@ -342,3 +411,174 @@ def test_trigger_scan_returns_existing_run_when_active_task_exists() -> None:
     assert second_run.id == first_run.id
     assert len(scan_run_port.created) == 1
     assert len(scan_task_port.created) == 1
+
+
+def test_trigger_scan_raises_invalid_subject_when_neither_id_is_set() -> None:
+    repository_port = _FakeCodeRepositoryRepository()
+    scan_run_port = _FakeScanRunRepository()
+    scan_task_port = _FakeScanTaskRepository()
+
+    with pytest.raises(InvalidScanSubjectError):
+        asyncio.run(
+            trigger_scan(repository_port, scan_run_port, scan_task_port, repository_id=None)
+        )
+
+
+def test_trigger_scan_raises_invalid_subject_when_both_ids_are_set() -> None:
+    repository_port = _FakeCodeRepositoryRepository()
+    scan_run_port = _FakeScanRunRepository()
+    scan_task_port = _FakeScanTaskRepository()
+    scan_target_port = _FakeScanTargetRepository()
+
+    with pytest.raises(InvalidScanSubjectError):
+        asyncio.run(
+            trigger_scan(
+                repository_port,
+                scan_run_port,
+                scan_task_port,
+                repository_id=uuid.uuid4(),
+                scan_target_id=uuid.uuid4(),
+                scan_target_port=scan_target_port,
+            )
+        )
+
+
+def test_trigger_scan_raises_not_found_for_absent_target() -> None:
+    repository_port = _FakeCodeRepositoryRepository()
+    scan_run_port = _FakeScanRunRepository()
+    scan_task_port = _FakeScanTaskRepository()
+    scan_target_port = _FakeScanTargetRepository()
+
+    with pytest.raises(ScanTargetNotFoundError):
+        asyncio.run(
+            trigger_scan(
+                repository_port,
+                scan_run_port,
+                scan_task_port,
+                repository_id=None,
+                scan_target_id=uuid.uuid4(),
+                scan_target_port=scan_target_port,
+                scanner_type=ScannerType.DAST,
+            )
+        )
+
+
+def test_trigger_scan_raises_not_found_for_inactive_target() -> None:
+    repository_port = _FakeCodeRepositoryRepository()
+    scan_run_port = _FakeScanRunRepository()
+    scan_task_port = _FakeScanTaskRepository()
+    scan_target_port = _FakeScanTargetRepository()
+    target = _make_target(is_active=False)
+    scan_target_port.seed(target)
+
+    with pytest.raises(ScanTargetNotFoundError):
+        asyncio.run(
+            trigger_scan(
+                repository_port,
+                scan_run_port,
+                scan_task_port,
+                repository_id=None,
+                scan_target_id=target.id,
+                scan_target_port=scan_target_port,
+                scanner_type=ScannerType.DAST,
+            )
+        )
+
+
+def test_trigger_scan_creates_run_and_task_for_a_scan_target_on_first_trigger() -> None:
+    repository_port = _FakeCodeRepositoryRepository()
+    scan_run_port = _FakeScanRunRepository()
+    scan_task_port = _FakeScanTaskRepository()
+    scan_target_port = _FakeScanTargetRepository()
+    target = _make_target()
+    scan_target_port.seed(target)
+
+    run, created = asyncio.run(
+        trigger_scan(
+            repository_port,
+            scan_run_port,
+            scan_task_port,
+            repository_id=None,
+            scan_target_id=target.id,
+            scan_target_port=scan_target_port,
+            scanner_type=ScannerType.DAST,
+        )
+    )
+
+    assert created is True
+    assert run.status == ScanRunStatus.PENDING
+    assert run.repository_id is None
+    assert run.scan_target_id == target.id
+    assert run.commit_sha is None
+    assert run.ref is None
+    assert len(scan_run_port.created) == 1
+    assert len(scan_task_port.created) == 1
+    assert scan_task_port.created[0].scanner_type == ScannerType.DAST
+    assert scan_task_port.created[0].status == ScanTaskStatus.PENDING
+
+
+def test_trigger_scan_returns_existing_run_when_active_target_task_exists() -> None:
+    repository_port = _FakeCodeRepositoryRepository()
+    scan_run_port = _FakeScanRunRepository()
+    scan_task_port = _FakeScanTaskRepository()
+    scan_target_port = _FakeScanTargetRepository()
+    target = _make_target()
+    scan_target_port.seed(target)
+
+    first_run, first_created = asyncio.run(
+        trigger_scan(
+            repository_port,
+            scan_run_port,
+            scan_task_port,
+            repository_id=None,
+            scan_target_id=target.id,
+            scan_target_port=scan_target_port,
+            scanner_type=ScannerType.DAST,
+        )
+    )
+    assert first_created is True
+
+    scan_task_port.register_target_for_task(scan_task_port.created[0].id, target.id)
+
+    second_run, second_created = asyncio.run(
+        trigger_scan(
+            repository_port,
+            scan_run_port,
+            scan_task_port,
+            repository_id=None,
+            scan_target_id=target.id,
+            scan_target_port=scan_target_port,
+            scanner_type=ScannerType.DAST,
+        )
+    )
+
+    assert second_created is False
+    assert second_run.id == first_run.id
+    assert len(scan_run_port.created) == 1
+    assert len(scan_task_port.created) == 1
+
+
+def test_trigger_scan_repository_branch_is_byte_for_byte_unchanged_by_target_addition() -> None:
+    """Regression: adding the target branch must not alter any existing
+    repository-subject caller's behavior — same positional call shape as
+    `test_trigger_scan_creates_run_and_task_on_first_trigger`."""
+    repository_port = _FakeCodeRepositoryRepository()
+    repository = _make_repository()
+    repository_port.seed(repository)
+    scan_run_port = _FakeScanRunRepository()
+    scan_task_port = _FakeScanTaskRepository()
+
+    run, created = asyncio.run(
+        trigger_scan(
+            repository_port,
+            scan_run_port,
+            scan_task_port,
+            repository.id,
+            commit_sha="abc123",
+            scanner_type=ScannerType.SECRETS,
+        )
+    )
+
+    assert created is True
+    assert run.repository_id == repository.id
+    assert run.scan_target_id is None

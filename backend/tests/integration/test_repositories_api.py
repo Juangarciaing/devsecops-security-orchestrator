@@ -10,6 +10,7 @@ from datetime import datetime
 import httpx
 import pytest
 from cryptography.fernet import Fernet
+from sqlalchemy import delete
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from orchestrator.api.main import create_app
@@ -17,6 +18,7 @@ from orchestrator.api.v1.dependencies.db import get_db_session
 from orchestrator.domain.entities.code_repository import CodeRepository
 from orchestrator.domain.entities.finding import Finding
 from orchestrator.domain.entities.scan_run import ScanRun
+from orchestrator.domain.entities.scan_target import ScanTarget
 from orchestrator.domain.entities.scan_task import ScanTask
 from orchestrator.domain.entities.user import User
 from orchestrator.domain.value_objects.enums import (
@@ -27,8 +29,10 @@ from orchestrator.domain.value_objects.enums import (
     ScanTaskStatus,
     UserRole,
 )
+from orchestrator.domain.value_objects.scan_subject import ScanSubject, ScanSubjectKind
 from orchestrator.infrastructure.config.settings import get_settings
 from orchestrator.infrastructure.db.engine import resolve_database_url
+from orchestrator.infrastructure.db.models.scan_target import ScanTargetModel
 from orchestrator.infrastructure.db.repositories.code_repository_repository import (
     SqlAlchemyCodeRepositoryRepository,
 )
@@ -37,6 +41,9 @@ from orchestrator.infrastructure.db.repositories.finding_repository import (
 )
 from orchestrator.infrastructure.db.repositories.scan_run_repository import (
     SqlAlchemyScanRunRepository,
+)
+from orchestrator.infrastructure.db.repositories.scan_target_repository import (
+    SqlAlchemyScanTargetRepository,
 )
 from orchestrator.infrastructure.db.repositories.scan_task_repository import (
     SqlAlchemyScanTaskRepository,
@@ -184,7 +191,9 @@ async def _seed_completed_scan_with_findings(
         ]
         async with sessionmaker() as session:
             finding_repo = SqlAlchemyFindingRepository(session)
-            await finding_repo.bulk_upsert_findings(repository_id, scan_run_id, findings)
+            await finding_repo.bulk_upsert_findings(
+                ScanSubject(ScanSubjectKind.REPOSITORY, repository_id), scan_run_id, findings
+            )
             await session.commit()
 
     return scan_run_id
@@ -913,7 +922,9 @@ async def _seed_completed_run_with_fingerprinted_findings(
         ]
         async with sessionmaker() as session:
             finding_repo = SqlAlchemyFindingRepository(session)
-            await finding_repo.bulk_upsert_findings(repository_id, scan_run_id, findings)
+            await finding_repo.bulk_upsert_findings(
+                ScanSubject(ScanSubjectKind.REPOSITORY, repository_id), scan_run_id, findings
+            )
             await session.commit()
 
     return scan_run_id
@@ -1257,5 +1268,171 @@ def test_get_policy_check_member_and_admin_responses_are_byte_identical(
         assert member_response.status_code == 200
         assert admin_response.status_code == 200
         assert member_response.json() == admin_response.json()
+
+    asyncio.run(_run_with_client(scenario))
+
+
+# ---------------------------------------------------------------------------
+# GET /{id}/trends, /diff, /policy-check — target-subject exclusion
+# (dast-scanner design D8)
+# ---------------------------------------------------------------------------
+
+
+async def _seed_completed_target_scan_with_findings(
+    sessionmaker: async_sessionmaker[AsyncSession],
+    *,
+    created_at: datetime,
+    severities: tuple[FindingSeverity, ...] = (),
+) -> uuid.UUID:
+    """Create one COMPLETED target-subject `ScanRun` (on a fresh
+    `ScanTarget`) + one COMPLETED DAST `ScanTask`, then `bulk_upsert` one
+    `Finding` per entry in `severities`. Pure noise data for the
+    byte-identical exclusion test below — the repository-scoped endpoints
+    under test must never see any of it. Returns the `scan_target_id`."""
+    async with sessionmaker() as session:
+        target_repo = SqlAlchemyScanTargetRepository(session)
+        target = await target_repo.create(
+            ScanTarget(
+                id=uuid.uuid4(),
+                name=f"noise-target-{uuid.uuid4().hex[:8]}",
+                target_url=f"https://{uuid.uuid4()}.test",
+                is_active=True,
+                created_at=created_at,
+                updated_at=created_at,
+            )
+        )
+        await session.commit()
+        target_id = target.id
+
+    async with sessionmaker() as session:
+        scan_run_repo = SqlAlchemyScanRunRepository(session)
+        run = await scan_run_repo.create(
+            ScanRun(
+                id=uuid.uuid4(),
+                repository_id=None,
+                scan_target_id=target_id,
+                status=ScanRunStatus.COMPLETED,
+                trigger="manual",
+                commit_sha=None,
+                ref=None,
+                created_at=created_at,
+            )
+        )
+        await session.commit()
+        scan_run_id = run.id
+
+    async with sessionmaker() as session:
+        scan_task_repo = SqlAlchemyScanTaskRepository(session)
+        task = await scan_task_repo.create(
+            ScanTask(
+                id=uuid.uuid4(),
+                scan_run_id=scan_run_id,
+                scanner_type=ScannerType.DAST,
+                status=ScanTaskStatus.COMPLETED,
+            )
+        )
+        await session.commit()
+        scan_task_id = task.id
+
+    if severities:
+        findings = [
+            Finding(
+                id=uuid.uuid4(),
+                scan_task_id=scan_task_id,
+                severity=severity,
+                rule_id="zap-alert",
+                title="Reflected XSS",
+                fingerprint=f"fp-{uuid.uuid4()}",
+                created_at=created_at,
+                updated_at=created_at,
+            )
+            for severity in severities
+        ]
+        async with sessionmaker() as session:
+            finding_repo = SqlAlchemyFindingRepository(session)
+            await finding_repo.bulk_upsert_findings(
+                ScanSubject(ScanSubjectKind.SCAN_TARGET, target_id), scan_run_id, findings
+            )
+            await session.commit()
+
+    return target_id
+
+
+def test_trends_diff_and_policy_check_exclude_target_subject_rows(
+    migrated_schema: None,
+) -> None:
+    """dast-scanner design D8: `FindingModel.repository_id == '<uuid>'` (and
+    `ScanRunModel.repository_id == '<uuid>'`) is NULL — never TRUE — against
+    a target-subject row's NULL `repository_id`, so `/trends`, `/diff`, and
+    `/policy-check` exclude every target-subject row from their WHERE
+    clauses BY CONSTRUCTION. No explicit `IS NOT NULL` filter exists or
+    should exist (design: that would be dead code implying a conditional
+    exclusion that isn't).
+
+    Proves it live: capture all three responses for a repository with an
+    open CRITICAL-free, LOW-only finding (so `/policy-check` PASSes), then
+    seed a completely unrelated target-subject scan with an open CRITICAL
+    finding (which would flip `/policy-check` to FAIL and change the
+    trend/diff counts if it leaked), fetch again, and assert byte-identical
+    responses.
+    """
+
+    async def scenario(
+        client: httpx.AsyncClient, sessionmaker: async_sessionmaker[AsyncSession]
+    ) -> None:
+        member = await _seed_user(
+            sessionmaker, "member-target-exclusion@example.com", UserRole.MEMBER
+        )
+        repo = await _seed_repository(
+            sessionmaker, "acme-target-exclusion", "widgets-target-exclusion"
+        )
+        await _seed_completed_scan_with_findings(
+            sessionmaker,
+            repo.id,
+            created_at=datetime(2026, 1, 1),
+            severities=(FindingSeverity.LOW,),
+        )
+
+        headers = _auth_header(member)
+        trends_before = await client.get(f"/api/v1/repositories/{repo.id}/trends", headers=headers)
+        diff_before = await client.get(f"/api/v1/repositories/{repo.id}/diff", headers=headers)
+        policy_before = await client.get(
+            f"/api/v1/repositories/{repo.id}/policy-check", headers=headers
+        )
+        assert trends_before.status_code == 200
+        assert diff_before.status_code == 200
+        assert policy_before.status_code == 200
+        assert policy_before.json()["verdict"] == "pass"
+
+        # `migrated_schema`'s teardown runs `alembic downgrade base`, which
+        # requires `ref`/`commit_sha`/`repository_id` NOT NULL again —
+        # impossible while this test's target-subject row survives. Clean it
+        # up unconditionally, mirroring test_finding_dedup_partial_index.py.
+        noise_target_id = await _seed_completed_target_scan_with_findings(
+            sessionmaker,
+            created_at=datetime(2026, 1, 1),
+            severities=(FindingSeverity.CRITICAL,),
+        )
+        try:
+            trends_after = await client.get(
+                f"/api/v1/repositories/{repo.id}/trends", headers=headers
+            )
+            diff_after = await client.get(f"/api/v1/repositories/{repo.id}/diff", headers=headers)
+            policy_after = await client.get(
+                f"/api/v1/repositories/{repo.id}/policy-check", headers=headers
+            )
+
+            assert trends_after.status_code == 200
+            assert diff_after.status_code == 200
+            assert policy_after.status_code == 200
+            assert trends_before.json() == trends_after.json()
+            assert diff_before.json() == diff_after.json()
+            assert policy_before.json() == policy_after.json()
+        finally:
+            async with sessionmaker() as session:
+                await session.execute(
+                    delete(ScanTargetModel).where(ScanTargetModel.id == noise_target_id)
+                )
+                await session.commit()
 
     asyncio.run(_run_with_client(scenario))
