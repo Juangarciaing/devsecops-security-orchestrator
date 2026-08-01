@@ -26,7 +26,9 @@ _NAMESPACE = "security-scans"
 _SCAN_TASK_ID = uuid.UUID("11111111-2222-3333-4444-555555555555")
 
 
-def _execution(runner: FakeKubernetesJobRunner) -> KubernetesSplitScanExecution:
+def _execution(
+    runner: FakeKubernetesJobRunner, *, scanner_exit_codes_are_data: bool = False
+) -> KubernetesSplitScanExecution:
     return KubernetesSplitScanExecution(
         runner,
         namespace=_NAMESPACE,
@@ -34,6 +36,7 @@ def _execution(runner: FakeKubernetesJobRunner) -> KubernetesSplitScanExecution:
         scanner_image="ghcr.io/gitleaks/gitleaks:v8.30.1@sha256:deadbeef",
         scanner_command=["detect", "--no-git", "--source", "/workspace/checkout"],
         timeout_seconds=90,
+        scanner_exit_codes_are_data=scanner_exit_codes_are_data,
     )
 
 
@@ -201,3 +204,132 @@ def test_duplicate_delivery_discovers_existing_resources_without_recreating() ->
     assert runner.pvc_calls == []
     assert len(runner.job_calls) == 1
     assert runner.job_calls[0].name == "scan-11111111222233334444-scanner"
+
+
+# ---------------------------------------------------------------------------
+# k8s-backend-enable PR5 (tasks 5.5-5.10) — `scanner_exit_codes_are_data` +
+# the rev-parse Job/`head_sha`. Both new behaviors are gated behind the SAME
+# keyword-only flag (default `False`): the 8 tests above construct
+# `KubernetesSplitScanExecution` via `_execution()`'s default
+# (`scanner_exit_codes_are_data=False`) and are therefore completely
+# unaffected by anything below — no rev-parse Job runs, `job_calls`/
+# `delete_job_calls` counts stay at exactly 2, byte-for-byte identical to
+# before this PR (the hard regression guard, tasks 5.1/5.16).
+# ---------------------------------------------------------------------------
+
+
+def test_default_flag_runs_no_revparse_job_and_leaves_head_sha_empty() -> None:
+    """Explicit companion to the 8 tests above: confirms the additive
+    `KubernetesScanResult` fields default to "no rev-parse Job ran"."""
+    runner = FakeKubernetesJobRunner()
+
+    result = _execution(runner).execute(
+        clone_url="https://github.com/example/public-repo.git",
+        ref="main",
+        credential_ref=None,
+        scan_task_id=_SCAN_TASK_ID,
+        scanner_type=ScannerType.SECRETS,
+    )
+
+    assert result.head_sha == ""
+    assert len(runner.job_calls) == 2
+    assert len(runner.delete_job_calls) == 2
+
+
+def test_scanner_exit_codes_are_data_true_returns_non_zero_scanner_outcome_as_data() -> None:
+    """Gitleaks' `--exit-code=2` (leaks found) must reach the caller as
+    `KubernetesScanResult.scanner_exit_code` data, never as
+    `KubernetesWorkloadFailedError` — the concrete fix for design bug #2
+    (scanner exit codes structurally lost)."""
+    runner = FakeKubernetesJobRunner()
+    runner.script_logs(_NAMESPACE, "scan-11111111222233334444-scanner", '[{"RuleID": "aws-key"}]')
+    runner.script_wait_outcomes(
+        JobOutcome(succeeded=True, failed=False, timed_out=False),  # checkout
+        JobOutcome(succeeded=True, failed=False, timed_out=False),  # rev-parse
+        JobOutcome(succeeded=False, failed=True, timed_out=False),  # scanner
+    )
+    # `script_exit_code` is consumed in call order, same as `script_wait_outcomes`
+    # — the first two (checkout/rev-parse) are irrelevant/unobserved, the 3rd
+    # (scanner) is Gitleaks' real `--exit-code=2`.
+    runner.script_exit_code(None)
+    runner.script_exit_code(None)
+    runner.script_exit_code(2)
+
+    result = _execution(runner, scanner_exit_codes_are_data=True).execute(
+        clone_url="https://github.com/example/public-repo.git",
+        ref="main",
+        credential_ref=None,
+        scan_task_id=_SCAN_TASK_ID,
+        scanner_type=ScannerType.SECRETS,
+    )
+
+    assert result.scanner_exit_code == 2
+    assert '"RuleID"' in result.scanner_log
+    assert len(runner.job_calls) == 3
+    assert len(runner.delete_job_calls) == 3
+
+
+def test_scanner_exit_codes_are_data_true_checkout_failure_still_raises() -> None:
+    """The checkout Job stays strict regardless of `scanner_exit_codes_are_data`
+    — only the scanner Job's non-zero exit is ever data."""
+    runner = FakeKubernetesJobRunner()
+    runner.script_wait_outcomes(JobOutcome(succeeded=False, failed=True, timed_out=False))
+
+    with pytest.raises(KubernetesWorkloadFailedError):
+        _execution(runner, scanner_exit_codes_are_data=True).execute(
+            clone_url="https://github.com/example/public-repo.git",
+            ref="main",
+            credential_ref=None,
+            scan_task_id=_SCAN_TASK_ID,
+            scanner_type=ScannerType.SECRETS,
+        )
+
+    # Cleanup still runs for all 3 possible Job names (idempotent no-op for
+    # the rev-parse/scanner Jobs that never got created).
+    assert len(runner.delete_job_calls) == 3
+    assert len(runner.delete_pvc_calls) == 1
+
+
+def test_scanner_exit_codes_are_data_true_scanner_timeout_still_raises() -> None:
+    """A scanner Job that times out (never reaches a real exit code) must
+    stay terminal even under `scanner_exit_codes_are_data=True` — a timeout
+    is not "exit-code data"."""
+    runner = FakeKubernetesJobRunner()
+    runner.script_wait_outcomes(
+        JobOutcome(succeeded=True, failed=False, timed_out=False),  # checkout
+        JobOutcome(succeeded=True, failed=False, timed_out=False),  # rev-parse
+        JobOutcome(succeeded=False, failed=True, timed_out=True),  # scanner
+    )
+
+    with pytest.raises(KubernetesWorkloadFailedError):
+        _execution(runner, scanner_exit_codes_are_data=True).execute(
+            clone_url="https://github.com/example/public-repo.git",
+            ref="main",
+            credential_ref=None,
+            scan_task_id=_SCAN_TASK_ID,
+            scanner_type=ScannerType.SECRETS,
+        )
+
+
+def test_revparse_job_runs_between_checkout_and_scanner_and_populates_head_sha() -> None:
+    runner = FakeKubernetesJobRunner()
+    runner.script_logs(_NAMESPACE, "scan-11111111222233334444-revparse", "abc123def456\n")
+
+    result = _execution(runner, scanner_exit_codes_are_data=True).execute(
+        clone_url="https://github.com/example/public-repo.git",
+        ref="main",
+        credential_ref=None,
+        scan_task_id=_SCAN_TASK_ID,
+        scanner_type=ScannerType.SECRETS,
+    )
+
+    assert result.head_sha == "abc123def456"
+    assert len(runner.job_calls) == 3
+    checkout_spec, revparse_spec, scanner_spec = runner.job_calls
+    assert checkout_spec.labels["component"] == "checkout"
+    assert revparse_spec.labels["component"] == "scanner"
+    assert revparse_spec.pvc_read_only is True
+    assert revparse_spec.allow_network_egress is False
+    assert revparse_spec.command == ["-C", "/workspace/checkout", "rev-parse", "HEAD"]
+    assert revparse_spec.name == "scan-11111111222233334444-revparse"
+    assert scanner_spec.labels["component"] == "scanner"
