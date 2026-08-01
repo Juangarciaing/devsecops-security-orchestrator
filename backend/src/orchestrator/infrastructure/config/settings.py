@@ -126,6 +126,18 @@ class Settings(BaseSettings):
     kubernetes_namespace: str | None = None
     kubernetes_storage_class_name: str | None = None
 
+    # k8s-backend-enable PR1 (design D-Client) — pins the kubeconfig
+    # `current-context` used ONLY on the kubeconfig fallback path (in-cluster
+    # config always wins regardless of this value; see
+    # `kubernetes_client_factory.load_kubernetes_config`). `None` means "use
+    # kubeconfig's own `current-context`" — deliberately NOT required by
+    # `_require_complete_kubernetes_config_when_selected` below: an unpinned
+    # `current-context` is a real hazard for a tool whose whole job is
+    # *creating* workloads (a `kubectl config use-context` in another
+    # terminal would silently redirect scans), but it is still optional by
+    # design, and in-cluster deployments ignore it entirely.
+    kubernetes_kubeconfig_context: str | None = None
+
     # secrets-manager PR1 — separate from `secret_key` by design decision
     # (proposal: reuse would force an HKDF step or break every existing
     # `.env`). Nullable + fail-closed (D2): absent boots unchanged, a
