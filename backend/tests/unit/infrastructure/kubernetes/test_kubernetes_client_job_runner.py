@@ -227,6 +227,57 @@ def test_wait_for_job_returns_timed_out_when_client_deadline_elapses() -> None:
 
 
 # ---------------------------------------------------------------------------
+# 5.3/5.4 wait_for_job populates JobOutcome.exit_code (k8s-backend-enable PR5)
+# ---------------------------------------------------------------------------
+
+
+def _terminated_pod(name: str, creation_timestamp: int, exit_code: int) -> MagicMock:
+    pod = MagicMock()
+    pod.metadata.name = name
+    pod.metadata.creation_timestamp = creation_timestamp
+    pod.status.container_statuses[0].state.terminated.exit_code = exit_code
+    return pod
+
+
+def test_wait_for_job_populates_exit_code_from_the_newest_pods_terminated_container() -> None:
+    runner, batch, core = _job_runner()
+    batch.read_namespaced_job_status.return_value = MagicMock(status=_status(failed=1))
+    core.list_namespaced_pod.return_value = MagicMock(
+        items=[
+            _terminated_pod("job-pod-old", 1, exit_code=0),
+            _terminated_pod("job-pod-new", 2, exit_code=2),
+        ]
+    )
+
+    outcome = runner.wait_for_job(_NAMESPACE, "job", timeout_seconds=60)
+
+    assert outcome == JobOutcome(succeeded=False, failed=True, timed_out=False, exit_code=2)
+    core.list_namespaced_pod.assert_called_with(
+        _NAMESPACE, label_selector="batch.kubernetes.io/job-name=job"
+    )
+
+
+def test_wait_for_job_exit_code_is_none_when_the_pod_is_not_yet_observable() -> None:
+    runner, batch, core = _job_runner()
+    batch.read_namespaced_job_status.return_value = MagicMock(status=_status(succeeded=1))
+    core.list_namespaced_pod.return_value = MagicMock(items=[])
+
+    outcome = runner.wait_for_job(_NAMESPACE, "job", timeout_seconds=60)
+
+    assert outcome == JobOutcome(succeeded=True, failed=False, timed_out=False, exit_code=None)
+
+
+def test_wait_for_job_exit_code_lookup_never_raises_on_transport_failure() -> None:
+    runner, batch, core = _job_runner()
+    batch.read_namespaced_job_status.return_value = MagicMock(status=_status(succeeded=1))
+    core.list_namespaced_pod.side_effect = _api_exception(500)
+
+    outcome = runner.wait_for_job(_NAMESPACE, "job", timeout_seconds=60)
+
+    assert outcome == JobOutcome(succeeded=True, failed=False, timed_out=False, exit_code=None)
+
+
+# ---------------------------------------------------------------------------
 # 2.9 get_job_logs
 # ---------------------------------------------------------------------------
 

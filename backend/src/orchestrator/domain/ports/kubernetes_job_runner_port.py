@@ -97,11 +97,18 @@ class JobSpec:
 
 @dataclass(frozen=True, slots=True)
 class JobOutcome:
-    """Terminal (or timed-out) state of one polled `Job`."""
+    """Terminal (or timed-out) state of one polled `Job`.
+
+    `exit_code` (k8s-backend-enable PR5, appended and defaulted — every
+    existing caller/test is unaffected): the main container's terminated
+    exit code, best-effort. `None` when it could not be observed (e.g. the
+    Pod was already reaped) — a caller MUST NOT treat `None` as exit code 0.
+    """
 
     succeeded: bool
     failed: bool
     timed_out: bool
+    exit_code: int | None = None
 
 
 class KubernetesJobRunnerPort(ABC):

@@ -8,7 +8,7 @@ all WITHOUT a real Kubernetes API server.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 from orchestrator.domain.ports.kubernetes_job_runner_port import (
     JobOutcome,
@@ -35,9 +35,17 @@ class FakeKubernetesJobRunner(KubernetesJobRunnerPort):
     _create_job_errors: list[Exception] = field(default_factory=list, repr=False)
     _wait_errors: list[Exception] = field(default_factory=list, repr=False)
     _logs: dict[tuple[str, str], str] = field(default_factory=dict, repr=False)
+    _scripted_exit_codes: list[int | None] = field(default_factory=list, repr=False)
 
     def script_wait_outcomes(self, *outcomes: JobOutcome) -> None:
         self._wait_outcomes.extend(outcomes)
+
+    def script_exit_code(self, exit_code: int | None) -> None:
+        """Attach `exit_code` to the NEXT `wait_for_job` outcome (scripted or
+        default), one entry per call, consumed in order — mirrors
+        `script_wait_outcomes`' convention without requiring the caller to
+        construct a full `JobOutcome` just to set this one field."""
+        self._scripted_exit_codes.append(exit_code)
 
     def script_create_job_error(self, error: Exception) -> None:
         """Simulate one Job-submission/API failure, consumed on the next `create_job`."""
@@ -77,9 +85,10 @@ class FakeKubernetesJobRunner(KubernetesJobRunnerPort):
     def wait_for_job(self, namespace: str, name: str, timeout_seconds: int) -> JobOutcome:
         if self._wait_errors:
             raise self._wait_errors.pop(0)
-        if self._wait_outcomes:
-            return self._wait_outcomes.pop(0)
-        return _DEFAULT_OUTCOME
+        outcome = self._wait_outcomes.pop(0) if self._wait_outcomes else _DEFAULT_OUTCOME
+        if self._scripted_exit_codes:
+            outcome = replace(outcome, exit_code=self._scripted_exit_codes.pop(0))
+        return outcome
 
     def get_job_logs(self, namespace: str, name: str, max_bytes: int) -> str:
         text = self._logs.get((namespace, name), "")

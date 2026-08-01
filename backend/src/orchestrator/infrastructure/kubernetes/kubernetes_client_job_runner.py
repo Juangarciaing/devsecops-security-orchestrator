@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import time
 from collections.abc import Callable
+from dataclasses import replace
 from typing import TYPE_CHECKING
 
 from kubernetes.client import ApiException  # type: ignore[import-untyped]
@@ -116,10 +117,35 @@ class KubernetesClientJobRunner(KubernetesJobRunnerPort):
             status = self._batch.read_namespaced_job_status(name, namespace).status
             outcome = job_outcome_from_status(status)
             if outcome is not None:
-                return outcome
+                return replace(outcome, exit_code=self._container_exit_code(namespace, name))
             if self._now() >= deadline:
-                return JobOutcome(succeeded=False, failed=True, timed_out=True)
+                return JobOutcome(
+                    succeeded=False,
+                    failed=True,
+                    timed_out=True,
+                    exit_code=self._container_exit_code(namespace, name),
+                )
             self._sleep(self._poll_interval_seconds)
+
+    def _container_exit_code(self, namespace: str, name: str) -> int | None:
+        """Best-effort: the main container's terminated exit code, read from
+        the same newest-Pod-by-label lookup `get_job_logs` uses (design
+        D-Result b). Never raises — `None` means "not observable", which the
+        caller (`KubernetesSplitScanExecution`) MUST NOT treat as exit 0."""
+        try:
+            pods = self._core.list_namespaced_pod(
+                namespace, label_selector=f"batch.kubernetes.io/job-name={name}"
+            ).items
+            if not pods:
+                return None
+            newest = max(pods, key=lambda pod: pod.metadata.creation_timestamp)
+            statuses = newest.status.container_statuses
+            if not statuses:
+                return None
+            terminated = statuses[0].state.terminated
+            return None if terminated is None else int(terminated.exit_code)
+        except Exception:  # advisory lookup only — must never fail the outcome
+            return None
 
     def get_job_logs(self, namespace: str, name: str, max_bytes: int) -> str:
         try:
