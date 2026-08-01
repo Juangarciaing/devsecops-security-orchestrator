@@ -94,6 +94,16 @@ README.
   default** — the `dast_enabled` setting is `False` until an operator opts
   in, checked both at the API (403) and worker gate (see "DAST scanning"
   below).
+- **Real-time scan status push** — the scan detail page's status polling is
+  now backed by a server-pushed `EventSource` stream (`GET /api/v1/scans/
+  {scan_run_id}/events`) fed from the worker over Redis pub/sub; the push is
+  a refetch hint only (`invalidateQueries`), never a data source, so the
+  authenticated REST endpoint stays the sole source of scan data. Polling
+  degrades to a 30s safety net while the stream is live rather than
+  disabling — a dropped stream re-arms the original 2500ms polling. **Off by
+  default** — the `realtime_enabled` setting is `False`, in which case the
+  UI's polling is byte-identical to before this feature existed (see
+  "Real-time scan status push" below).
 
 The Kubernetes Jobs backend (Module 13c) is built and tested but not yet
 enabled in production — see "Kubernetes Jobs execution" below and
@@ -101,8 +111,7 @@ enabled in production — see "Kubernetes Jobs execution" below and
 (posting scan results back to a PR/commit as a native GitHub check — still
 blocked on GitHub App/installation-token auth this project doesn't have,
 which is a separate concern from the personal-access-token secrets manager
-above; the *internal* policy-gate equivalent is built, see above), and
-real-time push (still polling).
+above; the *internal* policy-gate equivalent is built, see above).
 
 ## Architecture
 
@@ -359,6 +368,49 @@ end-to-end (not just at spike time) by two passing live-Docker integration
 tests: `test_zap_dast_execution_live.py` (executor-level, disposable HTTP
 target) and `test_process_scan_task_dast_live.py` (full worker dispatch
 through to persisted findings).
+
+### Real-time scan status push
+
+The scan detail page polled `GET /api/v1/scans/{id}` every 2500ms while a
+scan was pending/running. This adds a server-pushed complement: the worker
+publishes a status event to Redis on every scan-run transition
+(`running`/`completed`/`failed`/`cancelled`), and the API relays it to any
+open browser tab over Server-Sent Events at
+`GET /api/v1/scans/{scan_run_id}/events`. The event is a refetch hint only
+— `{"scan_run_id", "status", "at"}` — never a data source: the browser
+reacts to it by invalidating the TanStack Query cache for that scan, and the
+existing authenticated REST endpoint remains the sole place scan data is
+actually read from.
+
+**Setup.** Off by default: set `realtime_enabled=true` in `backend/.env` to
+turn on the worker-side publish and the API's SSE route. Follows the same
+`dast_enabled` precedent — a plain boolean gate, no new `.env.example`
+entry, since it has a safe (`False`) default:
+
+| Setting | Default | Purpose |
+|---|---|---|
+| `realtime_enabled` | `false` | Deny-by-default gate for the worker's Redis publish and the API's `/events` stream (`503` when off, before any auth or DB work). |
+
+**Polling never fully stops.** While the stream is live, the page's polling
+interval degrades to a 30s safety net rather than being disabled outright —
+a half-open SSE failure (e.g. the relay's Redis subscription silently dies)
+isn't detectable from a live-looking TCP socket alone, so a bounded fallback
+poll stays armed the whole time. If the stream drops (network error, the
+feature is off, or the token expired), polling reverts to the original
+2500ms cadence. Either way the page can never get permanently stuck waiting
+on a push that stopped arriving.
+
+**Auth: JWT in the query string, by design and by necessity.** A browser
+`EventSource` cannot set a custom `Authorization` header, so the frontend's
+one and only call to this endpoint authenticates via `?access_token=<jwt>`
+in the URL. Every other client (`curl`, integration tests, any non-browser
+consumer) uses the normal `Authorization: Bearer` header — the query-string
+path exists solely for `EventSource` and is not the preferred path for
+anything else. This is an accepted, bounded tradeoff: the token's normal
+short expiry (`jwt_expiry_minutes`) limits the exposure window, and
+operators should scrub the `access_token` query parameter from access logs
+(e.g. an nginx `log_format` override or reverse-proxy log-scrubbing rule) —
+this project's own access logging does not do so by default.
 
 ## Tests
 

@@ -34,10 +34,11 @@ from orchestrator.infrastructure.observability.tracing import (
     instrument_fastapi,
     shutdown_tracing,
 )
+from orchestrator.infrastructure.realtime.relay import ScanEventRelay
 
 
 @asynccontextmanager
-async def _lifespan(_app: FastAPI) -> AsyncIterator[None]:
+async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Module 13a follow-up: FastAPI's shutdown phase is the only hook that
     fires on every graceful stop (SIGTERM, rolling deploy) — `shutdown_tracing`
     flushes buffered-but-unexported spans there. It is a safe no-op when
@@ -45,13 +46,23 @@ async def _lifespan(_app: FastAPI) -> AsyncIterator[None]:
     block on an unreachable OTLP endpoint is bounded by the `OTLPSpanExporter`
     constructor-level `timeout` set in `tracing.configure_tracing` (~2s), not
     by any argument to `force_flush()` itself — see
-    `infrastructure/observability/tracing.py` for why."""
+    `infrastructure/observability/tracing.py` for why.
+
+    realtime-push PR1 (design D-PubSub): `ScanEventRelay.start()`/`.stop()`
+    are a no-op when `realtime_enabled` is False — no client, no `PubSub`, no
+    background task, no socket. The relay is `app.state`-scoped, not a
+    module global (deliberate deviation from the tracing precedent above —
+    see `relay.py`'s docstring), so each `create_app()` call gets its own.
+    """
+    await app.state.scan_event_relay.start()
     yield
+    await app.state.scan_event_relay.stop()
     shutdown_tracing()
 
 
 def create_app() -> FastAPI:
     app = FastAPI(title="DevSecOps Security Orchestrator", version="0.1.0", lifespan=_lifespan)
+    app.state.scan_event_relay = ScanEventRelay()
     register_exception_handlers(app)
 
     # Module 13a — off by default (D1); each call below is a no-op unless

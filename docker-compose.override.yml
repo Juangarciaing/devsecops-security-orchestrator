@@ -5,6 +5,15 @@ services:
     ports:
       - "${POSTGRES_PORT:-5432}:5432"
 
+  # realtime-push PR1 — the live-Redis leak-proof integration test
+  # (`test_realtime_events.py`) needs a genuine host-reachable Redis client
+  # connection (PUBSUB NUMPAT/CHANNELS), not just a container-IP probe like
+  # the existing `*_live.py` DAST isolation checks. Mirrors `postgres`'s
+  # existing host-publish precedent above.
+  redis:
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+
   backend:
     volumes:
       - ./backend/src:/app/src

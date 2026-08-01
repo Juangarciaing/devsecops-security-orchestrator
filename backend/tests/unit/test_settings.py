@@ -296,6 +296,25 @@ def test_settings_dast_enabled_can_be_overridden(
     assert settings.dast_enabled is True
 
 
+def test_settings_realtime_enabled_defaults_to_false(valid_env: None) -> None:
+    """realtime-push PR1/design D-Gate: deny-by-default — a fresh deployment
+    MUST NOT start the relay or accept the SSE route without an explicit
+    opt-in, mirroring `dast_enabled`'s fail-closed precedent."""
+    settings = Settings(_env_file=None)
+
+    assert settings.realtime_enabled is False
+
+
+def test_settings_realtime_enabled_can_be_overridden(
+    monkeypatch: pytest.MonkeyPatch, valid_env: None
+) -> None:
+    monkeypatch.setenv("REALTIME_ENABLED", "true")
+
+    settings = Settings(_env_file=None)
+
+    assert settings.realtime_enabled is True
+
+
 def test_settings_rejects_a_key_of_the_wrong_decoded_length(
     monkeypatch: pytest.MonkeyPatch, valid_env: None
 ) -> None:

@@ -7,6 +7,7 @@ import {
 import { apiClient } from '@/shared/api/client'
 import { isTerminalScanStatus } from './types'
 import type { ScanRun, ScanRunDetail, TriggerScanInput } from './types'
+import { useScanEvents } from './useScanEvents'
 
 interface TriggerScanArgs extends TriggerScanInput {
   repositoryId: string
@@ -46,25 +47,35 @@ async function fetchScan(id: string): Promise<ScanRunDetail> {
   return data
 }
 
-// Pure predicate for the polling cadence (Req: Scan Status Polling): poll
-// every 2500ms while the run is pending/running, stop once it reaches a
-// terminal status. Exported so it can be unit tested without timers.
+// Pure predicate for the polling cadence (Req: Scan Status Polling / Polling
+// Fallback on SSE Unavailability): poll every 2500ms while the run is
+// pending/running, stop once it reaches a terminal status. While a live SSE
+// connection is pushing updates (`sseLive`), the interval degrades to a 30s
+// safety net rather than disabling entirely — a half-open SSE failure the
+// heartbeat can't detect would otherwise strand the page forever. `sseLive`
+// defaults to `false` so every pre-existing call site keeps its behavior
+// unchanged. Exported so it can be unit tested without timers.
 export function scanRefetchInterval(
   data: ScanRunDetail | undefined,
+  sseLive = false,
 ): number | false {
   if (!data) {
     return false
   }
-  return isTerminalScanStatus(data.status) ? false : 2500
+  if (isTerminalScanStatus(data.status)) {
+    return false
+  }
+  return sseLive ? 30_000 : 2500
 }
 
 export function useScan(id: string) {
+  const { live } = useScanEvents(id)
   return useQuery({
     queryKey: ['scans', id],
     queryFn: () => fetchScan(id),
     enabled: Boolean(id),
     refetchInterval: (query: Query<ScanRunDetail>) =>
-      scanRefetchInterval(query.state.data),
+      scanRefetchInterval(query.state.data, live),
   })
 }
 

@@ -138,6 +138,14 @@ class Settings(BaseSettings):
     # configures it is optional.
     credential_encryption_key: str | None = None
 
+    # realtime-push PR1 (design D-Gate): deny-by-default, mirroring
+    # `dast_enabled`'s fail-closed precedent exactly. A fresh deployment
+    # boots with the relay never started (`_lifespan` no-op), the worker's
+    # `publish_scan_status` returning on line 1 with zero I/O, and the SSE
+    # route registered but gated to 503 before any auth/DB work — byte-
+    # identical to today's polling-only behavior until explicitly enabled.
+    realtime_enabled: bool = False
+
     @model_validator(mode="after")
     def _require_complete_kubernetes_config_when_selected(self) -> Settings:
         if self.scan_execution_backend == "kubernetes" and (

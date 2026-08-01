@@ -121,6 +121,7 @@ from orchestrator.infrastructure.observability.metrics import (
     record_scan_terminal,
     record_scanner_duration,
 )
+from orchestrator.infrastructure.realtime.publisher import publish_scan_status
 from orchestrator.infrastructure.scanners.ast_sast_adapter import SastFailedError
 from orchestrator.infrastructure.scanners.gitleaks_adapter import GitleaksFailedError
 from orchestrator.infrastructure.scanners.pip_audit_adapter import PipAuditFailedError
@@ -564,8 +565,19 @@ async def _complete_target_scan(
 
 async def _mark_failed(
     session: AsyncSession, scan_task_id: uuid.UUID, error_message: str
-) -> tuple[bool, ScannerType, float]:
-    """Terminal `failed` transition for both `ScanTask` and its `ScanRun` (D5)."""
+) -> tuple[bool, ScannerType, float, uuid.UUID]:
+    """Terminal `failed` transition for both `ScanTask` and its `ScanRun` (D5).
+
+    Returns `(transitioned, scanner_type, duration, scan_run_id)` —
+    `scan_run_id` is APPENDED as this tuple's 4th element (realtime-push
+    PR2, design D-Publish-Points), the same additive-tuple-growth precedent
+    as `_load_and_start`'s appended `subject` (dast-scanner PR7): callers
+    cannot always name `scan_run_id` themselves (`_load_and_start` may have
+    raised before it was ever bound), but `_mark_failed` already holds
+    `task.scan_run_id` regardless of outcome. Consumed via the codebase's
+    established `result[3] if len(result) >= 4 else None` defensive-length
+    idiom so pre-existing 3-tuple test doubles keep working unmodified.
+    """
     scan_task_repo = SqlAlchemyScanTaskRepository(session)
     scan_run_repo = SqlAlchemyScanRunRepository(session)
 
@@ -573,7 +585,7 @@ async def _mark_failed(
     if task is None:
         raise ScanTaskNotFoundError(scan_task_id)
     if task.status not in (ScanTaskStatus.PENDING, ScanTaskStatus.RUNNING):
-        return False, task.scanner_type, 0.0
+        return False, task.scanner_type, 0.0, task.scan_run_id
 
     now = datetime.now(UTC).replace(tzinfo=None)
     await scan_task_repo.update_status(
@@ -581,7 +593,12 @@ async def _mark_failed(
     )
     await scan_run_repo.update_status(task.scan_run_id, ScanRunStatus.FAILED, completed_at=now)
     await session.commit()
-    return True, task.scanner_type, logical_scan_duration_seconds(task.started_at, now)
+    return (
+        True,
+        task.scanner_type,
+        logical_scan_duration_seconds(task.started_at, now),
+        task.scan_run_id,
+    )
 
 
 def logical_scan_duration_seconds(started_at: datetime | None, completed_at: datetime) -> float:
@@ -641,6 +658,7 @@ def process_scan_task(
                 return
             if started:
                 record_scan_started(scanner_type)
+                publish_scan_status(scan_run_id, ScanRunStatus.RUNNING, settings=settings)
 
             if subject.kind is ScanSubjectKind.SCAN_TARGET:
                 # dast-scanner PR7 (design D5): `clone_url` carries the
@@ -688,6 +706,7 @@ def process_scan_task(
                         record_scan_terminal(scanner_type, "completed", "none", scan_duration)
                         record_scanner_duration(scanner_type, "success", scanner_duration)
                         record_scan_findings(scanner_type, len(findings))
+                        publish_scan_status(scan_run_id, ScanRunStatus.COMPLETED, settings=settings)
             else:
                 # invariant: subject.kind is REPOSITORY here (byte-for-byte
                 # unchanged repository-subject path, PR7 added no behavior).
@@ -738,6 +757,7 @@ def process_scan_task(
                         record_scan_terminal(scanner_type, "completed", "none", scan_duration)
                         record_scanner_duration(scanner_type, "success", scanner_duration)
                         record_scan_findings(scanner_type, len(findings))
+                        publish_scan_status(scan_run_id, ScanRunStatus.COMPLETED, settings=settings)
         finally:
             if docker_client is None:
                 client.close()
@@ -752,11 +772,19 @@ def process_scan_task(
     ) as exc:
         error_message = str(exc)
         logger.warning("scan_task %s failed deterministically: %s", task_id, error_message)
-        transitioned, scanner_type, scan_duration = run_async(
+        mark_failed_result = run_async(
             lambda session: _mark_failed(session, task_id, error_message)
+        )
+        transitioned, scanner_type, scan_duration = mark_failed_result[:3]
+        mark_failed_scan_run_id = (
+            mark_failed_result[3] if len(mark_failed_result) >= 4 else None
         )
         if transitioned:
             record_scan_terminal(scanner_type, "failed", _failure_category(exc), scan_duration)
+            if mark_failed_scan_run_id is not None:
+                publish_scan_status(
+                    mark_failed_scan_run_id, ScanRunStatus.FAILED, settings=settings
+                )
     except TransientScanError as exc:
         error_message = str(exc)
         try:
@@ -772,8 +800,16 @@ def process_scan_task(
             # catch both to make the terminal `failed` transition explicit
             # and guaranteed either way (D5, Module 5 precedent).
             logger.warning("scan_task %s exhausted retries: %s", task_id, error_message)
-            transitioned, scanner_type, scan_duration = run_async(
+            mark_failed_result = run_async(
                 lambda session: _mark_failed(session, task_id, error_message)
+            )
+            transitioned, scanner_type, scan_duration = mark_failed_result[:3]
+            mark_failed_scan_run_id = (
+                mark_failed_result[3] if len(mark_failed_result) >= 4 else None
             )
             if transitioned:
                 record_scan_terminal(scanner_type, "failed", _failure_category(exc), scan_duration)
+                if mark_failed_scan_run_id is not None:
+                    publish_scan_status(
+                        mark_failed_scan_run_id, ScanRunStatus.FAILED, settings=settings
+                    )
