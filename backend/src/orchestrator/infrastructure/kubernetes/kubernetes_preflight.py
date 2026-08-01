@@ -46,12 +46,18 @@ def validate_kubernetes_preflight(
     storage_class_name: str,
     namespace: str,
 ) -> KubernetesPreflightResult:
-    """Raise `KubernetesPreflightError` unless BOTH preconditions hold:
+    """Raise `KubernetesPreflightError` unless ALL THREE preconditions hold,
+    checked in this order:
 
-    1. `storage_class_name` exists, supports `ReadWriteOnce` access, and
+    1. `namespace`'s workloads are ready — the namespace and both workload
+       ServiceAccounts exist, and this identity is permitted every verb the
+       job runner uses (k8s-backend-enable PR3, design D-Preflight). Checked
+       FIRST so a missing namespace/ServiceAccount/RBAC grant is never
+       misreported as a StorageClass or NetworkPolicy problem.
+    2. `storage_class_name` exists, supports `ReadWriteOnce` access, and
        binds `WaitForFirstConsumer` (matching `PvcSpec`'s defaults — spec:
        "Split Public-Repository PVC Workspace").
-    2. NetworkPolicy enforcement is confirmed in `namespace` (spec:
+    3. NetworkPolicy enforcement is confirmed in `namespace` (spec:
        "Missing ... NetworkPolicy enforcement MUST make Kubernetes
        unavailable/fail closed").
 
@@ -59,6 +65,13 @@ def validate_kubernetes_preflight(
     raises even if NetworkPolicy enforcement was never seeded either;
     nothing here short-circuits into a misleading error.
     """
+    if not capability_port.namespace_workloads_ready(namespace):
+        raise KubernetesPreflightError(
+            f"namespace {namespace!r} is not ready for Kubernetes workloads "
+            "(missing namespace, ServiceAccount, or insufficient RBAC) — "
+            "Kubernetes is unavailable"
+        )
+
     storage_class = capability_port.get_storage_class(storage_class_name)
     if storage_class is None:
         raise KubernetesPreflightError(

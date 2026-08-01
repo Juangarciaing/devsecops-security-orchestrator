@@ -167,6 +167,199 @@ def test_checkout_and_scan_threads_a_resolved_credential_into_execute(
     )
 
 
+# ---------------------------------------------------------------------------
+# k8s-backend-enable PR6 — live routing + raise removal, together (design D5
+# hard invariant). `create_kubernetes_scan_execution`/`create_scan_execution`
+# are monkeypatched here — the actual cluster wiring is proven in
+# `test_backend_selection.py` (unit) and
+# `tests/integration/test_process_scan_task_kubernetes_live.py` (live).
+# ---------------------------------------------------------------------------
+
+
+def _k8s_settings(**overrides: object) -> object:
+    from orchestrator.infrastructure.config.settings import Settings
+
+    defaults: dict[str, object] = {
+        "_env_file": None,
+        "database_url": "postgresql://x:x@localhost/x",
+        "redis_url": "redis://localhost:6379/0",
+        "secret_key": "s",
+        "jwt_secret_key": "j",
+        "scan_execution_backend": "kubernetes",
+        "kubernetes_namespace": "security-scans",
+        "kubernetes_storage_class_name": "scan-workspace",
+    }
+    defaults.update(overrides)
+    return Settings(**defaults)  # type: ignore[arg-type]
+
+
+def test_checkout_and_scan_docker_backend_produces_byte_identical_calls_to_before_pr6(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Task 6.2 — regression guard: `backend="docker"` (the default) is
+    byte-for-byte unchanged from the pre-PR6 shape, and NEVER touches the
+    Kubernetes factory at all."""
+    from orchestrator.domain.ports.scan_execution_port import ScanExecutionResult
+    from orchestrator.infrastructure.config.settings import Settings
+    from orchestrator.workers.tasks import process_scan
+
+    execution = MagicMock()
+    execution.execute.return_value = ScanExecutionResult(head_sha=_HEAD_SHA, findings=[])
+    monkeypatch.setattr(process_scan, "create_scan_execution", lambda *_args: execution)
+
+    def _exploding_kubernetes_factory(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError(
+            "create_kubernetes_scan_execution must never be called for backend='docker'"
+        )
+
+    monkeypatch.setattr(
+        process_scan, "create_kubernetes_scan_execution", _exploding_kubernetes_factory
+    )
+
+    settings = Settings(
+        _env_file=None,
+        database_url="postgresql://x:x@localhost/x",
+        redis_url="redis://localhost:6379/0",
+        secret_key="s",
+        jwt_secret_key="j",
+    )
+
+    head_sha, findings = process_scan._checkout_and_scan(
+        _CLONE_URL, _REF, _TASK_ID, ScannerType.SECRETS, MagicMock(), MagicMock(), settings
+    )
+
+    assert (head_sha, findings) == (_HEAD_SHA, [])
+    execution.execute.assert_called_once_with(
+        _CLONE_URL, _REF, _TASK_ID, ScannerType.SECRETS, credential=None
+    )
+
+
+def test_checkout_and_scan_kubernetes_backend_routes_to_the_kubernetes_factory_only(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Task 6.1: `backend="kubernetes"` no longer raises unconditionally AND
+    never constructs a Docker executor — verified via a call-count assertion
+    (an exploding `create_scan_execution` double) rather than merely checking
+    the return value."""
+    from orchestrator.domain.ports.scan_execution_port import ScanExecutionResult
+    from orchestrator.workers.tasks import process_scan
+
+    execution = MagicMock()
+    execution.execute.return_value = ScanExecutionResult(head_sha=_HEAD_SHA, findings=[])
+    factory_calls: list[tuple[object, ScannerType]] = []
+
+    def _kubernetes_factory(settings_arg: object, scanner_type_arg: ScannerType) -> object:
+        factory_calls.append((settings_arg, scanner_type_arg))
+        return execution
+
+    monkeypatch.setattr(process_scan, "create_kubernetes_scan_execution", _kubernetes_factory)
+
+    def _exploding_docker_factory(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError(
+            "create_scan_execution (Docker) must never be called for backend='kubernetes'"
+        )
+
+    monkeypatch.setattr(process_scan, "create_scan_execution", _exploding_docker_factory)
+
+    settings = _k8s_settings()
+    head_sha, findings = process_scan._checkout_and_scan(
+        _CLONE_URL, _REF, _TASK_ID, ScannerType.SECRETS, MagicMock(), MagicMock(), settings
+    )
+
+    assert (head_sha, findings) == (_HEAD_SHA, [])
+    assert factory_calls == [(settings, ScannerType.SECRETS)]
+    execution.execute.assert_called_once_with(
+        _CLONE_URL, _REF, _TASK_ID, ScannerType.SECRETS, credential=None
+    )
+
+
+def test_failure_category_classifies_kubernetes_workload_failed_error_as_scanner() -> None:
+    """Task 6.4."""
+    from orchestrator.infrastructure.kubernetes.kubernetes_scan_execution import (
+        KubernetesWorkloadFailedError,
+    )
+    from orchestrator.workers.tasks.process_scan import _failure_category
+
+    error = KubernetesWorkloadFailedError("scanner Job did not complete successfully")
+    assert _failure_category(error) == "scanner"
+
+
+def test_kubernetes_workload_failed_error_is_deterministic_with_no_retry(
+    monkeypatch: pytest.MonkeyPatch, valid_env: None
+) -> None:
+    """Task 6.3: `KubernetesWorkloadFailedError` lands in BOTH deterministic
+    tuples — a single attempt, straight to `failed`, never retried."""
+    from orchestrator.domain.value_objects.enums import ScanRunStatus
+    from orchestrator.infrastructure.kubernetes.kubernetes_scan_execution import (
+        KubernetesWorkloadFailedError,
+    )
+
+    task, publishes = _wire_publish(
+        monkeypatch,
+        load=_repository_load(started=False),
+        checkout=KubernetesWorkloadFailedError("scanner Job did not complete successfully"),
+        failed=(True, ScannerType.SECRETS, 150.0, _SCAN_RUN_ID),
+    )
+
+    _invoke_wired(task)
+
+    assert task.retry.call_count == 0
+    assert (_SCAN_RUN_ID, ScanRunStatus.FAILED) in publishes
+
+
+def test_kubernetes_private_repository_error_is_deterministic_with_no_retry(
+    monkeypatch: pytest.MonkeyPatch, valid_env: None
+) -> None:
+    """Task 6.3: `KubernetesPrivateRepositoryError` lands in BOTH deterministic
+    tuples too — a credential-bearing repository under the Kubernetes backend
+    fails deterministically, never retried."""
+    from orchestrator.domain.value_objects.enums import ScanRunStatus
+    from orchestrator.infrastructure.kubernetes.kubernetes_scan_execution import (
+        KubernetesPrivateRepositoryError,
+    )
+
+    task, publishes = _wire_publish(
+        monkeypatch,
+        load=_repository_load(started=False),
+        checkout=KubernetesPrivateRepositoryError(
+            "the Kubernetes backend supports public repositories only"
+        ),
+        failed=(True, ScannerType.SECRETS, 150.0, _SCAN_RUN_ID),
+    )
+
+    _invoke_wired(task)
+
+    assert task.retry.call_count == 0
+    assert (_SCAN_RUN_ID, ScanRunStatus.FAILED) in publishes
+
+
+def test_kubernetes_transient_error_falls_into_the_blanket_transient_retry_path(
+    monkeypatch: pytest.MonkeyPatch, valid_env: None
+) -> None:
+    """Task 6.3: `KubernetesTransientError` is NOT added to either
+    deterministic tuple — it must still reach the exact same blanket
+    `except Exception -> TransientScanError` retry path as any other
+    transient failure."""
+    from celery.exceptions import Retry
+
+    from orchestrator.infrastructure.kubernetes.kubernetes_scan_execution import (
+        KubernetesTransientError,
+    )
+
+    task, publishes = _wire_publish(
+        monkeypatch,
+        load=_repository_load(started=False),
+        checkout=KubernetesTransientError("scanner Job submission/polling/log-transport failed"),
+        failed=(True, ScannerType.SECRETS, 150.0, _SCAN_RUN_ID),
+    )
+    task.retry.side_effect = Retry()
+
+    with pytest.raises(Retry):
+        _invoke_wired(task)
+
+    assert publishes == []
+
+
 def test_process_scan_task_emits_a_write_back_span_with_db_attributes(
     monkeypatch: pytest.MonkeyPatch, valid_env: None, span_exporter: InMemorySpanExporter
 ) -> None:

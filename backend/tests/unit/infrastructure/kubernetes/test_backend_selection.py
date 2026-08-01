@@ -1,13 +1,14 @@
-"""Integration-level proof (Module 13c PR8) that the preflight actually
-GATES `KubernetesSplitScanExecution` — closing PR7's SUGGESTION that this
-was only proven at the unit level.
+"""Unit-level proof (k8s-backend-enable PR6, design D-Routing) that
+`ensure_scan_execution_backend_available`/`create_kubernetes_scan_execution`
+run the REAL preflight against a freshly built `ClusterCapabilityPort`/
+`KubernetesJobRunnerPort` rather than the unconditional raise this module
+carried through PR1-PR5.
 
-Deliberately exercises the REAL `validate_kubernetes_preflight` +
-`KubernetesSplitScanExecution` + `FakeKubernetesJobRunner` collaborating
-together through `create_kubernetes_scan_execution`, the sanctioned single
-entry point — nothing here mocks the gate itself. A failing preflight must
-leave `job_runner` completely untouched (no PVC/Job submitted); only a
-passing preflight may ever construct a working executor.
+Live cluster construction (`_build_cluster_capability`/`_build_job_runner`)
+and `load_kubernetes_config` are monkeypatched to injected fakes here — this
+file proves the WIRING/fail-closed contract without needing a real cluster;
+the actual live proof is `tests/integration/test_process_scan_task_kubernetes_live.py`
+(tasks 6.9-6.11).
 """
 
 from __future__ import annotations
@@ -19,6 +20,7 @@ import pytest
 from orchestrator.domain.ports.kubernetes_preflight_port import StorageClassInfo
 from orchestrator.domain.value_objects.enums import ScannerType
 from orchestrator.infrastructure.config.settings import Settings
+from orchestrator.infrastructure.kubernetes import backend_selection
 from orchestrator.infrastructure.kubernetes.backend_selection import (
     KubernetesBackendNotSelectedError,
     KubernetesBackendUnavailableError,
@@ -26,6 +28,12 @@ from orchestrator.infrastructure.kubernetes.backend_selection import (
     ensure_scan_execution_backend_available,
 )
 from orchestrator.infrastructure.kubernetes.kubernetes_preflight import KubernetesPreflightError
+from orchestrator.infrastructure.kubernetes.kubernetes_repository_scan_execution import (
+    KubernetesRepositoryScanExecution,
+)
+from orchestrator.infrastructure.kubernetes.kubernetes_scanner_descriptor import (
+    UnsupportedScannerTypeError,
+)
 from tests.fakes.fake_cluster_capability import FakeClusterCapabilityPort
 from tests.fakes.fake_kubernetes_job_runner import FakeKubernetesJobRunner
 
@@ -55,46 +63,107 @@ def _compatible_storage_class() -> StorageClassInfo:
     )
 
 
+def _ready_capability() -> FakeClusterCapabilityPort:
+    capability_port = FakeClusterCapabilityPort()
+    capability_port.seed_ready_namespace(_NAMESPACE)
+    capability_port.seed_storage_class(_compatible_storage_class())
+    capability_port.seed_enforced_namespace(_NAMESPACE)
+    return capability_port
+
+
+# ---------------------------------------------------------------------------
+# ensure_scan_execution_backend_available
+# ---------------------------------------------------------------------------
+
+
 def test_ensure_scan_execution_backend_available_is_a_noop_for_docker() -> None:
     ensure_scan_execution_backend_available(_settings(backend="docker"))
 
 
-def test_ensure_scan_execution_backend_available_fails_closed_for_kubernetes() -> None:
-    """No concrete cluster adapter is wired in this build yet — selecting
-    Kubernetes MUST fail deterministically rather than run half-provisioned
-    or silently fall back to Docker."""
+def test_ensure_scan_execution_backend_available_wraps_a_config_load_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A genuine client-configuration failure (no reachable kubeconfig
+    context, no in-cluster token) is wrapped as `KubernetesBackendUnavailableError`
+    — the ONLY thing that error means post-PR6."""
+
+    def _explode(_settings: Settings) -> None:
+        raise RuntimeError("no configuration could be loaded")
+
+    monkeypatch.setattr(backend_selection, "load_kubernetes_config", _explode)
+
     with pytest.raises(KubernetesBackendUnavailableError):
-        ensure_scan_execution_backend_available(_settings(backend="kubernetes"))
+        ensure_scan_execution_backend_available(_settings())
+
+
+def test_ensure_scan_execution_backend_available_fails_closed_on_a_real_preflight_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Config loads fine, but the cluster cannot prove isolation — this MUST
+    raise `KubernetesPreflightError` directly, UNTOUCHED (not wrapped as
+    `KubernetesBackendUnavailableError` — the two are now distinct failures)."""
+    monkeypatch.setattr(backend_selection, "load_kubernetes_config", lambda _settings: None)
+    monkeypatch.setattr(
+        backend_selection,
+        "_build_cluster_capability",
+        lambda _settings: FakeClusterCapabilityPort(),
+    )
+
+    with pytest.raises(KubernetesPreflightError):
+        ensure_scan_execution_backend_available(_settings())
+
+
+def test_ensure_scan_execution_backend_available_passes_once_config_and_preflight_both_succeed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(backend_selection, "load_kubernetes_config", lambda _settings: None)
+    monkeypatch.setattr(
+        backend_selection, "_build_cluster_capability", lambda _settings: _ready_capability()
+    )
+
+    ensure_scan_execution_backend_available(_settings())  # must not raise
+
+
+# ---------------------------------------------------------------------------
+# create_kubernetes_scan_execution
+# ---------------------------------------------------------------------------
 
 
 def test_create_kubernetes_scan_execution_refuses_when_docker_is_selected() -> None:
-    capability_port = FakeClusterCapabilityPort()
-    job_runner = FakeKubernetesJobRunner()
-
     with pytest.raises(KubernetesBackendNotSelectedError):
-        create_kubernetes_scan_execution(
-            _settings(backend="docker"),
-            capability_port,
-            job_runner,
-            scanner_image="ghcr.io/gitleaks/gitleaks:v8.30.1@sha256:deadbeef",
-            scanner_command=["detect"],
+        create_kubernetes_scan_execution(_settings(backend="docker"), ScannerType.SECRETS)
+
+
+def test_create_kubernetes_scan_execution_rejects_an_unsupported_scanner_type_before_any_api_call(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Fail-fast: an unsupported scanner type raises BEFORE the preflight
+    ever touches a cluster capability port."""
+
+    def _exploding_capability(_settings: Settings) -> FakeClusterCapabilityPort:
+        raise AssertionError(
+            "must not build a capability port for an unsupported scanner type"
         )
-    assert job_runner.pvc_calls == []
-    assert job_runner.job_calls == []
+
+    monkeypatch.setattr(backend_selection, "_build_cluster_capability", _exploding_capability)
+
+    with pytest.raises(UnsupportedScannerTypeError):
+        create_kubernetes_scan_execution(_settings(), ScannerType.SAST)
 
 
-def test_create_kubernetes_scan_execution_never_touches_runner_when_preflight_fails() -> None:
-    capability_port = FakeClusterCapabilityPort()  # nothing seeded: fails closed
+def test_create_kubernetes_scan_execution_never_touches_the_job_runner_when_preflight_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        backend_selection,
+        "_build_cluster_capability",
+        lambda _settings: FakeClusterCapabilityPort(),
+    )
     job_runner = FakeKubernetesJobRunner()
+    monkeypatch.setattr(backend_selection, "_build_job_runner", lambda: job_runner)
 
     with pytest.raises(KubernetesPreflightError):
-        create_kubernetes_scan_execution(
-            _settings(),
-            capability_port,
-            job_runner,
-            scanner_image="ghcr.io/gitleaks/gitleaks:v8.30.1@sha256:deadbeef",
-            scanner_command=["detect"],
-        )
+        create_kubernetes_scan_execution(_settings(), ScannerType.SECRETS)
 
     assert job_runner.pvc_calls == []
     assert job_runner.job_calls == []
@@ -102,30 +171,27 @@ def test_create_kubernetes_scan_execution_never_touches_runner_when_preflight_fa
     assert job_runner.delete_pvc_calls == []
 
 
-def test_create_kubernetes_scan_execution_builds_a_working_executor_once_preflight_passes() -> None:
-    capability_port = FakeClusterCapabilityPort()
-    capability_port.seed_storage_class(_compatible_storage_class())
-    capability_port.seed_enforced_namespace(_NAMESPACE)
+def test_create_kubernetes_scan_execution_builds_a_working_bridge_once_preflight_passes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        backend_selection, "_build_cluster_capability", lambda _settings: _ready_capability()
+    )
     job_runner = FakeKubernetesJobRunner()
+    monkeypatch.setattr(backend_selection, "_build_job_runner", lambda: job_runner)
 
-    execution = create_kubernetes_scan_execution(
-        _settings(),
-        capability_port,
-        job_runner,
-        scanner_image="ghcr.io/gitleaks/gitleaks:v8.30.1@sha256:deadbeef",
-        scanner_command=["detect", "--no-git", "--source", "/workspace/checkout"],
-    )
+    execution = create_kubernetes_scan_execution(_settings(), ScannerType.SECRETS)
+
+    assert isinstance(execution, KubernetesRepositoryScanExecution)
     result = execution.execute(
-        clone_url="https://github.com/example/public-repo.git",
-        ref="main",
-        credential_ref=None,
-        scan_task_id=uuid.UUID("11111111-2222-3333-4444-555555555555"),
-        scanner_type=ScannerType.SECRETS,
+        "https://github.com/example/public-repo.git",
+        "main",
+        uuid.UUID("11111111-2222-3333-4444-555555555555"),
+        ScannerType.SECRETS,
     )
-
-    assert result.checkout_log == ""
-    assert result.scanner_log == ""
-    assert len(job_runner.job_calls) == 2
-    # Success cleans up both Jobs + the PVC — no orphans (Deterministic PVC Lifecycle).
-    assert len(job_runner.delete_job_calls) == 2
+    assert result.findings == []
+    # checkout + rev-parse + scanner: the bridge always runs with
+    # `scanner_exit_codes_are_data=True` (design D-Result).
+    assert len(job_runner.job_calls) == 3
+    assert len(job_runner.delete_job_calls) == 3
     assert len(job_runner.delete_pvc_calls) == 1

@@ -24,6 +24,7 @@ dependencies = [
     "opentelemetry-instrumentation-fastapi>=0.65b0",
     "opentelemetry-instrumentation-celery>=0.65b0",
     "prometheus-client>=0.22",
+    "kubernetes>=31,<35",
 ]
 
 [dependency-groups]
