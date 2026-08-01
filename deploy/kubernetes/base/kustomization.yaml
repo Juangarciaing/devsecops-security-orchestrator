@@ -18,6 +18,7 @@ resources:
   - namespace.yaml
   - serviceaccounts.yaml
   - rbac.yaml
+  - orchestrator-rbac.yaml
   - networkpolicies.yaml
   - pvc.yaml
   - job-checkout.yaml

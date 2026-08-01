@@ -2,7 +2,19 @@
 # Jobs/Pods/PVCs/logs verbs `KubernetesJobRunnerPort`'s methods use
 # (get_pvc/create_pvc/get_job/create_job/wait_for_job/get_job_logs/
 # delete_job/delete_pvc) — never a wildcard verb, resource, or apiGroup, and
-# never a ClusterRole/ClusterRoleBinding.
+# never a ClusterRole/ClusterRoleBinding for these workload SAs
+# (`checkout`/`scanner`, both `automountServiceAccountToken: false`).
+#
+# k8s-backend-enable PR4 (design D-RBAC) introduces exactly ONE justified
+# exception to the "never a ClusterRole" half of that invariant:
+# `scan-orchestrator-cluster-reader` in the separate `orchestrator-rbac.yaml`
+# file. It grants two read-only rules neither of which a namespaced Role can
+# express — `storageclasses` (no namespaced equivalent at all) and this one
+# `security-scans` namespace's own record (`namespaces` is itself
+# cluster-scoped, pinned via `resourceNames` to just this namespace). Both
+# rules are read-only, no wildcards, and bound ONLY to the distinct
+# `scan-orchestrator` identity — never to `checkout`/`scanner`. This file's
+# own rules and RoleBindings are unaffected and unchanged by that addition.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:

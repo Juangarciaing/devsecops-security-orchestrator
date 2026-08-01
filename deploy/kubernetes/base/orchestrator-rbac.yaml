@@ -1,0 +1,107 @@
+# Orchestrator identity RBAC (k8s-backend-enable PR4, design D-RBAC): a
+# DISTINCT identity from the checkout/scanner workload SAs in
+# `serviceaccounts.yaml` (both `automountServiceAccountToken: false`). This
+# is the identity the orchestrator PROCESS itself authenticates as to
+# create/poll/delete Jobs and PVCs, read Pod logs, confirm StorageClass and
+# NetworkPolicy shape, and confirm its own namespace/ServiceAccount existence
+# during preflight (`namespace_workloads_ready`) — it is never used by a Job
+# Pod.
+#
+# `scan-orchestrator-cluster-reader` below is a justified, narrow, read-only
+# ClusterRole exception to `rbac.yaml`'s "never a ClusterRole" invariant: see
+# that file for the scoping rationale. It is bound ONLY to `scan-orchestrator`
+# — never to `checkout`/`scanner`. Two rules, both read-only, both driven by
+# a genuine Kubernetes RBAC limitation rather than convenience: StorageClass
+# has no namespaced equivalent, and `namespaces` is itself a cluster-scoped
+# resource — even a `get` restricted to this one namespace's own name via
+# `resourceNames` cannot be granted by a namespaced Role.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: scan-orchestrator
+  labels:
+    app.kubernetes.io/name: security-orchestrator
+    component: orchestrator
+---
+# Namespaced least-privilege grant: exactly the Jobs/Pods/PVCs/logs verbs
+# `KubernetesJobRunnerPort`'s methods use (mirrors `scan-job-runner`'s own
+# invariant), plus read-only `list` on NetworkPolicies for
+# `network_policies_enforced` and read-only `get` on ServiceAccounts (both
+# namespaced resources, so no ClusterRole is needed for either) for
+# `namespace_workloads_ready`'s own-namespace existence check — never a
+# wildcard verb, resource, or apiGroup.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: scan-orchestrator
+  labels:
+    app.kubernetes.io/name: security-orchestrator
+rules:
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["create", "get", "delete", "list"]
+  - apiGroups: [""]
+    resources: ["persistentvolumeclaims"]
+    verbs: ["create", "get", "delete", "list"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list"]
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get"]
+  - apiGroups: [""]
+    resources: ["serviceaccounts"]
+    verbs: ["get"]
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["networkpolicies"]
+    verbs: ["list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: scan-orchestrator
+  labels:
+    app.kubernetes.io/name: security-orchestrator
+    component: orchestrator
+subjects:
+  - kind: ServiceAccount
+    name: scan-orchestrator
+roleRef:
+  kind: Role
+  name: scan-orchestrator
+  apiGroup: rbac.authorization.k8s.io
+---
+# StorageClass and (this one) Namespace are both cluster-scoped with no way
+# for a namespaced Role to grant them — the only two cluster-scoped grants in
+# the entire manifest set, both read-only, no wildcards. The `namespaces`
+# rule is pinned via `resourceNames` to `security-scans` ONLY — this
+# ClusterRole never grants list/get on any other namespace.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: scan-orchestrator-cluster-reader
+  labels:
+    app.kubernetes.io/name: security-orchestrator
+rules:
+  - apiGroups: ["storage.k8s.io"]
+    resources: ["storageclasses"]
+    verbs: ["get", "list"]
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    resourceNames: ["security-scans"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: scan-orchestrator-cluster-reader
+  labels:
+    app.kubernetes.io/name: security-orchestrator
+subjects:
+  - kind: ServiceAccount
+    name: scan-orchestrator
+    namespace: security-scans
+roleRef:
+  kind: ClusterRole
+  name: scan-orchestrator-cluster-reader
+  apiGroup: rbac.authorization.k8s.io
