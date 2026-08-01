@@ -64,13 +64,14 @@ README.
 - **Prometheus metrics (Module 13b)** — bounded scan-health counters and
   histograms are available through an isolated, opt-in internal scrape path
   (see "Prometheus metrics" below).
-- **Kubernetes Jobs execution (Module 13c)** — a complete, fake-client-proven
-  Kubernetes backend (split checkout/scanner Jobs sharing one bounded
-  ephemeral PVC, RBAC, NetworkPolicy, fail-closed StorageClass/NetworkPolicy
-  preflight) exists alongside Docker. **Fail-closed and not yet enabled**:
-  selecting it fails worker startup outright, since no adapter is wired to a
-  real cluster yet — Docker remains the sole active execution path, unchanged
-  (see "Kubernetes Jobs execution" below).
+- **Kubernetes Jobs execution (Module 13c, k8s-backend-enable)** — a real
+  Kubernetes execution backend (split checkout/scanner Jobs sharing one
+  bounded ephemeral PVC, RBAC, NetworkPolicy, fail-closed StorageClass/
+  NetworkPolicy preflight) runs alongside Docker, proven end to end against
+  a real cluster (`kind` + Calico): real findings persist through a real
+  scan, `head_sha` is recorded, private repositories are rejected before any
+  workload is created, and the Docker path stays byte-for-byte unchanged
+  when this backend isn't selected (see "Kubernetes Jobs execution" below).
 - **Private-repository credentials (secrets manager)** — a repository's
   GitHub personal access token is envelope-encrypted at rest (Fernet, behind
   a framework-free `CredentialStorePort`) and decrypted once per scan inside
@@ -105,9 +106,10 @@ README.
   UI's polling is byte-identical to before this feature existed (see
   "Real-time scan status push" below).
 
-The Kubernetes Jobs backend (Module 13c) is built and tested but not yet
-enabled in production — see "Kubernetes Jobs execution" below and
-`## Roadmap`. Also not yet built: an *outbound* GitHub Checks API integration
+The Kubernetes Jobs backend (Module 13c / k8s-backend-enable) is built,
+tested, and proven live against a real cluster — see "Kubernetes Jobs
+execution" below and `## Roadmap`. Also not yet built: an *outbound* GitHub
+Checks API integration
 (posting scan results back to a PR/commit as a native GitHub check — still
 blocked on GitHub App/installation-token auth this project doesn't have,
 which is a separate concern from the personal-access-token secrets manager
@@ -225,15 +227,18 @@ network container cannot resolve the private API exporter. If the topology must
 be removed, revert the Compose/proxy/Prometheus/exporter assets as one unit;
 the base API, worker health endpoints, and Module 13a tracing remain intact.
 
-### Kubernetes Jobs execution (Module 13c)
+### Kubernetes Jobs execution (Module 13c, enabled by k8s-backend-enable)
 
-An alternative Kubernetes Jobs execution backend was built alongside Docker,
-delivered as eight sequential PRs: descriptor-based Docker execution per
+An alternative Kubernetes Jobs execution backend was built alongside Docker
+(Module 13c, eight sequential PRs: descriptor-based Docker execution per
 scanner (PR1-4), parser/security test contracts plus legacy and compatibility
 API removal (PR5a-c), a two-Job split lifecycle behind a fake Kubernetes
 client (PR6), Kustomize/RBAC/NetworkPolicy manifests and a fail-closed
 StorageClass/NetworkPolicy preflight (PR7), and backend-selection wiring plus
-orphan reconciliation (PR8).
+orphan reconciliation (PR8)) and then, in a later `k8s-backend-enable`
+change, actually wired to a real cluster with concrete `kubernetes`-client
+adapters (real `KubernetesJobRunnerPort`/`ClusterCapabilityPort`
+implementations, real preflight, real routing, real RBAC).
 
 The design: one checkout Job (owns clone credentials, narrow Git+DNS egress)
 and one scanner Job (zero credentials, zero egress) share a single bounded,
@@ -244,23 +249,42 @@ escalation, `RuntimeDefault` seccomp, read-only root filesystem,
 `backoffLimit: 0`, and TTL cleanup; Celery is the sole retry authority — a
 Kubernetes-selected scan never silently falls back to Docker mid-run.
 
-**Not yet enabled.** Setting `scan_execution_backend=kubernetes` currently
-fails worker startup on purpose: `ClusterCapabilityPort`/`KubernetesJobRunnerPort`
-are proven only against fakes (`FakeClusterCapabilityPort`/
-`FakeKubernetesJobRunner`) in CI — no adapter is wired to a real cluster yet.
-Docker stays the default and the only backend that actually runs scans; an
-`OPTIONAL` `kind`/`k3d` live-cluster proof from the original spec was not
-exercised. Known follow-up work, tracked for whichever future module adds a
-real cluster adapter: the adapter itself; wiring job-outcome telemetry/tracer
-spans from inside the executor (the metric functions exist and are tested,
-just not called from a live scan yet); an explicit `HOME` env var on the
-checkout Job's non-root git container (unprovable without a real cluster);
-and a scheduler/runbook trigger for the reconciliation sweep (the sweep logic
-itself is idempotent and tested).
+**Enabled and proven live.** Setting `scan_execution_backend=kubernetes` now
+runs real scans against a real cluster: worker startup loads real client
+config (in-cluster-first, kubeconfig fallback) and runs a real fail-closed
+preflight (namespace/ServiceAccount/RBAC, StorageClass, NetworkPolicy
+shape) against the target cluster, `_checkout_and_scan` routes to a real
+`KubernetesClientJobRunner`-backed executor, and a public-repo Gitleaks scan
+persists real findings with a `head_sha` matching `git ls-remote` — proven
+through the actual `process_scan_task` Celery entry point, not a bridge in
+isolation. Private-repo scans still fail deterministically before any
+workload is created, and `scan_execution_backend=docker` remains
+byte-for-byte unchanged (proven with every `kubernetes` API client
+monkeypatched to explode if constructed). See
+`docs/kubernetes-prerequisites.md` for the full operator runbook: the
+NetworkPolicy-enforcing-CNI requirement, applying manifests with
+`kubectl apply -k` (not `-f`), StorageClass naming, kubeconfig/RBAC setup,
+an honest read of the CNI-enforcement attestation flag, and the
+`kind load docker-image` gap for anything not already registry-hosted.
+
+Known follow-up work, genuinely still open after `k8s-backend-enable`:
+wiring job-outcome telemetry/tracer spans from inside the executor (the
+metric function `record_kubernetes_job_outcome` exists and is tested, but is
+not yet called from the live adapter or executor); an explicit `HOME` env
+var on the checkout Job's non-root git container; and a scheduler/runbook
+trigger that actually invokes `reconcile_orphaned_kubernetes_resources` on a
+cadence (the sweep function itself is idempotent, unit-tested against
+fakes, and now also live-proven — see `docs/kubernetes-prerequisites.md` and
+the change's apply history — but nothing calls it automatically yet). A
+`403` RBAC denial is also still classified as a transient error and burns
+three Celery retries before terminal failure — accepted, documented debt,
+not fixed by this change.
 
 `deploy/kubernetes/` holds the Kustomize base and an example overlay; render
 it locally with `kustomize build deploy/kubernetes/overlays/example` — no
-cluster access required, it's static rendering.
+cluster access required, it's static rendering. Apply it to a real cluster
+with `kubectl apply -k deploy/kubernetes/base/` (see
+`docs/kubernetes-prerequisites.md`).
 
 ### Private-repository credentials
 
@@ -446,4 +470,4 @@ project SDD history for the full spec/design trail per module).
 | 10 | Webhook handling (GitHub push) | ✅ |
 | 11 | More scanners (pip-audit ✅, AST-SAST ✅, Semgrep ✅, DAST/ZAP ✅) | ✅ |
 | 12 | Advanced dashboard (trends ✅, diffing ✅, internal policy gate ✅; outbound GitHub Checks API deferred) | ✅ |
-| 13 | Hardening & observability (13a: OTel distributed tracing ✅; 13b: Prometheus metrics ✅; 13c: Kubernetes Jobs backend ✅ built, fail-closed pending a real cluster adapter) | ✅ |
+| 13 | Hardening & observability (13a: OTel distributed tracing ✅; 13b: Prometheus metrics ✅; 13c: Kubernetes Jobs backend ✅ built and enabled against a real cluster, see k8s-backend-enable) | ✅ |
