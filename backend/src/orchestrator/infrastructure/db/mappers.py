@@ -11,6 +11,7 @@ from orchestrator.domain.entities.api_key import ApiKey
 from orchestrator.domain.entities.code_repository import CodeRepository
 from orchestrator.domain.entities.credential_access_log import CredentialAccessLog
 from orchestrator.domain.entities.finding import Finding
+from orchestrator.domain.entities.github_check_publication import GitHubCheckPublication
 from orchestrator.domain.entities.scan_run import ScanRun
 from orchestrator.domain.entities.scan_target import ScanTarget
 from orchestrator.domain.entities.scan_task import ScanTask
@@ -20,6 +21,9 @@ from orchestrator.infrastructure.db.models.api_key import ApiKeyModel
 from orchestrator.infrastructure.db.models.code_repository import CodeRepositoryModel
 from orchestrator.infrastructure.db.models.credential_access_log import CredentialAccessLogModel
 from orchestrator.infrastructure.db.models.finding import FindingModel
+from orchestrator.infrastructure.db.models.github_check_publication import (
+    GitHubCheckPublicationModel,
+)
 from orchestrator.infrastructure.db.models.scan_run import ScanRunModel
 from orchestrator.infrastructure.db.models.scan_target import ScanTargetModel
 from orchestrator.infrastructure.db.models.scan_task import ScanTaskModel
@@ -274,6 +278,34 @@ def webhook_delivery_to_model(entity: WebhookDelivery) -> WebhookDeliveryModel:
         repository_full_name=entity.repository_full_name,
         ref=entity.ref,
         commit_sha=entity.commit_sha,
+    )
+
+
+def github_check_publication_to_entity(
+    model: GitHubCheckPublicationModel,
+) -> GitHubCheckPublication:
+    """Convert intent columns into a frozen `GitHubCheckPublication` entity."""
+    return GitHubCheckPublication(
+        id=model.id,
+        scan_run_id=model.scan_run_id,
+        check_name=model.check_name,
+        outcome=model.outcome,
+        payload_summary=model.payload_summary,
+        created_at=model.created_at,
+    )
+
+
+def github_check_publication_to_model(
+    entity: GitHubCheckPublication,
+) -> GitHubCheckPublicationModel:
+    """Convert a `GitHubCheckPublication` entity into a `GitHubCheckPublicationModel`."""
+    return GitHubCheckPublicationModel(
+        id=entity.id,
+        scan_run_id=entity.scan_run_id,
+        check_name=entity.check_name,
+        outcome=entity.outcome,
+        payload_summary=entity.payload_summary,
+        created_at=entity.created_at,
     )
 
 
