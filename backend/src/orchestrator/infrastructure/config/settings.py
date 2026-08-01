@@ -138,6 +138,19 @@ class Settings(BaseSettings):
     # design, and in-cluster deployments ignore it entirely.
     kubernetes_kubeconfig_context: str | None = None
 
+    # k8s-backend-enable PR3 (design D-Preflight) — an operator ATTESTATION
+    # that the target cluster's CNI genuinely enforces NetworkPolicy objects
+    # (e.g. Calico), not an internal toggle this platform can verify itself.
+    # Fail-closed default `False`: a fresh deployment's preflight always
+    # reports NetworkPolicy enforcement as unconfirmed until an operator
+    # explicitly attests otherwise. Deliberately NOT added to
+    # `_require_complete_kubernetes_config_when_selected`: keeping this check
+    # at preflight time yields the actionable message ("NetworkPolicy
+    # enforcement could not be confirmed in namespace ...") instead of an
+    # opaque `Settings()` construction error, and avoids an operator flipping
+    # it reflexively just to make the app boot.
+    kubernetes_cni_enforces_network_policy: bool = False
+
     # secrets-manager PR1 — separate from `secret_key` by design decision
     # (proposal: reuse would force an HKDF step or break every existing
     # `.env`). Nullable + fail-closed (D2): absent boots unchanged, a

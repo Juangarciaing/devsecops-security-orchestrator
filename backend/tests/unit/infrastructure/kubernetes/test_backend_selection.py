@@ -104,6 +104,7 @@ def test_create_kubernetes_scan_execution_never_touches_runner_when_preflight_fa
 
 def test_create_kubernetes_scan_execution_builds_a_working_executor_once_preflight_passes() -> None:
     capability_port = FakeClusterCapabilityPort()
+    capability_port.seed_ready_namespace(_NAMESPACE)
     capability_port.seed_storage_class(_compatible_storage_class())
     capability_port.seed_enforced_namespace(_NAMESPACE)
     job_runner = FakeKubernetesJobRunner()

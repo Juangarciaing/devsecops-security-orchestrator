@@ -33,9 +33,16 @@ class StorageClassInfo:
 
 
 class ClusterCapabilityPort(ABC):
-    """Contract for the two fail-closed preflight questions: can the named
-    StorageClass provision the required PVC shape, and is NetworkPolicy
-    enforcement confirmed in the target namespace?"""
+    """Contract for the three fail-closed preflight questions: is the target
+    namespace's workload identity ready, can the named StorageClass provision
+    the required PVC shape, and is NetworkPolicy enforcement confirmed in the
+    target namespace?"""
+
+    @abstractmethod
+    def namespace_workloads_ready(self, namespace: str) -> bool:
+        """Namespace exists, both workload ServiceAccounts exist, and this
+        identity is permitted every verb the job runner uses (proven via
+        SelfSubjectAccessReview, not by reading Role objects)."""
 
     @abstractmethod
     def get_storage_class(self, name: str) -> StorageClassInfo | None:

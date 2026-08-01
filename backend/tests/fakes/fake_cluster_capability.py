@@ -20,6 +20,7 @@ class FakeClusterCapabilityPort(ClusterCapabilityPort):
 
     _storage_classes: dict[str, StorageClassInfo] = field(default_factory=dict, repr=False)
     _enforced_namespaces: set[str] = field(default_factory=set, repr=False)
+    _ready_namespaces: set[str] = field(default_factory=set, repr=False)
 
     def seed_storage_class(self, info: StorageClassInfo) -> None:
         self._storage_classes[info.name] = info
@@ -27,8 +28,17 @@ class FakeClusterCapabilityPort(ClusterCapabilityPort):
     def seed_enforced_namespace(self, namespace: str) -> None:
         self._enforced_namespaces.add(namespace)
 
+    def seed_ready_namespace(self, namespace: str) -> None:
+        """Namespace exists, both workload ServiceAccounts exist, and every
+        JobRunner verb is permitted (k8s-backend-enable PR3, design
+        D-Preflight)."""
+        self._ready_namespaces.add(namespace)
+
     def get_storage_class(self, name: str) -> StorageClassInfo | None:
         return self._storage_classes.get(name)
 
     def network_policies_enforced(self, namespace: str) -> bool:
         return namespace in self._enforced_namespaces
+
+    def namespace_workloads_ready(self, namespace: str) -> bool:
+        return namespace in self._ready_namespaces
