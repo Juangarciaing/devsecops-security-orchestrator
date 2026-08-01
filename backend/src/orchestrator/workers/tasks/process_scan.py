@@ -27,6 +27,15 @@ is sync, Module 6 D3) and runs OUTSIDE any async DB session/event loop —
   (AST-SAST, PR2): `SastFailedError` added the same way; Module 11 D8
   (Semgrep, PR3): `SemgrepFailedError` added the same way — additive,
   backward-compatible.)
+- `KubernetesWorkloadFailedError` / `KubernetesPrivateRepositoryError`
+  (k8s-backend-enable PR6, design D-Routing): a terminal checkout/scanner Job
+  failure, or a credential-bearing repository rejected by the Kubernetes
+  backend BEFORE any cluster call — also DETERMINISTIC, added to both tuples
+  below the same additive way as `PipAuditFailedError`/`SastFailedError`/
+  `SemgrepFailedError` above. `KubernetesTransientError` is DELIBERATELY NOT
+  added here — a Job submission/API/polling/log-transport failure falls
+  through to the exact same blanket `TransientScanError` wrap as any Docker-
+  daemon blip, unchanged.
 - Any OTHER exception raised while checking out/scanning (Docker-daemon
   blips, network errors, ...) is wrapped as `TransientScanError` and handed
   to the EXACT SAME retry/backoff loop Module 5 already built — this module
@@ -114,6 +123,13 @@ from orchestrator.infrastructure.db.repositories.scan_task_repository import (
     ScanTaskNotFoundError,
     SqlAlchemyScanTaskRepository,
 )
+from orchestrator.infrastructure.kubernetes.backend_selection import (
+    create_kubernetes_scan_execution,
+)
+from orchestrator.infrastructure.kubernetes.kubernetes_scan_execution import (
+    KubernetesPrivateRepositoryError,
+    KubernetesWorkloadFailedError,
+)
 from orchestrator.infrastructure.observability.metrics import (
     record_scan_findings,
     record_scan_retried,
@@ -139,6 +155,7 @@ if TYPE_CHECKING:
     from orchestrator.domain.ports.container_runner_port import ContainerRunnerPort
     from orchestrator.domain.ports.credential_access_log_port import CredentialAccessLogPort
     from orchestrator.domain.ports.credential_store_port import CredentialStorePort
+    from orchestrator.domain.ports.scan_execution_port import ScanExecutionPort
     from orchestrator.domain.value_objects.secret import Secret
     from orchestrator.infrastructure.config.settings import Settings
 
@@ -417,30 +434,47 @@ def _checkout_and_scan(
     settings: Settings,
     credential: Secret | None = None,
 ) -> tuple[str, list[Finding]]:
-    """Sync/blocking: resolve the descriptor executor, checkout, scan, parse.
-    Runs OUTSIDE any async DB session/event loop (Module 6 D3).
+    """Sync/blocking: resolve the executor, checkout, scan, parse. Runs
+    OUTSIDE any async DB session/event loop (Module 6 D3).
 
-    The executor is resolved via `create_scan_execution(scanner_type, ...)`
-    (Module 13c PR5b factory) instead of a hardcoded adapter — this is what
-    actually makes `ScanTask.scanner_type` meaningful. Raises
-    `UnsupportedScannerTypeError` (via `create_scan_execution`) for any
+    `settings.scan_execution_backend` (k8s-backend-enable PR6, design
+    D-Routing) selects between exactly two executors, mirroring the Docker
+    shape as closely as possible — a branch INSIDE this function, never a
+    new dispatch site: `"kubernetes"` resolves
+    `create_kubernetes_scan_execution(settings, scanner_type)`, which never
+    touches `runner`/`docker_client` at all (a genuinely UNUSED Docker
+    executor is never constructed on this path — the k8s bridge builds its
+    own live `kubernetes` API clients from `settings`); anything else
+    (`"docker"`, the default) resolves `create_scan_execution(scanner_type,
+    ...)` (Module 13c PR5b factory) exactly as before this PR — byte-for-byte
+    unchanged.
+
+    Raises `UnsupportedScannerTypeError` (via either factory) for any
     `scanner_type` with no descriptor; `CheckoutFailedError` (deterministic,
     from `GitCheckout`), `GitleaksFailedError` (deterministic, from
     `GitleaksAdapter.parse()`), `PipAuditFailedError` (deterministic,
     from `PipAuditAdapter.parse()`, Module 11 D7),
     `SastFailedError` (deterministic, from `AstSastAdapter.parse()`,
-    Module 11 D5, PR2), or `SemgrepFailedError` (deterministic, from
-    `SemgrepAdapter.parse()`, Module 11 D8, PR3) unchanged — callers
+    Module 11 D5, PR2), `SemgrepFailedError` (deterministic, from
+    `SemgrepAdapter.parse()`, Module 11 D8, PR3),
+    `KubernetesWorkloadFailedError` (deterministic, from
+    `KubernetesSplitScanExecution`/the k8s bridge, k8s-backend-enable PR6),
+    or `KubernetesPrivateRepositoryError` (deterministic, credential-free,
+    from the k8s bridge, before any cluster call) unchanged — callers
     classify those as non-retryable (D5). Any OTHER exception (including
-    `UnsupportedScannerTypeError`) is left to propagate to the caller, which
-    wraps it as `TransientScanError`.
+    `UnsupportedScannerTypeError` and `KubernetesTransientError`) is left to
+    propagate to the caller, which wraps it as `TransientScanError`.
 
     `credential` (secrets-manager PR6, additive, defaulted): the `Secret`
     resolved by `_load_and_start`/`_resolve_credential`, threaded straight
     through to `ScanExecutionPort.execute(..., credential=...)` (PR5). `None`
     (the default) reproduces today's public-repo behavior byte-for-byte.
     """
-    execution = create_scan_execution(runner, docker_client, settings, scanner_type)
+    execution: ScanExecutionPort
+    if settings.scan_execution_backend == "kubernetes":
+        execution = create_kubernetes_scan_execution(settings, scanner_type)
+    else:
+        execution = create_scan_execution(runner, docker_client, settings, scanner_type)
     result = execution.execute(clone_url, ref, scan_task_id, scanner_type, credential=credential)
     return result.head_sha, result.findings
 
@@ -612,6 +646,14 @@ def _failure_category(error: Exception) -> str:
         return "credential"
     if isinstance(error, DastDisabledError):
         return "dast_disabled"
+    # k8s-backend-enable PR6: checked explicitly, BEFORE the generic
+    # "timeout" substring check below — a terminal `KubernetesWorkloadFailedError`
+    # message never says "timeout" today, but this must never accidentally
+    # depend on that (`KubernetesTransientError`, which DOES reach this
+    # function only via a retry-exhausted `TransientScanError`, is left to
+    # the `TransientScanError` branch below, unchanged).
+    if isinstance(error, KubernetesWorkloadFailedError):
+        return "scanner"
     if "timeout" in str(error).lower() or "timed out" in str(error).lower():
         return "timeout"
     if isinstance(error, TransientScanError):
@@ -735,11 +777,16 @@ def process_scan_task(
                         PipAuditFailedError,
                         SastFailedError,
                         SemgrepFailedError,
+                        KubernetesWorkloadFailedError,
+                        KubernetesPrivateRepositoryError,
                     ):
                         raise
                     except Exception as exc:
                         # Docker-daemon/network blip, not a deterministic checkout/scan
                         # failure (D5) — hand off to Module 5's existing retry/backoff.
+                        # `KubernetesTransientError` (k8s-backend-enable PR6) is
+                        # deliberately NOT listed above — it falls through to this
+                        # exact blanket wrap, unchanged (design D-Routing).
                         raise TransientScanError(str(exc)) from exc
                     scanner_duration = monotonic() - scanner_started
 
@@ -769,6 +816,8 @@ def process_scan_task(
         SemgrepFailedError,
         CredentialUnavailableError,
         DastDisabledError,
+        KubernetesWorkloadFailedError,
+        KubernetesPrivateRepositoryError,
     ) as exc:
         error_message = str(exc)
         logger.warning("scan_task %s failed deterministically: %s", task_id, error_message)

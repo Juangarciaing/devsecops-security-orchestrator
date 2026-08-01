@@ -270,22 +270,59 @@ def test_importing_celery_app_succeeds_when_docker_backend_is_selected(
     assert module.celery_app is not None
 
 
-def test_importing_celery_app_fails_closed_when_kubernetes_backend_is_selected(
+def test_importing_celery_app_fails_closed_when_kubernetes_config_cannot_load(
     monkeypatch: pytest.MonkeyPatch, valid_env: None
 ) -> None:
-    """Module 13c PR8 (spec: "invalid selected configuration MUST fail
-    startup before work"): this build has no concrete cluster adapter wired
-    yet, so selecting Kubernetes MUST fail at import time — before Celery
-    even builds `celery_app`, long before any task could be consumed."""
+    """k8s-backend-enable PR6 (spec: "invalid selected configuration MUST
+    fail startup before work"): a genuine client-configuration failure (no
+    reachable kubeconfig context, no in-cluster token) MUST fail at import
+    time — before Celery even builds `celery_app`, long before any task
+    could be consumed. `load_kubernetes_config` is monkeypatched to fail
+    deterministically so this test never depends on this machine's own
+    ambient kubeconfig state."""
+    from orchestrator.infrastructure.kubernetes import backend_selection
     from orchestrator.infrastructure.kubernetes.backend_selection import (
         KubernetesBackendUnavailableError,
     )
 
+    def _explode(_settings: object) -> None:
+        raise RuntimeError("no configuration could be loaded")
+
+    monkeypatch.setattr(backend_selection, "load_kubernetes_config", _explode)
     monkeypatch.setenv("SCAN_EXECUTION_BACKEND", "kubernetes")
     monkeypatch.setenv("KUBERNETES_NAMESPACE", "security-scans")
     monkeypatch.setenv("KUBERNETES_STORAGE_CLASS_NAME", "scan-workspace")
 
     with pytest.raises(KubernetesBackendUnavailableError):
+        _import_celery_app(monkeypatch)
+
+
+def test_importing_celery_app_fails_closed_when_the_real_preflight_fails(
+    monkeypatch: pytest.MonkeyPatch, valid_env: None
+) -> None:
+    """k8s-backend-enable PR6: once client configuration loads, a cluster
+    that cannot prove namespace/RBAC/StorageClass/NetworkPolicy isolation
+    MUST also fail startup closed — this time via `KubernetesPreflightError`
+    (a DIFFERENT, more specific error than `KubernetesBackendUnavailableError`
+    post-PR6). `_build_cluster_capability` is monkeypatched to an unseeded
+    fake so this test never depends on a real cluster being reachable."""
+    from orchestrator.infrastructure.kubernetes import backend_selection
+    from orchestrator.infrastructure.kubernetes.kubernetes_preflight import (
+        KubernetesPreflightError,
+    )
+    from tests.fakes.fake_cluster_capability import FakeClusterCapabilityPort
+
+    monkeypatch.setattr(backend_selection, "load_kubernetes_config", lambda _settings: None)
+    monkeypatch.setattr(
+        backend_selection,
+        "_build_cluster_capability",
+        lambda _settings: FakeClusterCapabilityPort(),
+    )
+    monkeypatch.setenv("SCAN_EXECUTION_BACKEND", "kubernetes")
+    monkeypatch.setenv("KUBERNETES_NAMESPACE", "security-scans")
+    monkeypatch.setenv("KUBERNETES_STORAGE_CLASS_NAME", "scan-workspace")
+
+    with pytest.raises(KubernetesPreflightError):
         _import_celery_app(monkeypatch)
 
 
