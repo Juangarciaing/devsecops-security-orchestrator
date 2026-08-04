@@ -13,6 +13,7 @@ from orchestrator.domain.ports.container_runner_port import (
     RunResult,
 )
 from orchestrator.domain.ports.finding_port import FindingPort
+from orchestrator.domain.ports.github_check_publication_port import GitHubCheckPublicationPort
 from orchestrator.domain.ports.kubernetes_job_runner_port import (
     JobOutcome,
     JobSpec,
@@ -34,6 +35,7 @@ __all__ = [
     "CodeRepositoryPort",
     "ContainerRunnerPort",
     "FindingPort",
+    "GitHubCheckPublicationPort",
     "JobOutcome",
     "JobSpec",
     "KubernetesJobRunnerPort",
