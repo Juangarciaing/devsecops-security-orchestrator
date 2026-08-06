@@ -1,0 +1,64 @@
+"""Pure `GitHubCheckPublication` intent eligibility + bounded payload
+building (github-checks-publisher PR3, design: "Atomic Eligible Intent").
+
+Framework-free: MUST NOT import SQLAlchemy/Pydantic, and MUST NOT touch the
+separate quality-gate pass/fail evaluation (`domain.services.policy_gate`) —
+outcome here mirrors the `ScanRun` aggregate's own lifecycle status only.
+"""
+
+from __future__ import annotations
+
+import json
+from collections.abc import Sequence
+
+from orchestrator.domain.entities.finding import Finding
+from orchestrator.domain.value_objects.enums import (
+    FindingSeverity,
+    GitHubCheckOutcome,
+    RepositoryProvider,
+    ScanRunStatus,
+)
+
+#: One logical Check Run per `scan_run_id` — the DB `UNIQUE(scan_run_id,
+#: check_name)` constraint (PR1) backs "Single Logical Check Run" identity.
+GITHUB_CHECK_NAME = "security/orchestrator"
+
+_ELIGIBLE_TERMINAL_STATUSES = frozenset({ScanRunStatus.COMPLETED, ScanRunStatus.FAILED})
+
+#: Fixed payload ceiling (spec: ~4 KiB) — a hard ceiling, never a soft target.
+MAX_PAYLOAD_SUMMARY_BYTES = 4096
+
+
+def is_eligible_for_github_check_publication(
+    *, provider: RepositoryProvider | None, commit_sha: str | None, status: ScanRunStatus
+) -> bool:
+    """Eligible only when `provider` is `GITHUB`, `commit_sha` is non-empty
+    (a `ScanTarget`/DAST run's `commit_sha` is always `None`, excluding it
+    with no separate subject-kind check), and `status` is a terminal
+    aggregate outcome — `FAILED` still creates an intent; only delivery
+    (PR4/5) depends on the scan itself having succeeded."""
+    if provider is not RepositoryProvider.GITHUB:
+        return False
+    if not commit_sha:
+        return False
+    return status in _ELIGIBLE_TERMINAL_STATUSES
+
+
+def github_check_outcome_for_status(status: ScanRunStatus) -> GitHubCheckOutcome:
+    """Map a terminal `ScanRunStatus` to its Check Run conclusion. Callers
+    MUST only pass an already-eligible status (`COMPLETED`/`FAILED`)."""
+    if status is ScanRunStatus.COMPLETED:
+        return GitHubCheckOutcome.SUCCESS
+    return GitHubCheckOutcome.FAILURE
+
+
+def build_check_payload_summary(findings: Sequence[Finding]) -> str:
+    """Bounded, redacted, aggregate summary (spec: ~4 KiB ceiling): a total
+    count plus a per-severity breakdown, derived from `Finding.severity`
+    alone. NEVER includes secrets, raw evidence, snippets, file paths,
+    titles/URLs, or arbitrary user-authored Markdown."""
+    counts: dict[str, int] = {severity.value: 0 for severity in FindingSeverity}
+    for finding in findings:
+        counts[finding.severity.value] += 1
+    payload = json.dumps({"total": len(findings), "by_severity": counts}, sort_keys=True)
+    return payload[:MAX_PAYLOAD_SUMMARY_BYTES]
