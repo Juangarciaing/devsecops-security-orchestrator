@@ -90,6 +90,16 @@ def _token_endpoint_handler(
     return handler
 
 
+def test_mint_app_jwt_public_wrapper_returns_a_verifiable_token(
+    key_pair: tuple[Path, bytes],
+) -> None:
+    key_path, public_pem = key_pair
+    provider = _provider(key_path, _unreachable_handler)
+    token = provider.mint_app_jwt()
+    decoded = jwt.decode(token, public_pem, algorithms=["RS256"], options={"verify_iat": False})
+    assert decoded["iss"] == _APP_ID
+
+
 def test_installation_token_is_fetched_once_and_cached_within_ttl(
     key_pair: tuple[Path, bytes],
 ) -> None:
