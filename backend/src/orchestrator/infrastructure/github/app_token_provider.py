@@ -69,6 +69,10 @@ class GitHubAppTokenProvider:
         payload = {"iss": self._app_id, "iat": now - 60, "exp": now + _APP_JWT_TTL_SECONDS}
         return jwt.encode(payload, private_key_pem, algorithm="RS256")
 
+    def mint_app_jwt(self) -> str:
+        """Public wrapper for PR5c's direct App-JWT mapping-discovery call."""
+        return self._mint_app_jwt()
+
     async def get_installation_token(
         self, installation_id: int, *, force_refresh: bool = False
     ) -> str:
