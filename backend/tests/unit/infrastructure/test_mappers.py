@@ -25,6 +25,7 @@ from orchestrator.domain.value_objects.enums import (
     FindingSeverity,
     FindingStatus,
     GitHubCheckOutcome,
+    GitHubCheckPublicationStatus,
     RepositoryProvider,
     ScannerType,
     ScanRunStatus,
@@ -401,5 +402,26 @@ def test_github_check_publication_round_trip() -> None:
 
     model = github_check_publication_to_model(entity)
     round_tripped = github_check_publication_to_entity(model)
+
+    assert round_tripped == entity
+    assert round_tripped.status == GitHubCheckPublicationStatus.PENDING
+
+
+def test_github_check_publication_round_trip_preserves_claimed_lease_and_owner() -> None:
+    """Triangulation: non-default lease/owner fields (PR2's claim columns)
+    must survive the round-trip too, not just their `PENDING`/`None` defaults."""
+    entity = GitHubCheckPublication(
+        id=uuid.uuid4(),
+        scan_run_id=uuid.uuid4(),
+        check_name="security/orchestrator",
+        outcome=GitHubCheckOutcome.FAILURE,
+        payload_summary="2 findings",
+        created_at=_NOW,
+        status=GitHubCheckPublicationStatus.CLAIMED,
+        lease_until=_NOW,
+        leased_by="worker-a",
+    )
+
+    round_tripped = github_check_publication_to_entity(github_check_publication_to_model(entity))
 
     assert round_tripped == entity

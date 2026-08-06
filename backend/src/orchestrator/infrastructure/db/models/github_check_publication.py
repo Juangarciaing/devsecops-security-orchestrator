@@ -1,8 +1,9 @@
 """`GitHubCheckPublicationModel` ORM mapping.
 
 `UNIQUE(scan_run_id, check_name)` backs "Single Logical Check Run" identity
-(GitHub-side dedup `external_id` lands with PR5). `status`/`lease_until`
-are the lifecycle/lease columns a later PR's claim/dispatch mutates.
+(GitHub-side dedup `external_id` lands with PR5). `status`/`lease_until`/
+`leased_by` are the lifecycle/lease/owner columns PR2's claim repository
+mutates via `FOR UPDATE SKIP LOCKED` and owner-CAS complete/release.
 """
 
 from __future__ import annotations
@@ -46,6 +47,7 @@ class GitHubCheckPublicationModel(Base):
         server_default=GitHubCheckPublicationStatus.PENDING.name,
     )
     lease_until: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    leased_by: Mapped[str | None] = mapped_column(String, nullable=True)
     created_at: Mapped[datetime] = mapped_column(server_default=func.now(), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
         server_default=func.now(), onupdate=func.now(), nullable=False

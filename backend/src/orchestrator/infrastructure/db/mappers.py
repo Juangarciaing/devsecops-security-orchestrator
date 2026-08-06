@@ -284,7 +284,7 @@ def webhook_delivery_to_model(entity: WebhookDelivery) -> WebhookDeliveryModel:
 def github_check_publication_to_entity(
     model: GitHubCheckPublicationModel,
 ) -> GitHubCheckPublication:
-    """Convert intent columns into a frozen `GitHubCheckPublication` entity."""
+    """Convert intent + lifecycle/lease columns into a `GitHubCheckPublication` entity."""
     return GitHubCheckPublication(
         id=model.id,
         scan_run_id=model.scan_run_id,
@@ -292,6 +292,9 @@ def github_check_publication_to_entity(
         outcome=model.outcome,
         payload_summary=model.payload_summary,
         created_at=model.created_at,
+        status=model.status,
+        lease_until=model.lease_until,
+        leased_by=model.leased_by,
     )
 
 
@@ -306,6 +309,9 @@ def github_check_publication_to_model(
         outcome=entity.outcome,
         payload_summary=entity.payload_summary,
         created_at=entity.created_at,
+        status=entity.status,
+        lease_until=entity.lease_until,
+        leased_by=entity.leased_by,
     )
 
 
