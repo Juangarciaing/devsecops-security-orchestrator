@@ -315,6 +315,26 @@ def test_settings_realtime_enabled_can_be_overridden(
     assert settings.realtime_enabled is True
 
 
+def test_settings_github_checks_delivery_enabled_defaults_to_false(valid_env: None) -> None:
+    """github-checks-publisher PR4/design "Dispatch and lease" PR4->PR5
+    boundary: deny-by-default, mirroring `dast_enabled`'s fail-closed
+    precedent — a fresh deployment boots with the sweep task returning
+    before it ever calls `claim_due`."""
+    settings = Settings(_env_file=None)
+
+    assert settings.github_checks_delivery_enabled is False
+
+
+def test_settings_github_checks_delivery_enabled_can_be_overridden(
+    monkeypatch: pytest.MonkeyPatch, valid_env: None
+) -> None:
+    monkeypatch.setenv("GITHUB_CHECKS_DELIVERY_ENABLED", "true")
+
+    settings = Settings(_env_file=None)
+
+    assert settings.github_checks_delivery_enabled is True
+
+
 def test_settings_rejects_a_key_of_the_wrong_decoded_length(
     monkeypatch: pytest.MonkeyPatch, valid_env: None
 ) -> None:

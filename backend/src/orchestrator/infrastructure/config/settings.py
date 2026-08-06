@@ -171,6 +171,15 @@ class Settings(BaseSettings):
     # identical to today's polling-only behavior until explicitly enabled.
     realtime_enabled: bool = False
 
+    # github-checks-publisher PR4 (design "Dispatch and lease", PR4->PR5
+    # boundary): deny-by-default, mirroring `dast_enabled`'s fail-closed
+    # precedent exactly. While `False` (the default), the sweep task
+    # returns before it ever calls `claim_due` — no row is claimed, no
+    # auth/network I/O happens, since PR5's GitHub App auth and delivery
+    # HTTP call do not exist yet. PR5 flips this same flag's semantics to
+    # also enable the real delivery call once that auth exists.
+    github_checks_delivery_enabled: bool = False
+
     @model_validator(mode="after")
     def _require_complete_kubernetes_config_when_selected(self) -> Settings:
         if self.scan_execution_backend == "kubernetes" and (
