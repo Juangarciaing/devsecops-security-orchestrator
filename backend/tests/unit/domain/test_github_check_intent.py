@@ -15,6 +15,7 @@ from orchestrator.domain.entities.finding import Finding
 from orchestrator.domain.services.github_check_intent import (
     MAX_PAYLOAD_SUMMARY_BYTES,
     build_check_payload_summary,
+    github_check_external_id,
     github_check_outcome_for_status,
     is_eligible_for_github_check_publication,
 )
@@ -134,3 +135,19 @@ def test_payload_is_bounded_to_the_fixed_spec_ceiling() -> None:
     )
 
     assert len(payload.encode("utf-8")) <= MAX_PAYLOAD_SUMMARY_BYTES
+
+
+def test_external_id_is_deterministic_for_the_same_scan_run() -> None:
+    """PR5 (design: "GitHub identity") — `external_id` MUST be computed, not
+    random, so retries/replays keep resolving the same GitHub-side identity."""
+    scan_run_id = uuid.uuid4()
+
+    assert github_check_external_id(scan_run_id) == github_check_external_id(scan_run_id)
+
+
+def test_external_id_differs_for_different_scan_runs() -> None:
+    first = github_check_external_id(uuid.uuid4())
+    second = github_check_external_id(uuid.uuid4())
+
+    assert first != second
+    assert first.startswith("github-checks:")

@@ -17,6 +17,11 @@ from orchestrator.infrastructure.config.settings import Settings
 
 
 def _settings_with_delivery(*, enabled: bool) -> Settings:
+    # PR5 requires both App credentials once delivery is enabled — a fixed,
+    # never-real fixture value; no PEM file is ever read by this test.
+    app_credentials = (
+        {"github_app_id": "1", "github_app_private_key_file": "/dev/null"} if enabled else {}
+    )
     return Settings(
         _env_file=None,
         database_url="postgresql://x:x@localhost/x",
@@ -24,6 +29,7 @@ def _settings_with_delivery(*, enabled: bool) -> Settings:
         secret_key="s",
         jwt_secret_key="j",
         github_checks_delivery_enabled=enabled,
+        **app_credentials,
     )
 
 
