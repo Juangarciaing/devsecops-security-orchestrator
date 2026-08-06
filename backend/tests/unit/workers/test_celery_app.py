@@ -18,6 +18,8 @@ from unittest.mock import patch
 
 import pytest
 
+_SWEEP_TASK_NAME = "orchestrator.workers.tasks.github_checks.sweep_github_check_publications_task"
+
 
 @pytest.fixture(autouse=True)
 def _clear_worker_process_init_receivers() -> Iterator[None]:
@@ -77,7 +79,7 @@ def test_celery_app_declares_scan_and_webhook_queues(
     module = _import_celery_app(monkeypatch)
 
     queue_names = {queue.name for queue in module.celery_app.conf.task_queues}
-    assert queue_names == {"scan", "webhook"}
+    assert queue_names == {"scan", "webhook", "github_checks"}
     assert module.celery_app.conf.task_default_queue == "scan"
 
 
@@ -324,6 +326,35 @@ def test_importing_celery_app_fails_closed_when_the_real_preflight_fails(
 
     with pytest.raises(KubernetesPreflightError):
         _import_celery_app(monkeypatch)
+
+
+def test_celery_app_declares_github_checks_queue_and_routes_sweep_task_to_it(
+    monkeypatch: pytest.MonkeyPatch, valid_env: None
+) -> None:
+    """github-checks-publisher PR4: a dedicated `github_checks` queue, routed
+    from the sweep task by its fully-qualified name — mirroring `scan`'s
+    existing declare-and-route precedent."""
+    module = _import_celery_app(monkeypatch)
+
+    queue_names = {queue.name for queue in module.celery_app.conf.task_queues}
+    assert "github_checks" in queue_names
+
+    routes = module.celery_app.conf.task_routes
+    assert routes[_SWEEP_TASK_NAME] == {"queue": "github_checks"}
+
+
+def test_celery_app_beat_schedules_the_github_checks_sweep_every_60_seconds(
+    monkeypatch: pytest.MonkeyPatch, valid_env: None
+) -> None:
+    """github-checks-publisher PR4 (design: "Dispatch and lease"): the sweep
+    runs on a 60-second Beat schedule — an explicit, named interval, not a
+    magic number scattered inline."""
+    module = _import_celery_app(monkeypatch)
+
+    entry = module.celery_app.conf.beat_schedule["sweep-github-check-publications"]
+    assert entry["task"] == _SWEEP_TASK_NAME
+    assert entry["schedule"] == module.GITHUB_CHECKS_SWEEP_INTERVAL_SECONDS
+    assert module.GITHUB_CHECKS_SWEEP_INTERVAL_SECONDS == 60
 
 
 def test_worker_process_signals_start_and_stop_metrics_heartbeat(
