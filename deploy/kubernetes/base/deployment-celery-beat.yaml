@@ -1,0 +1,108 @@
+# github-checks-publisher PR7 (design: "Deployment topology") — the SINGLE
+# Celery Beat replica that schedules `sweep_github_check_publications_task`
+# onto the `github_checks` queue every 60s (`workers/celery_app.py`'s
+# `GITHUB_CHECKS_SWEEP_INTERVAL_SECONDS`). `strategy: Recreate` is
+# load-bearing, never `RollingUpdate`: two simultaneous Beat replicas would
+# double-schedule every sweep tick, not just duplicate a stateless request —
+# `Recreate` guarantees the old Pod fully terminates before a new one starts.
+#
+# Beat NEVER mounts or references the GitHub App private key. The PEM is
+# worker-only (`settings.py`: "the worker re-reads it fresh on every JWT
+# mint... Beat never reads it at all") — Beat only enqueues a task name onto
+# a queue, it never calls GitHub's API or reads App credentials itself. This
+# manifest intentionally carries no `GITHUB_APP_ID`/
+# `GITHUB_APP_PRIVATE_KEY_FILE` env var and no Secret volume of any kind —
+# proven by `test_kubernetes_beat_deployment_render.py`.
+#
+# `orchestrator-app-config` (DATABASE_URL/REDIS_URL/SECRET_KEY/
+# JWT_SECRET_KEY — Beat needs these only to construct `Settings()` at import
+# time, it never performs DB/Redis I/O itself) is operator-provisioned, not
+# created by this kustomization — matches this base's existing scope
+# (scan-execution RBAC/Jobs only, no full application-secrets management
+# yet; see README "GitHub Checks publishing"). A future PR adding a worker
+# Deployment would reference a SEPARATE `github-app-credentials` Secret,
+# never this one.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: celery-beat
+  labels:
+    app.kubernetes.io/name: security-orchestrator
+    component: celery-beat
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: security-orchestrator
+      component: celery-beat
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: security-orchestrator
+        component: celery-beat
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: celery-beat
+          # Placeholder — operators build/push this image from
+          # `docker/backend.Dockerfile` via their own CI/registry and
+          # override it with a Kustomize image transformer; no such push
+          # pipeline exists in this repo yet.
+          image: "devsecops-orchestrator-backend:latest"
+          command:
+            - celery
+            - -A
+            - orchestrator.workers.celery_app
+            - beat
+            - --schedule=/tmp/celerybeat-schedule
+            - -l
+            - info
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: orchestrator-app-config
+                  key: database-url
+            - name: REDIS_URL
+              valueFrom:
+                secretKeyRef:
+                  name: orchestrator-app-config
+                  key: redis-url
+            - name: SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: orchestrator-app-config
+                  key: secret-key
+            - name: JWT_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: orchestrator-app-config
+                  key: jwt-secret-key
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              memory: "128Mi"
+              cpu: "100m"
+            limits:
+              memory: "256Mi"
+              cpu: "250m"
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 64Mi

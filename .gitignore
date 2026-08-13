@@ -29,3 +29,8 @@ coverage/
 # Local tooling caches
 .atl/
 .codegraph/
+
+# github-checks-publisher PR7 — operator-created, worker-only bind mount for
+# the GitHub App private key PEM (docker-compose.yml). Never a real secret
+# committed here; the directory is created locally, not tracked.
+secrets/

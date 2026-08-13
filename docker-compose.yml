@@ -80,7 +80,13 @@ services:
       # process via a `worker_process_init` handler (fork-safety, D2).
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
       PROMETHEUS_MULTIPROC_DIR: /prometheus
-    command: ["celery", "-A", "orchestrator.workers.celery_app", "worker", "-Q", "scan", "-l", "info"]
+    # github-checks-publisher PR7 — `github_checks` added alongside `scan`:
+    # Beat (the `scheduler` service below) only ENQUEUES
+    # `sweep_github_check_publications_task` onto this queue every 60s
+    # (`celery_app.py`'s `beat_schedule`); this worker is what actually
+    # CONSUMES it. Without this, the queue is declared but nothing ever
+    # drains it — the sweep silently piles up in Redis.
+    command: ["celery", "-A", "orchestrator.workers.celery_app", "worker", "-Q", "scan,github_checks", "-l", "info"]
     # Module 6: the worker orchestrates SIBLING scanner/init containers via
     # the `docker` Python SDK — it is the ONLY service that gets the Docker
     # socket (`backend`, the API server, has no business launching
@@ -104,6 +110,14 @@ services:
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - metrics-data:/prometheus
+      # github-checks-publisher PR7 — read-only bind mount for the GitHub
+      # App private key PEM. WORKER-ONLY: point `GITHUB_APP_PRIVATE_KEY_FILE`
+      # (in `.env`) at the in-container path, e.g. `/secrets/github-app.pem`.
+      # `./secrets/` is gitignored and empty by default — harmless while
+      # `github_checks_delivery_enabled` stays `false`, since the sweep task
+      # returns before ever reading this path (see README "GitHub Checks
+      # publishing"). The `scheduler` service below never gets this mount.
+      - ./secrets:/secrets:ro
     depends_on:
       postgres:
         condition: service_healthy
@@ -111,6 +125,31 @@ services:
         condition: service_healthy
       metrics-init:
         condition: service_completed_successfully
+    networks:
+      application:
+
+  scheduler:
+    build:
+      context: .
+      dockerfile: docker/backend.Dockerfile
+    restart: unless-stopped
+    # github-checks-publisher PR7 (design: "Deployment topology") — explicit
+    # `environment:` entries here, NOT `env_file: .env` like `worker`/
+    # `backend` above. That is load-bearing: it guarantees
+    # `GITHUB_APP_ID`/`GITHUB_APP_PRIVATE_KEY_FILE` are NEVER present in this
+    # container's resolved environment, even though `.env` sets them for
+    # `worker`. Beat only enqueues a task name onto a queue every 60s — it
+    # never calls GitHub's API or reads App credentials itself (design: "PEM
+    # is worker-only, never Beat").
+    environment:
+      DATABASE_URL: ${DATABASE_URL}
+      REDIS_URL: ${REDIS_URL}
+      SECRET_KEY: ${SECRET_KEY}
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY}
+    command: ["celery", "-A", "orchestrator.workers.celery_app", "beat", "-l", "info"]
+    depends_on:
+      redis:
+        condition: service_healthy
     networks:
       application:
 

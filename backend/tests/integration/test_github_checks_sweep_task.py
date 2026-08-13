@@ -260,3 +260,85 @@ def test_sweep_dead_letters_a_terminal_delivery_failure(
     assert model.dead_letter_reason == "http_422"
     assert model.attempt_count == 1
     assert model.leased_by is None
+
+
+async def _run_sweep_after_a_simulated_worker_crash(
+    key_path: Path, handler: Callable[[httpx.Request], httpx.Response]
+) -> GitHubCheckPublicationModel:
+    """Task 7.3's runtime proof: seed a row already `CLAIMED` by a worker
+    whose lease has since expired — simulating a worker process that claimed
+    the row and was killed/restarted BEFORE it ever attempted delivery (the
+    same "dead-worker-before-wakeup" shape `_sweep_lifecycle` above proves
+    for claim/reclaim alone) — then run one independent `_run_sweep`
+    invocation (a later sweep cycle, different owner) and confirm it
+    reclaims AND delivers the row rather than losing it.
+
+    Live Postgres/Redis/kind ARE already running locally in this session
+    (per PR6c's own notes), but driving a real `docker compose kill -s
+    SIGKILL worker` mid-HTTP-call against a live Celery process from inside
+    a single pytest run is impractical and non-deterministic here. Expired-
+    lease reclaim is the exact, deterministic mechanism production recovery
+    actually relies on (`GITHUB_CHECKS_LEASE_DURATION`'s own docstring: "a
+    delivery worker dying mid-flight only strands its claimed rows for a few
+    sweep cycles, not indefinitely") — this proves that mechanism composes
+    with a REAL delivery call end to end, not just with claim alone as
+    `_sweep_lifecycle` already does. The intended production verification
+    procedure — seeding this same row shape against a live `docker compose`
+    stack, `docker compose kill -s SIGKILL worker` mid-delivery, and
+    confirming the next Beat-triggered sweep cycle redelivers it — is
+    documented, not executed, in this session (see README "GitHub Checks
+    publishing").
+    """
+    from orchestrator.workers.tasks.github_checks import GITHUB_CHECKS_LEASE_DURATION, _run_sweep
+
+    engine = create_async_engine(resolve_database_url())
+    sessionmaker = async_sessionmaker(engine, expire_on_commit=False)
+    try:
+        async with sessionmaker() as session:
+            scan_run_id = await _seed_scan_run(session)
+            publication_id = await _seed_publication(
+                session,
+                scan_run_id,
+                "crashed-mid-flight",
+                status=GitHubCheckPublicationStatus.CLAIMED,
+                lease_until=_NOW - GITHUB_CHECKS_LEASE_DURATION,
+                leased_by="worker-that-was-killed-before-delivering",
+            )
+            await session.commit()
+
+        settings = _delivery_settings(key_path)
+        # The next sweep cycle after the simulated crash: reclaims the stale
+        # lease AND delivers within the same invocation (`_run_sweep`'s real
+        # shape — never a separate claim-only step in production).
+        async with sessionmaker() as session:
+            claimed = await _run_sweep(
+                session,
+                settings,
+                "worker-b",
+                _NOW + timedelta(minutes=5),
+                http_client_factory=lambda: httpx.AsyncClient(
+                    base_url="https://api.github.com", transport=httpx.MockTransport(handler)
+                ),
+            )
+        assert claimed == 1
+
+        async with sessionmaker() as session:
+            model = await session.get(GitHubCheckPublicationModel, publication_id)
+            assert model is not None
+            return model
+    finally:
+        await engine.dispose()
+
+
+def test_sweep_recovers_and_delivers_a_publication_abandoned_by_a_crashed_worker(
+    migrated_schema: None, tmp_path: Path
+) -> None:
+    key_path = _generate_test_rsa_private_key(tmp_path)
+
+    model = asyncio.run(
+        _run_sweep_after_a_simulated_worker_crash(key_path, _handler_for(201))
+    )
+
+    assert model.status == GitHubCheckPublicationStatus.DELIVERED
+    assert model.leased_by is None
+    assert model.lease_until is None
