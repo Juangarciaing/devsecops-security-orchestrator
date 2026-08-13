@@ -41,3 +41,39 @@ class GitHubCheckPublicationPort(ABC):
     async def release(self, publication_id: uuid.UUID, owner: str) -> bool:
         """Owner-CAS: release `publication_id` back to `PENDING`, mirroring
         `mark_delivered`'s ownership check."""
+
+    @abstractmethod
+    async def reschedule(
+        self,
+        publication_id: uuid.UUID,
+        owner: str,
+        *,
+        lease_until: datetime,
+        attempt_count: int,
+    ) -> bool:
+        """Owner-CAS (PR6, design: "Dead-letter + replay"): extend a still-
+        `CLAIMED` row's lease to `lease_until` and record `attempt_count`,
+        so the NEXT sweep cycle (not an in-process sleep) picks it back up
+        once the lease expires. Mirrors `mark_delivered`/`release`'s
+        ownership check."""
+
+    @abstractmethod
+    async def mark_dead(
+        self,
+        publication_id: uuid.UUID,
+        owner: str,
+        *,
+        attempt_count: int,
+        dead_letter_reason: str,
+    ) -> bool:
+        """Owner-CAS (PR6): terminally mark `publication_id` `DEAD`,
+        recording `attempt_count`/`dead_letter_reason` and clearing its
+        lease. Mirrors `mark_delivered`'s ownership check."""
+
+    @abstractmethod
+    async def replay(self, publication_id: uuid.UUID) -> bool:
+        """Protected replay (PR6): reset a `DISABLED` or `DEAD` row back to
+        `PENDING`, clearing `dead_letter_reason` while PRESERVING
+        `attempt_count` for observability. An explicit, deliberate
+        operation — NOT owner-scoped (no sweep ever calls this) and never
+        triggered automatically. Returns `False` for any other status."""

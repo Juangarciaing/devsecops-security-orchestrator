@@ -82,20 +82,98 @@ class SqlAlchemyGitHubCheckPublicationRepository(GitHubCheckPublicationPort):
             publication_id, owner, status=GitHubCheckPublicationStatus.PENDING
         )
 
+    async def reschedule(
+        self,
+        publication_id: uuid.UUID,
+        owner: str,
+        *,
+        lease_until: datetime,
+        attempt_count: int,
+    ) -> bool:
+        """Owner-CAS (PR6): extend `owner`'s lease and record
+        `attempt_count`, staying `CLAIMED` — the next sweep cycle reclaims
+        it once `lease_until` elapses (design: no in-process retry sleep)."""
+        return await self._owner_cas_update(
+            publication_id,
+            owner,
+            status=GitHubCheckPublicationStatus.CLAIMED,
+            lease_until=lease_until,
+            leased_by=owner,
+            attempt_count=attempt_count,
+        )
+
+    async def mark_dead(
+        self,
+        publication_id: uuid.UUID,
+        owner: str,
+        *,
+        attempt_count: int,
+        dead_letter_reason: str,
+    ) -> bool:
+        """Owner-CAS (PR6): terminally `DEAD`, recording `attempt_count`/
+        `dead_letter_reason` and clearing the lease."""
+        return await self._owner_cas_update(
+            publication_id,
+            owner,
+            status=GitHubCheckPublicationStatus.DEAD,
+            attempt_count=attempt_count,
+            dead_letter_reason=dead_letter_reason,
+        )
+
+    async def replay(self, publication_id: uuid.UUID) -> bool:
+        """Protected replay (PR6): NOT owner-scoped — an explicit,
+        deliberate operation, never invoked automatically by the sweep.
+        Resets a `DISABLED`/`DEAD` row to `PENDING`, clearing
+        `dead_letter_reason` while preserving `attempt_count`; any other
+        current status is a no-op (`False`)."""
+        stmt = (
+            update(GitHubCheckPublicationModel)
+            .where(
+                GitHubCheckPublicationModel.id == publication_id,
+                GitHubCheckPublicationModel.status.in_(
+                    (GitHubCheckPublicationStatus.DISABLED, GitHubCheckPublicationStatus.DEAD)
+                ),
+            )
+            .values(
+                status=GitHubCheckPublicationStatus.PENDING,
+                dead_letter_reason=None,
+                leased_by=None,
+                lease_until=None,
+            )
+        )
+        result = cast("CursorResult[object]", await self._session.execute(stmt))
+        await self._session.flush()
+        return result.rowcount == 1
+
     async def _owner_cas_update(
         self,
         publication_id: uuid.UUID,
         owner: str,
         *,
         status: GitHubCheckPublicationStatus,
+        lease_until: datetime | None = None,
+        leased_by: str | None = None,
+        attempt_count: int | None = None,
+        dead_letter_reason: str | None = None,
         external_id: str | None = None,
         check_run_id: int | None = None,
     ) -> bool:
         """Owner-CAS transition: only a row still leased to `owner` moves to
-        `status`; the lease is cleared either way. `external_id`/
-        `check_run_id`, when given (PR5 fix: only `mark_delivered` ever
-        passes them), are persisted alongside the status change."""
-        values: dict[str, object] = {"status": status, "leased_by": None, "lease_until": None}
+        `status`. `lease_until`/`leased_by` default to clearing the lease
+        (the `mark_delivered`/`release` precedent); `reschedule` overrides
+        both to keep it claimed. `attempt_count`/`dead_letter_reason`
+        (PR6) and `external_id`/`check_run_id` (PR5 fix: only
+        `mark_delivered` ever passes them), when given, are set
+        unconditionally alongside `status`."""
+        values: dict[str, object] = {
+            "status": status,
+            "leased_by": leased_by,
+            "lease_until": lease_until,
+        }
+        if attempt_count is not None:
+            values["attempt_count"] = attempt_count
+        if dead_letter_reason is not None:
+            values["dead_letter_reason"] = dead_letter_reason
         if external_id is not None:
             values["external_id"] = external_id
         if check_run_id is not None:
