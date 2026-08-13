@@ -102,4 +102,4 @@ def test_delay_grows_with_attempt_count_before_hitting_the_cap() -> None:
 
     assert early.delay_seconds == MIN_DELAY_SECONDS  # attempt 1's window is exactly [30, 30]
     assert late.delay_seconds is not None
-    assert late.delay_seconds > early.delay_seconds  # type: ignore[operator]
+    assert late.delay_seconds > early.delay_seconds
