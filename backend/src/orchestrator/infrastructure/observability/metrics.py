@@ -155,6 +155,38 @@ _kubernetes_reconciliation_deletions = Counter(
     registry=None,
 )
 
+# github-checks-publisher PR6c — sweep-level + per-attempt delivery telemetry.
+# No repository/owner/scan identifiers ever recorded (finite label sets only).
+_github_check_sweep_runs = Counter(
+    "orchestrator_github_check_sweep_runs",
+    "Completed GitHub Checks sweep runs that did not raise.",
+    (),
+    registry=None,
+)
+_github_check_publications_claimed = Counter(
+    "orchestrator_github_check_publications_claimed",
+    "GitHub Check publications claimed per sweep.",
+    (),
+    registry=None,
+)
+_github_check_publication_outcome = Counter(
+    "orchestrator_github_check_publication_outcome",
+    "Per-attempt GitHub Check publication delivery outcomes.",
+    ("outcome",),
+    registry=None,
+)
+_github_check_publication_delivery_seconds = Histogram(
+    "orchestrator_github_check_publication_delivery_seconds",
+    "GitHub Check publication delivery latency.",
+    buckets=SCANNER_DURATION_BUCKETS,
+    registry=None,
+)
+_github_check_last_successful_sweep = Gauge(
+    "orchestrator_github_check_last_successful_sweep_timestamp",
+    "Unix timestamp of the last GitHub Checks sweep that completed without raising.",
+    registry=None,
+)
+
 
 def record_api_request(method: str, route: str, status_code: int) -> None:
     """Record a completed request using its router template, never request data."""
@@ -246,6 +278,31 @@ def record_kubernetes_reconciliation(deleted_jobs: int, deleted_pvcs: int) -> No
             _kubernetes_reconciliation_deletions.labels(resource_kind="job").inc(deleted_jobs)
         if deleted_pvcs:
             _kubernetes_reconciliation_deletions.labels(resource_kind="pvc").inc(deleted_pvcs)
+
+    _record(_do)
+
+
+def record_github_check_sweep_run(claimed: int) -> None:
+    """One completed sweep invocation that did NOT raise — `claimed` rows
+    claimed this cycle, and the last-successful-sweep gauge advanced."""
+
+    def _do() -> None:
+        _github_check_sweep_runs.inc()
+        if claimed:
+            _github_check_publications_claimed.inc(claimed)
+        _github_check_last_successful_sweep.set(datetime.now(UTC).timestamp())
+
+    _record(_do)
+
+
+def record_github_check_publication_outcome(outcome: str, duration: float | None = None) -> None:
+    """`outcome` in `{"delivered", "retried", "dead"}`; `duration` (delivery
+    latency, seconds) is only ever given for `"delivered"`."""
+
+    def _do() -> None:
+        _github_check_publication_outcome.labels(outcome=outcome).inc()
+        if duration is not None:
+            _github_check_publication_delivery_seconds.observe(duration)
 
     _record(_do)
 

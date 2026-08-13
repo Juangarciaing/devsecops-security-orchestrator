@@ -9,9 +9,14 @@ from __future__ import annotations
 
 import asyncio
 import uuid
-from datetime import UTC, datetime
+from collections.abc import Callable
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
+import httpx
 import pytest
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import rsa
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from orchestrator.domain.value_objects.enums import (
@@ -19,6 +24,7 @@ from orchestrator.domain.value_objects.enums import (
     GitHubCheckPublicationStatus,
     RepositoryProvider,
 )
+from orchestrator.infrastructure.config.settings import Settings
 from orchestrator.infrastructure.db.engine import resolve_database_url
 from orchestrator.infrastructure.db.models import (
     CodeRepositoryModel,
@@ -99,12 +105,12 @@ async def _sweep_lifecycle() -> None:
             await session.commit()
 
         async with sessionmaker() as session:
-            claimed_count = await _claim_due_publications(
+            claimed = await _claim_due_publications(
                 session, "worker-a", _NOW + GITHUB_CHECKS_LEASE_DURATION
             )
         # Due predicate composes unchanged: PENDING + expired-lease CLAIMED
         # are both claimed by this one sweep.
-        assert claimed_count == 2
+        assert len(claimed) == 2
 
         async with sessionmaker() as session:
             # Exclusivity: immediately after, nothing is left due — "worker-a"
@@ -112,7 +118,7 @@ async def _sweep_lifecycle() -> None:
             claimed_again = await _claim_due_publications(
                 session, "worker-b", _NOW + GITHUB_CHECKS_LEASE_DURATION
             )
-        assert claimed_again == 0
+        assert claimed_again == []
 
         async with sessionmaker() as session:
             pending_model = await session.get(GitHubCheckPublicationModel, pending_id)
@@ -135,3 +141,122 @@ def test_sweep_claims_due_rows_exclusively_and_reclaims_a_dead_workers_expired_l
     migrated_schema: None,
 ) -> None:
     asyncio.run(_sweep_lifecycle())
+
+
+def _generate_test_rsa_private_key(tmp_path: Path) -> Path:
+    """Throwaway local RSA keypair — NEVER a real GitHub App key."""
+    private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    pem = private_key.private_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PrivateFormat.PKCS8,
+        encryption_algorithm=serialization.NoEncryption(),
+    )
+    key_path = tmp_path / "test-app.pem"
+    key_path.write_bytes(pem)
+    return key_path
+
+
+def _delivery_settings(key_path: Path) -> Settings:
+    return Settings(
+        _env_file=None,
+        database_url="postgresql://x:x@localhost/x",
+        redis_url="redis://localhost:6379/0",
+        secret_key="s",
+        jwt_secret_key="j",
+        github_checks_delivery_enabled=True,
+        github_app_id="1",
+        github_app_private_key_file=str(key_path),
+    )
+
+
+async def _run_sweep_against(
+    key_path: Path, handler: Callable[[httpx.Request], httpx.Response]
+) -> GitHubCheckPublicationModel:
+    """Seed one PENDING publication, run `_run_sweep` against a mocked GitHub
+    API (never real), and return the persisted row afterward."""
+    from orchestrator.workers.tasks.github_checks import _run_sweep
+
+    engine = create_async_engine(resolve_database_url())
+    sessionmaker = async_sessionmaker(engine, expire_on_commit=False)
+    try:
+        async with sessionmaker() as session:
+            scan_run_id = await _seed_scan_run(session)
+            publication_id = await _seed_publication(session, scan_run_id, "check")
+            await session.commit()
+
+        settings = _delivery_settings(key_path)
+        async with sessionmaker() as session:
+            claimed = await _run_sweep(
+                session,
+                settings,
+                "worker-a",
+                _NOW + timedelta(minutes=5),
+                http_client_factory=lambda: httpx.AsyncClient(
+                    base_url="https://api.github.com", transport=httpx.MockTransport(handler)
+                ),
+            )
+        assert claimed == 1
+
+        async with sessionmaker() as session:
+            model = await session.get(GitHubCheckPublicationModel, publication_id)
+            assert model is not None
+            return model
+    finally:
+        await engine.dispose()
+
+
+_EXPIRES_AT = (datetime.now(UTC) + timedelta(hours=1)).isoformat().replace("+00:00", "Z")
+
+
+def _handler_for(
+    status_after_lookup: int, check_run_response_id: int = 555
+) -> Callable[[httpx.Request], httpx.Response]:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/installation"):
+            return httpx.Response(200, json={"id": 42})
+        if request.url.path.endswith("/access_tokens"):
+            return httpx.Response(201, json={"token": "ghs_fake", "expires_at": _EXPIRES_AT})
+        if request.url.path.endswith("/check-runs") and request.method == "GET":
+            return httpx.Response(200, json={"check_runs": []})
+        if status_after_lookup == 201:
+            return httpx.Response(201, json={"id": check_run_response_id})
+        return httpx.Response(status_after_lookup, json={"message": "mocked failure"})
+
+    return handler
+
+
+def test_sweep_delivers_a_claimed_publication(migrated_schema: None, tmp_path: Path) -> None:
+    key_path = _generate_test_rsa_private_key(tmp_path)
+
+    model = asyncio.run(_run_sweep_against(key_path, _handler_for(201)))
+
+    assert model.status == GitHubCheckPublicationStatus.DELIVERED
+    assert model.leased_by is None
+    assert model.lease_until is None
+
+
+def test_sweep_reschedules_a_retryable_delivery_failure(
+    migrated_schema: None, tmp_path: Path
+) -> None:
+    key_path = _generate_test_rsa_private_key(tmp_path)
+
+    model = asyncio.run(_run_sweep_against(key_path, _handler_for(500)))
+
+    assert model.status == GitHubCheckPublicationStatus.CLAIMED
+    assert model.leased_by == "worker-a"
+    assert model.attempt_count == 1
+    assert model.lease_until is not None
+    assert model.lease_until > _NOW
+
+
+def test_sweep_dead_letters_a_terminal_delivery_failure(
+    migrated_schema: None, tmp_path: Path
+) -> None:
+    key_path = _generate_test_rsa_private_key(tmp_path)
+
+    model = asyncio.run(_run_sweep_against(key_path, _handler_for(422)))
+
+    assert model.status == GitHubCheckPublicationStatus.DEAD
+    assert model.dead_letter_reason == "http_422"
+    assert model.attempt_count == 1
+    assert model.leased_by is None
