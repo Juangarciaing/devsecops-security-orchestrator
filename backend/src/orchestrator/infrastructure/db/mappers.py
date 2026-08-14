@@ -12,6 +12,9 @@ from orchestrator.domain.entities.code_repository import CodeRepository
 from orchestrator.domain.entities.credential_access_log import CredentialAccessLog
 from orchestrator.domain.entities.finding import Finding
 from orchestrator.domain.entities.github_check_publication import GitHubCheckPublication
+from orchestrator.domain.entities.github_repository_installation import (
+    GitHubRepositoryInstallation,
+)
 from orchestrator.domain.entities.scan_run import ScanRun
 from orchestrator.domain.entities.scan_target import ScanTarget
 from orchestrator.domain.entities.scan_task import ScanTask
@@ -23,6 +26,9 @@ from orchestrator.infrastructure.db.models.credential_access_log import Credenti
 from orchestrator.infrastructure.db.models.finding import FindingModel
 from orchestrator.infrastructure.db.models.github_check_publication import (
     GitHubCheckPublicationModel,
+)
+from orchestrator.infrastructure.db.models.github_repository_installation import (
+    GitHubRepositoryInstallationModel,
 )
 from orchestrator.infrastructure.db.models.scan_run import ScanRunModel
 from orchestrator.infrastructure.db.models.scan_target import ScanTargetModel
@@ -295,6 +301,8 @@ def github_check_publication_to_entity(
         status=model.status,
         lease_until=model.lease_until,
         leased_by=model.leased_by,
+        external_id=model.external_id,
+        check_run_id=model.check_run_id,
     )
 
 
@@ -312,6 +320,18 @@ def github_check_publication_to_model(
         status=entity.status,
         lease_until=entity.lease_until,
         leased_by=entity.leased_by,
+        external_id=entity.external_id,
+        check_run_id=entity.check_run_id,
+    )
+
+
+def github_repository_installation_to_entity(
+    model: GitHubRepositoryInstallationModel,
+) -> GitHubRepositoryInstallation:
+    """Convert a `GitHubRepositoryInstallationModel` into the domain entity
+    (deferred from PR1/PR2 to PR5)."""
+    return GitHubRepositoryInstallation(
+        repository_id=model.repository_id, installation_id=model.installation_id
     )
 
 

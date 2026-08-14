@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+from pathlib import Path
 
 import pytest
 from cryptography.fernet import Fernet
@@ -326,13 +327,58 @@ def test_settings_github_checks_delivery_enabled_defaults_to_false(valid_env: No
 
 
 def test_settings_github_checks_delivery_enabled_can_be_overridden(
-    monkeypatch: pytest.MonkeyPatch, valid_env: None
+    monkeypatch: pytest.MonkeyPatch, valid_env: None, tmp_path: Path
 ) -> None:
+    key_file = tmp_path / "app-key.pem"
+    key_file.write_text("not-a-real-key-just-a-path-fixture")
     monkeypatch.setenv("GITHUB_CHECKS_DELIVERY_ENABLED", "true")
+    monkeypatch.setenv("GITHUB_APP_ID", "123456")
+    monkeypatch.setenv("GITHUB_APP_PRIVATE_KEY_FILE", str(key_file))
 
     settings = Settings(_env_file=None)
 
     assert settings.github_checks_delivery_enabled is True
+
+
+def test_settings_github_app_credentials_default_to_none(valid_env: None) -> None:
+    """github-checks-publisher PR5 (design: "App credentials") — a fresh
+    deployment with delivery disabled (the default) boots without either
+    App credential set, mirroring `credential_encryption_key`'s optional
+    fail-closed precedent."""
+    settings = Settings(_env_file=None)
+
+    assert settings.github_app_id is None
+    assert settings.github_app_private_key_file is None
+
+
+def test_settings_delivery_enabled_requires_app_credentials(
+    monkeypatch: pytest.MonkeyPatch, valid_env: None
+) -> None:
+    """Fail fast at process startup, not at first delivery attempt — mirrors
+    `_require_complete_kubernetes_config_when_selected`'s precedent."""
+    monkeypatch.setenv("GITHUB_CHECKS_DELIVERY_ENABLED", "true")
+    monkeypatch.delenv("GITHUB_APP_ID", raising=False)
+    monkeypatch.delenv("GITHUB_APP_PRIVATE_KEY_FILE", raising=False)
+
+    with pytest.raises(ValidationError) as exc_info:
+        Settings(_env_file=None)
+
+    assert "github_app_id" in str(exc_info.value)
+
+
+def test_settings_delivery_enabled_succeeds_with_complete_app_credentials(
+    monkeypatch: pytest.MonkeyPatch, valid_env: None, tmp_path: Path
+) -> None:
+    key_file = tmp_path / "app-key.pem"
+    key_file.write_text("not-a-real-key-just-a-path-fixture")
+    monkeypatch.setenv("GITHUB_CHECKS_DELIVERY_ENABLED", "true")
+    monkeypatch.setenv("GITHUB_APP_ID", "123456")
+    monkeypatch.setenv("GITHUB_APP_PRIVATE_KEY_FILE", str(key_file))
+
+    settings = Settings(_env_file=None)
+
+    assert settings.github_app_id == "123456"
+    assert settings.github_app_private_key_file == str(key_file)
 
 
 def test_settings_rejects_a_key_of_the_wrong_decoded_length(

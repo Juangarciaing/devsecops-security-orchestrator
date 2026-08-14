@@ -66,9 +66,15 @@ class SqlAlchemyGitHubCheckPublicationRepository(GitHubCheckPublicationPort):
         await self._session.flush()
         return [github_check_publication_to_entity(model) for model in claimed_models]
 
-    async def mark_delivered(self, publication_id: uuid.UUID, owner: str) -> bool:
+    async def mark_delivered(
+        self, publication_id: uuid.UUID, owner: str, *, external_id: str, check_run_id: int
+    ) -> bool:
         return await self._owner_cas_update(
-            publication_id, owner, status=GitHubCheckPublicationStatus.DELIVERED
+            publication_id,
+            owner,
+            status=GitHubCheckPublicationStatus.DELIVERED,
+            external_id=external_id,
+            check_run_id=check_run_id,
         )
 
     async def release(self, publication_id: uuid.UUID, owner: str) -> bool:
@@ -77,17 +83,30 @@ class SqlAlchemyGitHubCheckPublicationRepository(GitHubCheckPublicationPort):
         )
 
     async def _owner_cas_update(
-        self, publication_id: uuid.UUID, owner: str, *, status: GitHubCheckPublicationStatus
+        self,
+        publication_id: uuid.UUID,
+        owner: str,
+        *,
+        status: GitHubCheckPublicationStatus,
+        external_id: str | None = None,
+        check_run_id: int | None = None,
     ) -> bool:
         """Owner-CAS transition: only a row still leased to `owner` moves to
-        `status`; the lease is cleared either way."""
+        `status`; the lease is cleared either way. `external_id`/
+        `check_run_id`, when given (PR5 fix: only `mark_delivered` ever
+        passes them), are persisted alongside the status change."""
+        values: dict[str, object] = {"status": status, "leased_by": None, "lease_until": None}
+        if external_id is not None:
+            values["external_id"] = external_id
+        if check_run_id is not None:
+            values["check_run_id"] = check_run_id
         stmt = (
             update(GitHubCheckPublicationModel)
             .where(
                 GitHubCheckPublicationModel.id == publication_id,
                 GitHubCheckPublicationModel.leased_by == owner,
             )
-            .values(status=status, leased_by=None, lease_until=None)
+            .values(**values)
         )
         result = cast("CursorResult[object]", await self._session.execute(stmt))
         await self._session.flush()

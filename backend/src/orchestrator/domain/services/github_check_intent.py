@@ -9,6 +9,7 @@ outcome here mirrors the `ScanRun` aggregate's own lifecycle status only.
 from __future__ import annotations
 
 import json
+import uuid
 from collections.abc import Sequence
 
 from orchestrator.domain.entities.finding import Finding
@@ -42,6 +43,14 @@ def is_eligible_for_github_check_publication(
     if not commit_sha:
         return False
     return status in _ELIGIBLE_TERMINAL_STATUSES
+
+
+def github_check_external_id(scan_run_id: uuid.UUID) -> str:
+    """Deterministic (NEVER random) GitHub-side dedup identity for one scan
+    run's Check Run (design: "GitHub identity", PR5) — the same
+    `scan_run_id` always yields the same `external_id`, so a retried or
+    replayed publish resolves to the same logical Check Run."""
+    return f"github-checks:{scan_run_id}"
 
 
 def github_check_outcome_for_status(status: ScanRunStatus) -> GitHubCheckOutcome:

@@ -180,6 +180,26 @@ class Settings(BaseSettings):
     # also enable the real delivery call once that auth exists.
     github_checks_delivery_enabled: bool = False
 
+    # github-checks-publisher PR5 (design: "App credentials") — required only
+    # once `github_checks_delivery_enabled` opts in (checked below), mirroring
+    # `_require_complete_kubernetes_config_when_selected`'s fail-fast
+    # precedent exactly. `github_app_private_key_file` is a PATH, never the
+    # PEM content itself — the worker re-reads it fresh on every JWT mint
+    # (see `checks_client.py`); Beat never reads it at all.
+    github_app_id: str | None = None
+    github_app_private_key_file: str | None = None
+
+    @model_validator(mode="after")
+    def _require_github_app_credentials_when_delivery_enabled(self) -> Settings:
+        if self.github_checks_delivery_enabled and (
+            not self.github_app_id or not self.github_app_private_key_file
+        ):
+            raise ValueError(
+                "github_checks_delivery_enabled=True requires both github_app_id "
+                "and github_app_private_key_file to be set"
+            )
+        return self
+
     @model_validator(mode="after")
     def _require_complete_kubernetes_config_when_selected(self) -> Settings:
         if self.scan_execution_backend == "kubernetes" and (

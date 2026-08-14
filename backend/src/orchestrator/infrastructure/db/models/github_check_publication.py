@@ -1,9 +1,12 @@
 """`GitHubCheckPublicationModel` ORM mapping.
 
-`UNIQUE(scan_run_id, check_name)` backs "Single Logical Check Run" identity
-(GitHub-side dedup `external_id` lands with PR5). `status`/`lease_until`/
-`leased_by` are the lifecycle/lease/owner columns PR2's claim repository
-mutates via `FOR UPDATE SKIP LOCKED` and owner-CAS complete/release.
+`UNIQUE(scan_run_id, check_name)` backs "Single Logical Check Run" identity.
+`status`/`lease_until`/`leased_by` are the lifecycle/lease/owner columns
+PR2's claim repository mutates via `FOR UPDATE SKIP LOCKED` and owner-CAS
+complete/release. `external_id`/`check_run_id` (PR5, design: "GitHub
+identity") are model-only here — nullable-until-backfilled and unconsumed
+by the domain entity/mappers until PR6 wires real delivery, mirroring PR1's
+own `GitHubRepositoryInstallation` model-only deferral precedent.
 """
 
 from __future__ import annotations
@@ -11,7 +14,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, String, Text, UniqueConstraint, func
+from sqlalchemy import BigInteger, DateTime, ForeignKey, String, Text, UniqueConstraint, func
 from sqlalchemy import Enum as SAEnum
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -48,6 +51,8 @@ class GitHubCheckPublicationModel(Base):
     )
     lease_until: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     leased_by: Mapped[str | None] = mapped_column(String, nullable=True)
+    external_id: Mapped[str | None] = mapped_column(String, unique=True, nullable=True)
+    check_run_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     created_at: Mapped[datetime] = mapped_column(server_default=func.now(), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
         server_default=func.now(), onupdate=func.now(), nullable=False
