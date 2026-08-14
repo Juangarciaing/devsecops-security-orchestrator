@@ -19,7 +19,10 @@ import pytest
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 
-from orchestrator.infrastructure.github.app_token_provider import GitHubAppTokenProvider
+from orchestrator.infrastructure.github.app_token_provider import (
+    AppTokenCache,
+    GitHubAppTokenProvider,
+)
 
 _APP_ID = "654321"  # throwaway fixture value, not a real GitHub App id
 
@@ -49,12 +52,15 @@ def key_pair(tmp_path: Path) -> tuple[Path, bytes]:
 
 
 def _provider(
-    key_path: Path, handler: Callable[[httpx.Request], httpx.Response]
+    key_path: Path,
+    handler: Callable[[httpx.Request], httpx.Response],
+    *,
+    cache: AppTokenCache | None = None,
 ) -> GitHubAppTokenProvider:
     transport = httpx.MockTransport(handler)
     http_client = httpx.AsyncClient(base_url="https://api.github.com", transport=transport)
     return GitHubAppTokenProvider(
-        app_id=_APP_ID, private_key_file=str(key_path), http_client=http_client
+        app_id=_APP_ID, private_key_file=str(key_path), http_client=http_client, cache=cache
     )
 
 
@@ -116,6 +122,76 @@ def test_installation_token_is_fetched_once_and_cached_within_ttl(
 
     assert first == second == "ghs_fake-installation-token"
     assert calls == ["POST /app/installations/42/access_tokens"]
+
+
+def test_an_injected_cache_is_shared_across_separately_constructed_providers(
+    key_pair: tuple[Path, bytes],
+) -> None:
+    """A fresh `httpx.AsyncClient`/`GitHubAppTokenProvider` pair is built on
+    every Celery sweep invocation (each gets its own event loop — see
+    `workers/db.run_async`), but the plain-data `AppTokenCache` holds no
+    loop-bound resources: a caller injecting the SAME cache instance into
+    two otherwise-independent providers must see the second provider reuse
+    the first's still-valid cached token instead of re-minting."""
+    key_path, _ = key_pair
+    calls: list[str] = []
+    shared_cache = AppTokenCache()
+    first_provider = _provider(key_path, _token_endpoint_handler(calls), cache=shared_cache)
+    second_provider = _provider(key_path, _unreachable_handler, cache=shared_cache)
+
+    async def _run() -> tuple[str, str]:
+        first = await first_provider.get_installation_token(42)
+        second = await second_provider.get_installation_token(42)
+        return first, second
+
+    first, second = asyncio.run(_run())
+
+    assert first == second == "ghs_fake-installation-token"
+    assert calls == ["POST /app/installations/42/access_tokens"]  # only the first ever hit HTTP
+
+
+def test_an_injected_cache_still_detects_rotation_across_separately_constructed_providers(
+    key_pair: tuple[Path, bytes],
+) -> None:
+    """Sharing only the token dict while letting the rotation fingerprint
+    reset per instance would defeat rotation detection entirely (a fresh
+    provider has never seen a fingerprint, so it would treat any cached
+    token as unconditionally valid). The fingerprint MUST travel with the
+    cache for a rotated key to still invalidate a shared, otherwise-valid
+    cached token on the very next provider instance."""
+    key_path, first_public_pem = key_pair
+    second_private_pem, second_public_pem = _generate_test_rsa_keypair()
+    calls: list[str] = []
+    minted_jwts: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(f"{request.method} {request.url.path}")
+        minted_jwts.append(request.headers["Authorization"].removeprefix("Bearer "))
+        expires_at = (datetime.now(UTC) + timedelta(hours=1)).isoformat().replace("+00:00", "Z")
+        return httpx.Response(
+            201, json={"token": "ghs_fake-installation-token", "expires_at": expires_at}
+        )
+
+    shared_cache = AppTokenCache()
+    first_provider = _provider(key_path, handler, cache=shared_cache)
+    asyncio.run(first_provider.get_installation_token(42))
+    assert len(calls) == 1
+
+    key_path.write_bytes(second_private_pem)
+    later = datetime.now().timestamp() + 5
+    os.utime(key_path, (later, later))
+
+    second_provider = _provider(key_path, handler, cache=shared_cache)
+    asyncio.run(second_provider.get_installation_token(42))
+
+    assert len(calls) == 2  # the SECOND, freshly-constructed provider still detected rotation
+    jwt.decode(
+        minted_jwts[1], second_public_pem, algorithms=["RS256"], options={"verify_iat": False}
+    )
+    with pytest.raises(jwt.InvalidSignatureError):
+        jwt.decode(
+            minted_jwts[1], first_public_pem, algorithms=["RS256"], options={"verify_iat": False}
+        )
 
 
 def test_installation_token_refreshes_within_five_minutes_of_expiry(

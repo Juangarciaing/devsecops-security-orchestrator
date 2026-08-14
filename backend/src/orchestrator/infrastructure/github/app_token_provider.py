@@ -13,7 +13,7 @@ infrastructure helper.
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -30,6 +30,25 @@ class _CachedToken:
     expires_at: datetime
 
 
+@dataclass(slots=True)
+class AppTokenCache:
+    """Plain-data cache state, injectable so it can be SHARED across
+    `GitHubAppTokenProvider` instances that are otherwise recreated on every
+    call (each Celery sweep invocation gets a fresh `httpx.AsyncClient` bound
+    to a fresh event loop — see `workers/db.run_async` — but this cache holds
+    no loop-bound resources, so a caller MAY keep one instance alive for the
+    lifetime of a worker process and inject it into every fresh provider,
+    turning ~55 minutes of would-be re-mints into one real mint). Both the
+    token cache AND the rotation fingerprint must travel together: injecting
+    only the token cache while leaving the fingerprint to reset every call
+    would silently defeat rotation detection (a provider that has never seen
+    a fingerprint treats any cached token as still valid, never comparing it
+    against the CURRENT on-disk key)."""
+
+    tokens: dict[int, _CachedToken] = field(default_factory=dict)
+    key_fingerprint: tuple[float, int] | None = None
+
+
 def _app_headers(app_jwt: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {app_jwt}", "Accept": "application/vnd.github+json"}
 
@@ -39,13 +58,20 @@ class GitHubAppTokenProvider:
     tokens in memory, keyed by installation id."""
 
     def __init__(
-        self, *, app_id: str, private_key_file: str, http_client: httpx.AsyncClient
+        self,
+        *,
+        app_id: str,
+        private_key_file: str,
+        http_client: httpx.AsyncClient,
+        cache: AppTokenCache | None = None,
     ) -> None:
         self._app_id = app_id
         self._private_key_path = Path(private_key_file)
         self._http = http_client
-        self._token_cache: dict[int, _CachedToken] = {}
-        self._key_fingerprint: tuple[float, int] | None = None
+        #: Defaults to a fresh, isolated cache (existing single-instance
+        #: behavior, unchanged) unless a caller explicitly injects a shared
+        #: one to persist across instances.
+        self._cache = cache if cache is not None else AppTokenCache()
 
     def _check_key_rotation(self) -> None:
         """Cheap `(mtime, size)` fingerprint check — called BEFORE any cache
@@ -55,9 +81,9 @@ class GitHubAppTokenProvider:
         JWT."""
         stat = self._private_key_path.stat()
         fingerprint = (stat.st_mtime, stat.st_size)
-        if self._key_fingerprint is not None and fingerprint != self._key_fingerprint:
-            self._token_cache.clear()
-        self._key_fingerprint = fingerprint
+        if self._cache.key_fingerprint is not None and fingerprint != self._cache.key_fingerprint:
+            self._cache.tokens.clear()
+        self._cache.key_fingerprint = fingerprint
 
     def _mint_app_jwt(self) -> str:
         """Re-reads the PEM from disk on every call (design: never cache PEM
@@ -81,7 +107,7 @@ class GitHubAppTokenProvider:
         401 retry). The rotation check runs unconditionally BEFORE the cache
         lookup, not only on a cache miss."""
         self._check_key_rotation()
-        cached = self._token_cache.get(installation_id)
+        cached = self._cache.tokens.get(installation_id)
         now = datetime.now(UTC)
         if (
             not force_refresh
@@ -100,5 +126,5 @@ class GitHubAppTokenProvider:
         expires_at = datetime.fromisoformat(body["expires_at"].replace("Z", "+00:00")).replace(
             tzinfo=UTC
         )
-        self._token_cache[installation_id] = _CachedToken(token=token, expires_at=expires_at)
+        self._cache.tokens[installation_id] = _CachedToken(token=token, expires_at=expires_at)
         return token

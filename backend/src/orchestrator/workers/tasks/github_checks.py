@@ -38,7 +38,10 @@ from orchestrator.infrastructure.db.repositories.github_repository_installation_
 from orchestrator.infrastructure.db.repositories.scan_run_repository import (
     SqlAlchemyScanRunRepository,
 )
-from orchestrator.infrastructure.github.app_token_provider import GitHubAppTokenProvider
+from orchestrator.infrastructure.github.app_token_provider import (
+    AppTokenCache,
+    GitHubAppTokenProvider,
+)
 from orchestrator.infrastructure.github.checks_client import GitHubChecksHttpClient
 from orchestrator.infrastructure.observability.metrics import (
     record_github_check_publication_outcome,
@@ -60,6 +63,18 @@ GITHUB_CHECKS_SWEEP_BATCH_SIZE = 25
 # short enough that a delivery worker dying mid-flight only strands its
 # claimed rows for a few sweep cycles, not indefinitely.
 GITHUB_CHECKS_LEASE_DURATION = timedelta(minutes=5)
+
+# Process-lifetime token cache, shared across every sweep invocation in THIS
+# worker process. A fresh `GitHubAppTokenProvider`/`httpx.AsyncClient` pair
+# is still built per sweep (each `run_async` call gets its own event loop —
+# an `httpx.AsyncClient` can't outlive that), but this plain-data cache has
+# no loop affinity and safely outlives it: without sharing it, every 60s
+# sweep with due rows would re-mint an App JWT and re-fetch a fresh
+# installation token even though the previous one (valid ~1h) was still
+# good, wasting a GitHub API call every cycle. Module-level under Celery's
+# default prefork pool means each forked worker child gets its own instance
+# (via copy-on-write at fork time), never shared ACROSS processes.
+_TOKEN_CACHE = AppTokenCache()
 
 
 def _sweep_owner_id(task: Task) -> str:
@@ -103,6 +118,7 @@ def _build_checks_client(
         app_id=settings.github_app_id,
         private_key_file=settings.github_app_private_key_file,
         http_client=http_client,
+        cache=_TOKEN_CACHE,
     )
     installation_port = SqlAlchemyGitHubRepositoryInstallationRepository(session)
     return GitHubChecksHttpClient(

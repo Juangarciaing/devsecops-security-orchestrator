@@ -37,6 +37,27 @@ pytestmark = pytest.mark.integration
 _NOW = datetime.now(UTC).replace(tzinfo=None)
 
 
+@pytest.fixture(autouse=True)
+def _reset_shared_token_cache(db_env: None) -> None:
+    """`github_checks.py`'s `_TOKEN_CACHE` is a deliberate process-lifetime
+    singleton (PR6c efficiency fix) so a real worker reuses a still-valid
+    installation token across sweep cycles instead of re-minting one every
+    60s. That same module-level state would otherwise leak a cached token
+    across test functions in THIS file — every test's mocked `/installation`
+    endpoint resolves to the same fake id (42) — so reset it before each
+    test for isolation, matching real per-process (not per-test) lifetime.
+
+    Depends on `db_env` (not just `migrated_schema`) so `Settings` env vars
+    are already patched before this module's first import — importing
+    `github_checks` transitively resolves `Settings` at import time (via
+    `celery_app`), same constraint `_sweep_lifecycle`/`_run_sweep_against`
+    already document for their own lazy imports."""
+    from orchestrator.workers.tasks.github_checks import _TOKEN_CACHE
+
+    _TOKEN_CACHE.tokens.clear()
+    _TOKEN_CACHE.key_fingerprint = None
+
+
 async def _seed_scan_run(session: AsyncSession) -> uuid.UUID:
     repository = CodeRepositoryModel(
         provider=RepositoryProvider.GITHUB,
