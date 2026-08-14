@@ -20,6 +20,8 @@ from pathlib import Path
 import httpx
 import jwt
 
+from orchestrator.infrastructure.github._http import github_api_headers
+
 _APP_JWT_TTL_SECONDS = 540  # 9 minutes — under GitHub's own 10-minute cap
 _TOKEN_REFRESH_SKEW = timedelta(minutes=5)
 
@@ -47,10 +49,6 @@ class AppTokenCache:
 
     tokens: dict[int, _CachedToken] = field(default_factory=dict)
     key_fingerprint: tuple[float, int] | None = None
-
-
-def _app_headers(app_jwt: str) -> dict[str, str]:
-    return {"Authorization": f"Bearer {app_jwt}", "Accept": "application/vnd.github+json"}
 
 
 class GitHubAppTokenProvider:
@@ -118,7 +116,7 @@ class GitHubAppTokenProvider:
         app_jwt = self._mint_app_jwt()
         response = await self._http.post(
             f"/app/installations/{installation_id}/access_tokens",
-            headers=_app_headers(app_jwt),
+            headers=github_api_headers(f"Bearer {app_jwt}"),
         )
         response.raise_for_status()
         body = response.json()
