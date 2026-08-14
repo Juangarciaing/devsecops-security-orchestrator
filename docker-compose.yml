@@ -14,6 +14,8 @@ services:
       timeout: 5s
       retries: 10
       start_period: 5s
+    networks:
+      application:
 
   redis:
     image: redis:7-alpine
@@ -26,6 +28,8 @@ services:
       timeout: 5s
       retries: 10
       start_period: 5s
+    networks:
+      application:
 
   backend:
     build:
@@ -40,7 +44,13 @@ services:
       # OTLP-gRPC address (`http://jaeger:4317`).
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
       PROMETHEUS_MULTIPROC_DIR: /prometheus
-    command: ["uvicorn", "orchestrator.api.main:create_app", "--factory", "--host", "172.30.0.10", "--port", "8000"]
+    # --host 0.0.0.0 (not the fixed 172.30.0.10 observability-network address
+    # below): uvicorn must accept connections on EVERY network interface the
+    # container has, not just the one nginx/Prometheus's static-IP configs
+    # target — a caller reaching this container only via the `application`
+    # network (e.g. `frontend`) gets refused otherwise, since nothing would
+    # be listening on that interface.
+    command: ["uvicorn", "orchestrator.api.main:create_app", "--factory", "--host", "0.0.0.0", "--port", "8000"]
     volumes:
       - metrics-data:/prometheus
     depends_on:
@@ -228,6 +238,8 @@ services:
     ports:
       - "16686:16686" # Jaeger UI
       - "4317:4317" # OTLP gRPC receiver
+    networks:
+      observability:
 
   frontend:
     build:
@@ -256,6 +268,8 @@ services:
       timeout: 5s
       retries: 5
       start_period: 10s
+    networks:
+      application:
 
 volumes:
   pgdata:
