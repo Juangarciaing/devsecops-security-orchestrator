@@ -169,3 +169,107 @@ async def _claim_release_lifecycle() -> None:
 
 def test_claim_due_skip_locked_and_owner_cas(migrated_schema: None) -> None:
     asyncio.run(_claim_release_lifecycle())
+
+
+async def _dead_letter_and_replay_lifecycle() -> None:
+    """PR6 (design: "Dead-letter + replay"): owner-CAS `reschedule`/
+    `mark_dead`, and the explicit, non-owner-scoped `replay` operation."""
+    engine = create_async_engine(resolve_database_url())
+    sessionmaker = async_sessionmaker(engine, expire_on_commit=False)
+    try:
+        async with sessionmaker() as session:
+            scan_run_id = await _seed_scan_run(session)
+            claimed_id = await _seed_publication(
+                session,
+                scan_run_id,
+                "claimed",
+                status=GitHubCheckPublicationStatus.CLAIMED,
+                lease_until=_NOW + _LEASE,
+                leased_by="worker-a",
+            )
+            dead_id = await _seed_publication(
+                session, scan_run_id, "dead", status=GitHubCheckPublicationStatus.DEAD
+            )
+            disabled_id = await _seed_publication(
+                session, scan_run_id, "disabled", status=GitHubCheckPublicationStatus.DISABLED
+            )
+            delivered_id = await _seed_publication(
+                session, scan_run_id, "delivered", status=GitHubCheckPublicationStatus.DELIVERED
+            )
+            await session.commit()
+
+        async with sessionmaker() as session:
+            repo = SqlAlchemyGitHubCheckPublicationRepository(session)
+
+            # Owner-CAS: only the true owner can reschedule/mark-dead its claim.
+            assert (
+                await repo.reschedule(
+                    claimed_id, owner="wrong", lease_until=_NOW + _LEASE, attempt_count=2
+                )
+                is False
+            )
+            assert (
+                await repo.reschedule(
+                    claimed_id, owner="worker-a", lease_until=_NOW + 2 * _LEASE, attempt_count=2
+                )
+                is True
+            )
+            await session.commit()
+
+        async with sessionmaker() as session:
+            rescheduled = await session.get(GitHubCheckPublicationModel, claimed_id)
+            assert rescheduled is not None
+            assert rescheduled.status == GitHubCheckPublicationStatus.CLAIMED
+            assert rescheduled.attempt_count == 2
+            assert rescheduled.lease_until == _NOW + 2 * _LEASE
+
+            repo = SqlAlchemyGitHubCheckPublicationRepository(session)
+            assert (
+                await repo.mark_dead(
+                    claimed_id, owner="wrong", attempt_count=3, dead_letter_reason="http_422"
+                )
+                is False
+            )
+            assert (
+                await repo.mark_dead(
+                    claimed_id,
+                    owner="worker-a",
+                    attempt_count=3,
+                    dead_letter_reason="attempts_exhausted",
+                )
+                is True
+            )
+            await session.commit()
+
+        async with sessionmaker() as session:
+            dead_model = await session.get(GitHubCheckPublicationModel, claimed_id)
+            assert dead_model is not None
+            assert dead_model.status == GitHubCheckPublicationStatus.DEAD
+            assert dead_model.attempt_count == 3
+            assert dead_model.dead_letter_reason == "attempts_exhausted"
+            assert dead_model.leased_by is None
+            assert dead_model.lease_until is None
+
+            repo = SqlAlchemyGitHubCheckPublicationRepository(session)
+            # `replay` is explicit and NOT owner-scoped; only DISABLED/DEAD
+            # rows are eligible — everything else is a no-op.
+            assert await repo.replay(delivered_id) is False
+            assert await repo.replay(dead_id) is True
+            assert await repo.replay(disabled_id) is True
+            await session.commit()
+
+        async with sessionmaker() as session:
+            replayed_dead = await session.get(GitHubCheckPublicationModel, dead_id)
+            replayed_disabled = await session.get(GitHubCheckPublicationModel, disabled_id)
+            assert replayed_dead is not None
+            assert replayed_dead.status == GitHubCheckPublicationStatus.PENDING
+            assert replayed_dead.dead_letter_reason is None
+            assert replayed_disabled is not None
+            assert replayed_disabled.status == GitHubCheckPublicationStatus.PENDING
+            assert replayed_disabled.dead_letter_reason is None
+    finally:
+        await engine.dispose()
+
+
+def test_reschedule_mark_dead_and_replay(migrated_schema: None) -> None:
+    asyncio.run(_dead_letter_and_replay_lifecycle())

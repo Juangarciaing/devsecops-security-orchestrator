@@ -303,6 +303,8 @@ def github_check_publication_to_entity(
         leased_by=model.leased_by,
         external_id=model.external_id,
         check_run_id=model.check_run_id,
+        attempt_count=model.attempt_count,
+        dead_letter_reason=model.dead_letter_reason,
     )
 
 
@@ -322,6 +324,8 @@ def github_check_publication_to_model(
         leased_by=entity.leased_by,
         external_id=entity.external_id,
         check_run_id=entity.check_run_id,
+        attempt_count=entity.attempt_count,
+        dead_letter_reason=entity.dead_letter_reason,
     )
 
 

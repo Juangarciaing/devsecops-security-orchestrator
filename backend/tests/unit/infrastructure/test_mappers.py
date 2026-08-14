@@ -425,3 +425,25 @@ def test_github_check_publication_round_trip_preserves_claimed_lease_and_owner()
     round_tripped = github_check_publication_to_entity(github_check_publication_to_model(entity))
 
     assert round_tripped == entity
+
+
+def test_github_check_publication_round_trip_preserves_attempt_count_and_dead_letter_reason() -> (
+    None
+):
+    """Triangulation: PR6's dead-letter columns must survive the round-trip
+    too, not just their `0`/`None` defaults."""
+    entity = GitHubCheckPublication(
+        id=uuid.uuid4(),
+        scan_run_id=uuid.uuid4(),
+        check_name="security/orchestrator",
+        outcome=GitHubCheckOutcome.FAILURE,
+        payload_summary="2 findings",
+        created_at=_NOW,
+        status=GitHubCheckPublicationStatus.DEAD,
+        attempt_count=12,
+        dead_letter_reason="attempts_exhausted",
+    )
+
+    round_tripped = github_check_publication_to_entity(github_check_publication_to_model(entity))
+
+    assert round_tripped == entity

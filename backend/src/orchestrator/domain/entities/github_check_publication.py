@@ -25,3 +25,8 @@ class GitHubCheckPublication:
     leased_by: str | None = None
     external_id: str | None = None
     check_run_id: int | None = None
+    #: PR6 (design: "Dead-letter + replay") — total delivery attempts made
+    #: so far; preserved across a protected replay for observability.
+    attempt_count: int = 0
+    #: Set only on a terminal `DEAD`/`DISABLED` transition; cleared by replay.
+    dead_letter_reason: str | None = None

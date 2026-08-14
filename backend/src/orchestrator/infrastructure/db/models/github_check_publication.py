@@ -14,7 +14,16 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from sqlalchemy import BigInteger, DateTime, ForeignKey, String, Text, UniqueConstraint, func
+from sqlalchemy import (
+    BigInteger,
+    DateTime,
+    ForeignKey,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+    func,
+)
 from sqlalchemy import Enum as SAEnum
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -53,6 +62,13 @@ class GitHubCheckPublicationModel(Base):
     leased_by: Mapped[str | None] = mapped_column(String, nullable=True)
     external_id: Mapped[str | None] = mapped_column(String, unique=True, nullable=True)
     check_run_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    #: PR6 (design: "Dead-letter + replay") — total delivery attempts made;
+    #: `dead_letter_reason` is set only on a terminal `DEAD` transition and
+    #: cleared by a protected replay back to `PENDING`.
+    attempt_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    dead_letter_reason: Mapped[str | None] = mapped_column(String, nullable=True)
     created_at: Mapped[datetime] = mapped_column(server_default=func.now(), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
         server_default=func.now(), onupdate=func.now(), nullable=False
