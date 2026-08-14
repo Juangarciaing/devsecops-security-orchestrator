@@ -8,14 +8,14 @@ import {
 } from 'lucide-react'
 import { Toaster as Sonner, type ToasterProps } from 'sonner'
 
-// This project has no theme switcher (dark mode is an explicit non-goal),
-// so we skip the `next-themes` dependency shadcn's default generator pulls
-// in and pin to "light" to match the only palette actually applied (the
-// `.dark` CSS-vars block exists but nothing ever adds the `.dark` class).
+// This project has no theme switcher — dark mode is the only rendered theme
+// (see frontend/index.html's `<html class="dark">`), so we skip the
+// `next-themes` dependency shadcn's default generator pulls in and pin to
+// "dark" to match the palette that is actually applied.
 const Toaster = ({ ...props }: ToasterProps) => {
   return (
     <Sonner
-      theme="light"
+      theme="dark"
       className="toaster group"
       icons={{
         success: <CircleCheckIcon className="size-4" />,
