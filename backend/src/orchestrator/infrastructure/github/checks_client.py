@@ -20,6 +20,7 @@ from orchestrator.domain.ports.github_repository_installation_port import (
     GitHubRepositoryInstallationPort,
 )
 from orchestrator.domain.value_objects.enums import GitHubCheckOutcome
+from orchestrator.infrastructure.github._http import github_api_headers as _headers
 
 
 class InstallationTokenSource(Protocol):
@@ -33,10 +34,6 @@ class InstallationTokenSource(Protocol):
     async def get_installation_token(
         self, installation_id: int, *, force_refresh: bool = False
     ) -> str: ...
-
-
-def _headers(authorization: str) -> dict[str, str]:
-    return {"Authorization": authorization, "Accept": "application/vnd.github+json"}
 
 
 #: GitHub's own per-page cap for this endpoint.
