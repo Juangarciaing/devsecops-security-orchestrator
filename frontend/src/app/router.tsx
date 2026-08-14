@@ -1,4 +1,5 @@
 import { createBrowserRouter, type RouteObject } from 'react-router'
+import { AdminUsersPage } from '@/features/admin/pages/AdminUsersPage'
 import { LoginPage } from '@/features/auth/pages/LoginPage'
 import { FindingsPage } from '@/features/findings/pages/FindingsPage'
 import { RepositoriesPage } from '@/features/repositories/pages/RepositoriesPage'
@@ -14,8 +15,8 @@ function NotFound() {
   return <div className="text-muted-foreground">Not found.</div>
 }
 
-// Wired ahead of its feature UI — replaced by features/admin (PR6),
-// features/apikeys (PR7), features/webhooks (PR5).
+// Wired ahead of its feature UI — replaced by features/apikeys (PR7),
+// features/webhooks (PR5). features/admin (PR6) is wired below.
 function Placeholder({ text }: { text: string }) {
   return <div className="text-muted-foreground">{text}</div>
 }
@@ -50,7 +51,7 @@ export const routes: RouteObject[] = [
         path: 'admin/users',
         element: (
           <AdminRoute>
-            <Placeholder text="Admin: manage users." />
+            <AdminUsersPage />
           </AdminRoute>
         ),
       },
