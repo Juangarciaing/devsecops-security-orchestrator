@@ -22,7 +22,10 @@ from orchestrator.domain.value_objects.enums import GitHubCheckOutcome
 
 
 class InstallationTokenSource(Protocol):
-    """Structural contract for the composed token-acquisition dependency."""
+    """Structural contract for the composed token-acquisition dependency.
+    (Left as a `Protocol` rather than importing `GitHubAppTokenProvider`
+    directly — this file stays agnostic to how token acquisition/caching is
+    implemented, matching this codebase's existing composition pattern.)"""
 
     def mint_app_jwt(self) -> str: ...
 
