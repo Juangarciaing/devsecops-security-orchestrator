@@ -35,6 +35,10 @@ def _headers(authorization: str) -> dict[str, str]:
     return {"Authorization": authorization, "Accept": "application/vnd.github+json"}
 
 
+#: GitHub's own per-page cap for this endpoint.
+_CHECK_RUNS_PAGE_SIZE = 100
+
+
 class GitHubChecksHttpClient(GitHubChecksPort):
     """Owns mapping resolution and Check Run lookup/publish only."""
 
@@ -70,6 +74,38 @@ class GitHubChecksHttpClient(GitHubChecksPort):
         )
         return installation_id
 
+    async def _find_existing_check_run_id(
+        self, token: str, owner: str, repo: str, head_sha: str, check_name: str, external_id: str
+    ) -> int | None:
+        """Paginates through EVERY page of check runs for `head_sha`
+        (GitHub caps each page at `_CHECK_RUNS_PAGE_SIZE`) — a commit that
+        has accumulated more than one page of check runs would otherwise
+        make an unpaginated first-page-only lookup silently miss an
+        existing `external_id` match, causing `_publish_once` to `POST` a
+        duplicate Check Run instead of `PATCH`ing the real one (design:
+        "retries MUST update the existing run, never create a second
+        one"). First match wins (dup reconciliation across the returned
+        set is PR6's)."""
+        page = 1
+        while True:
+            lookup = await self._http.get(
+                f"/repos/{owner}/{repo}/commits/{head_sha}/check-runs",
+                params={
+                    "check_name": check_name,
+                    "per_page": _CHECK_RUNS_PAGE_SIZE,
+                    "page": page,
+                },
+                headers=_headers(f"token {token}"),
+            )
+            lookup.raise_for_status()
+            check_runs = lookup.json().get("check_runs", [])
+            for run in check_runs:
+                if run.get("external_id") == external_id:
+                    return int(run["id"])
+            if len(check_runs) < _CHECK_RUNS_PAGE_SIZE:
+                return None
+            page += 1
+
     async def _publish_once(
         self,
         installation_id: int,
@@ -87,18 +123,9 @@ class GitHubChecksHttpClient(GitHubChecksPort):
         token = await self._tokens.get_installation_token(installation_id)
         resolved_id = check_run_id
         if resolved_id is None:
-            lookup = await self._http.get(
-                f"/repos/{owner}/{repo}/commits/{head_sha}/check-runs",
-                params={"check_name": check_name},
-                headers=_headers(f"token {token}"),
+            resolved_id = await self._find_existing_check_run_id(
+                token, owner, repo, head_sha, check_name, external_id
             )
-            lookup.raise_for_status()
-            matches = [
-                run["id"]
-                for run in lookup.json().get("check_runs", [])
-                if run.get("external_id") == external_id
-            ]
-            resolved_id = matches[0] if matches else None
         payload = {
             "name": check_name,
             "head_sha": head_sha,

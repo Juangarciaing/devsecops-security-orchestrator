@@ -188,6 +188,37 @@ def test_publish_refreshes_the_token_once_after_a_401_and_retries_successfully()
     assert fake.refresh_calls == [False, True, False]  # refreshed exactly once, never a loop
 
 
+def test_publish_paginates_the_check_runs_lookup_to_find_a_match_on_a_later_page() -> None:
+    """A commit with more than one full page of existing check runs must
+    still find its `external_id` match on page 2 — an unpaginated
+    first-page-only lookup would miss it and `POST` a duplicate instead of
+    `PATCH`ing the real one."""
+    from orchestrator.infrastructure.github.checks_client import _CHECK_RUNS_PAGE_SIZE
+
+    page_1 = [{"id": i, "external_id": f"other-{i}"} for i in range(_CHECK_RUNS_PAGE_SIZE)]
+    page_2 = [{"id": 999999, "external_id": "github-checks:fake-scan-run"}]
+    calls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        path, method = request.url.path, request.method
+        calls.append(f"{method} {path}?{request.url.params.get('page')}")
+        if path.endswith("/installation") and method == "GET":
+            return httpx.Response(200, json={"id": 42})
+        if path.endswith("/check-runs") and method == "GET":
+            page = int(request.url.params["page"])
+            return httpx.Response(200, json={"check_runs": page_1 if page == 1 else page_2})
+        if method == "PATCH":
+            return httpx.Response(200, json={"id": int(path.rsplit("/", 1)[-1])})
+        raise AssertionError(f"unexpected call: {method} {path}")  # a match must PATCH, never POST
+
+    client, repository_id, _ = _client(handler, installation_id=42)
+    result = asyncio.run(client.publish(**_publish_kwargs(repository_id=repository_id)))
+
+    assert result.check_run_id == 999999
+    assert "GET /repos/acme/widgets/commits/" + "a" * 40 + "/check-runs?1" in calls
+    assert "GET /repos/acme/widgets/commits/" + "a" * 40 + "/check-runs?2" in calls
+
+
 def test_publish_refreshes_the_installation_mapping_once_after_a_404_and_retries() -> None:
     """A stale `installation_id` 404s; the mapping is refreshed ONCE."""
     handler, calls = _publish_router(check_run_response_id=444, stale_mapping_status=404)
