@@ -15,8 +15,8 @@ function NotFound() {
   return <div className="text-muted-foreground">Not found.</div>
 }
 
-// Wired ahead of its feature UI — replaced by features/apikeys (PR7),
-// features/webhooks (PR5). features/admin (PR6) is wired below.
+// Wired ahead of its feature UI — replaced by features/admin (PR6),
+// features/apikeys (PR7), features/webhooks (PR5).
 function Placeholder({ text }: { text: string }) {
   return <div className="text-muted-foreground">{text}</div>
 }

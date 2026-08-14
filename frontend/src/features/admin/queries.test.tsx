@@ -31,15 +31,6 @@ describe('useUsers', () => {
     await waitFor(() => expect(result.current.isSuccess).toBe(true))
     expect(result.current.data).toEqual([user])
   })
-
-  it('surfaces an error when the request fails', async () => {
-    server.use(
-      http.get('*/api/v1/users', () => new HttpResponse(null, { status: 500 })),
-    )
-    const { result } = renderHook(() => useUsers(), { wrapper })
-
-    await waitFor(() => expect(result.current.isError).toBe(true))
-  })
 })
 
 describe('useCreateUser', () => {

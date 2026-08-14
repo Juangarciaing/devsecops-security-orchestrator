@@ -85,28 +85,21 @@ describe('router', () => {
     },
   )
 
-  it('lets an admin reach /admin/users', async () => {
+  it.each([
+    [
+      '/admin/users',
+      /^users$/i,
+      () => server.use(http.get('*/api/v1/users', () => HttpResponse.json([]))),
+    ],
+    ['/admin/webhooks', /webhook deliveries audit/i, () => {}],
+  ] as const)('lets an admin reach %s', async (path, expectedText, setup) => {
     setToken('a-valid-token')
     mockCurrentUser('admin')
-    server.use(http.get('*/api/v1/users', () => HttpResponse.json([])))
+    setup()
 
-    renderAtPath('/admin/users')
+    renderAtPath(path)
 
-    expect(
-      await screen.findByRole('heading', { name: /users/i }),
-    ).toBeInTheDocument()
-    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
-  })
-
-  it('lets an admin reach /admin/webhooks', async () => {
-    setToken('a-valid-token')
-    mockCurrentUser('admin')
-
-    renderAtPath('/admin/webhooks')
-
-    expect(
-      await screen.findByText(/webhook deliveries audit/i),
-    ).toBeInTheDocument()
+    expect(await screen.findByText(expectedText)).toBeInTheDocument()
     expect(screen.queryByRole('alert')).not.toBeInTheDocument()
   })
 

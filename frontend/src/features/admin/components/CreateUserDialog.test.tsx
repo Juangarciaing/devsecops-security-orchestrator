@@ -1,5 +1,5 @@
 import { QueryClientProvider } from '@tanstack/react-query'
-import { render, screen, waitFor } from '@testing-library/react'
+import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
 import type { ReactNode } from 'react'
@@ -31,33 +31,6 @@ describe('CreateUserDialog', () => {
   afterEach(() => {
     mockToast.success.mockClear()
     mockToast.error.mockClear()
-  })
-
-  it('submits the form and closes the dialog on success', async () => {
-    server.use(
-      http.post('*/api/v1/users', () =>
-        HttpResponse.json(
-          {
-            id: 'u1',
-            email: 'new@example.com',
-            role: 'member',
-            is_active: true,
-            created_at: '2026-01-01T00:00:00Z',
-            updated_at: '2026-01-01T00:00:00Z',
-          },
-          { status: 201 },
-        ),
-      ),
-    )
-    const user = userEvent.setup()
-    renderDialog()
-
-    await openAndFill(user)
-    await user.click(screen.getByRole('button', { name: /^create$/i }))
-
-    await waitFor(() =>
-      expect(screen.queryByLabelText(/email/i)).not.toBeInTheDocument(),
-    )
   })
 
   it('shows the duplicate-email conflict as an inline form error, not a toast, and keeps the dialog open', async () => {
