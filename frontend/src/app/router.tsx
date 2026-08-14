@@ -6,14 +6,24 @@ import { RepositoryDetailPage } from '@/features/repositories/pages/RepositoryDe
 import { ScanDetailPage } from '@/features/scans/pages/ScanDetailPage'
 import { TargetsPage } from '@/features/targets/pages/TargetsPage'
 import { AppLayout } from './AppLayout'
+import { PalettePreviewPage } from './PalettePreviewPage'
 import { ProtectedRoute } from './ProtectedRoute'
 
 function NotFound() {
   return <div className="text-muted-foreground">Not found.</div>
 }
 
+// Dev-only design-token preview (task 1.6) — never linked from nav, and
+// `import.meta.env.DEV` is statically replaced by Vite so this route (and
+// the PalettePreviewPage import) is stripped entirely from production
+// builds.
+const devOnlyRoutes: RouteObject[] = import.meta.env.DEV
+  ? [{ path: '/dev/palette-preview', element: <PalettePreviewPage /> }]
+  : []
+
 export const routes: RouteObject[] = [
   { path: '/login', element: <LoginPage /> },
+  ...devOnlyRoutes,
   {
     element: (
       <ProtectedRoute>
