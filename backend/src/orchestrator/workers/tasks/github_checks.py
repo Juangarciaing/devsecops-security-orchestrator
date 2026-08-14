@@ -226,6 +226,7 @@ async def _deliver_one(
         owner,
         external_id=published.external_id,
         check_run_id=published.check_run_id,
+        attempt_count=attempt_count,
     )
     logger.info(
         "github_check_publication %s delivered scan_run_id=%s",
