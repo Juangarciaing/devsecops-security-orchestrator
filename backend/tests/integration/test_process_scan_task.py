@@ -46,6 +46,7 @@ from orchestrator.domain.entities.scan_task import ScanTask
 from orchestrator.domain.ports.container_runner_port import RunResult
 from orchestrator.domain.value_objects.enums import (
     FindingStatus,
+    GitHubCheckOutcome,
     RepositoryProvider,
     ScannerType,
     ScanRunStatus,
@@ -53,6 +54,9 @@ from orchestrator.domain.value_objects.enums import (
 )
 from orchestrator.infrastructure.db.engine import resolve_database_url
 from orchestrator.infrastructure.db.models.finding import FindingModel
+from orchestrator.infrastructure.db.models.github_check_publication import (
+    GitHubCheckPublicationModel,
+)
 from orchestrator.infrastructure.db.repositories.code_repository_repository import (
     SqlAlchemyCodeRepositoryRepository,
 )
@@ -173,6 +177,23 @@ async def _load_state(
             assert task is not None
             assert run is not None
             return task, run, list(findings)
+    finally:
+        await engine.dispose()
+
+
+async def _load_publications(scan_run_id: uuid.UUID) -> list[GitHubCheckPublicationModel]:
+    """github-checks-publisher PR3: proves the real, atomic intent-creation
+    wiring — no fakes, a real Postgres row committed in the SAME transaction
+    as the terminal `ScanRun`/`ScanTask` write."""
+    engine = create_async_engine(resolve_database_url())
+    sessionmaker = async_sessionmaker(engine, expire_on_commit=False)
+    try:
+        async with sessionmaker() as session:
+            stmt = select(GitHubCheckPublicationModel).where(
+                GitHubCheckPublicationModel.scan_run_id == scan_run_id
+            )
+            result = await session.execute(stmt)
+            return list(result.scalars().all())
     finally:
         await engine.dispose()
 
@@ -398,6 +419,9 @@ def test_process_scan_task_marks_failed_when_dast_disabled_with_zero_container_c
         assert run.status == ScanRunStatus.FAILED
         assert len(findings) == 0
         assert len(fake_runner.calls) == 0
+        # Task 3.1: exclusion — a `ScanTarget`/DAST run has no `repository_id`
+        # (no GitHub provider), so no intent is ever created.
+        assert asyncio.run(_load_publications(run_id)) == []
     finally:
         asyncio.run(_delete_scan_target(target_id))
 
@@ -518,6 +542,12 @@ def test_process_scan_task_happy_path_persists_real_findings_and_resolved_sha(
     # start failing with a Postgres `NOT NULL` violation.
     assert all(f.repository_id == run.repository_id for f in findings)  # type: ignore[attr-defined]
 
+    # Task 3.1/3.3: the terminal COMPLETED transition atomically created
+    # exactly one eligible GitHub Check publication intent, SUCCESS outcome.
+    publications = asyncio.run(_load_publications(run_id))
+    assert len(publications) == 1
+    assert publications[0].outcome == GitHubCheckOutcome.SUCCESS
+
 
 def test_process_scan_task_clean_repo_completes_with_zero_findings(
     migrated_schema: None,
@@ -575,6 +605,12 @@ def test_process_scan_task_marks_failed_on_checkout_failure_with_no_retry(
     assert len(findings) == 0
     # deterministic checkout failure (D5) -> a SINGLE attempt, never retried
     assert len(fake_runner.calls) == 1
+
+    # Task 3.1: a FAILED aggregate outcome still creates an intent — a
+    # failed SCAN, not a failed delivery — with a FAILURE outcome.
+    publications = asyncio.run(_load_publications(run_id))
+    assert len(publications) == 1
+    assert publications[0].outcome == GitHubCheckOutcome.FAILURE
 
 
 def test_process_scan_task_marks_failed_with_credential_free_reason_on_private_repo(
