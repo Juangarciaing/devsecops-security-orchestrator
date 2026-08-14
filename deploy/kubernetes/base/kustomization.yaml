@@ -23,3 +23,6 @@ resources:
   - pvc.yaml
   - job-checkout.yaml
   - job-scanner.yaml
+  # github-checks-publisher PR7 — the first static app Deployment in this
+  # base (Job/RBAC-only before this). See deployment-celery-beat.yaml.
+  - deployment-celery-beat.yaml

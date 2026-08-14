@@ -105,15 +105,19 @@ README.
   default** — the `realtime_enabled` setting is `False`, in which case the
   UI's polling is byte-identical to before this feature existed (see
   "Real-time scan status push" below).
+- **GitHub Checks publishing (github-checks-publisher)** — an *outbound*
+  integration that posts a terminal scan run's outcome back to the
+  originating commit as a native GitHub Check Run, via a durable outbox
+  (`github_check_publications`), owner-CAS claim/lease, full-jitter
+  retry/backoff, dead-lettering, and a Celery Beat-scheduled sweep —
+  authenticated as a GitHub App (JWT + cached installation tokens), not a
+  personal access token (a separate concern from the secrets manager above).
+  **Off by default** — the `github_checks_delivery_enabled` setting is
+  `False` until an operator opts in (see "GitHub Checks publishing" below).
 
 The Kubernetes Jobs backend (Module 13c / k8s-backend-enable) is built,
 tested, and proven live against a real cluster — see "Kubernetes Jobs
-execution" below and `## Roadmap`. Also not yet built: an *outbound* GitHub
-Checks API integration
-(posting scan results back to a PR/commit as a native GitHub check — still
-blocked on GitHub App/installation-token auth this project doesn't have,
-which is a separate concern from the personal-access-token secrets manager
-above; the *internal* policy-gate equivalent is built, see above).
+execution" below and `## Roadmap`.
 
 ## Architecture
 
@@ -436,6 +440,56 @@ operators should scrub the `access_token` query parameter from access logs
 (e.g. an nginx `log_format` override or reverse-proxy log-scrubbing rule) —
 this project's own access logging does not do so by default.
 
+### GitHub Checks publishing
+
+A terminal `ScanRun` (completed/failed) creates one durable
+`github_check_publications` outbox row rather than calling GitHub directly
+inline — a Celery Beat-scheduled sweep (`sweep_github_check_publications_task`,
+every `GITHUB_CHECKS_SWEEP_INTERVAL_SECONDS` = 60s) claims due rows via an
+owner-CAS lease (`GITHUB_CHECKS_LEASE_DURATION` = 5 minutes) and delivers
+each within the same sweep invocation: authenticate as the configured
+GitHub App (mint a JWT, exchange for a cached installation token), resolve
+the repository's installation mapping, then create/update a Check Run.
+A retryable failure is rescheduled with full-jitter backoff (never an
+in-process sleep — the row's `lease_until` alone defers it to a later sweep
+cycle); a terminal failure is dead-lettered (`status=DEAD`,
+`dead_letter_reason` recorded) rather than retried forever.
+
+**Setup.** Off by default: set `github_checks_delivery_enabled=true` in
+`backend/.env`, which requires both `github_app_id` and
+`github_app_private_key_file` to also be set (`Settings`'s own validator
+raises otherwise). While the flag is `False` (the default), the sweep task
+returns before it ever claims a row — zero DB/network/auth I/O, byte-for-byte
+unchanged behavior.
+
+| Setting | Default | Purpose |
+|---|---|---|
+| `github_checks_delivery_enabled` | `false` | Deny-by-default gate for the sweep's claim+deliver step. |
+| `github_app_id` | `None` | The GitHub App's numeric ID; required once delivery is enabled. |
+| `github_app_private_key_file` | `None` | **Path** to the App's PEM private key file — never the PEM content itself. |
+
+**The private key is worker-only, never Beat.** The worker re-reads the PEM
+fresh on every JWT mint; Beat never reads it at all — Beat only enqueues the
+sweep task name onto the `github_checks` queue, it never calls GitHub's API
+or touches App credentials itself. In Docker Compose, the `worker` service
+alone gets a read-only bind mount (`./secrets:/secrets:ro`, gitignored) —
+point `github_app_private_key_file` at the in-container path; the
+`scheduler` service (Celery Beat) uses an explicit, minimal `environment:`
+block that never carries `GITHUB_APP_ID`/`GITHUB_APP_PRIVATE_KEY_FILE`. In
+Kubernetes, `deploy/kubernetes/base/deployment-celery-beat.yaml` runs Beat
+as a single `Recreate`-strategy replica (never `RollingUpdate` — two
+simultaneous Beat replicas would double-schedule every sweep tick) with no
+Secret volume or App-credential env var at all; a future worker Deployment
+would mount the App private key from a dedicated Secret, never one Beat also
+references. Both shapes are proven by
+`backend/tests/compose/test_github_checks_scheduler_service.py` and
+`backend/tests/unit/infrastructure/kubernetes/test_kubernetes_beat_deployment_render.py`.
+
+**Metrics.** The `orchestrator_github_check_*` Prometheus series (sweep run
+count, claimed-row count, publication outcome, delivery duration, last
+successful sweep timestamp) are exposed the same opt-in way as every other
+counter — see "Prometheus metrics" above.
+
 ## Tests
 
 ```bash
@@ -469,5 +523,5 @@ project SDD history for the full spec/design trail per module).
 | 9 | Dashboard MVP | ✅ |
 | 10 | Webhook handling (GitHub push) | ✅ |
 | 11 | More scanners (pip-audit ✅, AST-SAST ✅, Semgrep ✅, DAST/ZAP ✅) | ✅ |
-| 12 | Advanced dashboard (trends ✅, diffing ✅, internal policy gate ✅; outbound GitHub Checks API deferred) | ✅ |
+| 12 | Advanced dashboard (trends ✅, diffing ✅, internal policy gate ✅; outbound GitHub Checks API ✅, see github-checks-publisher) | ✅ |
 | 13 | Hardening & observability (13a: OTel distributed tracing ✅; 13b: Prometheus metrics ✅; 13c: Kubernetes Jobs backend ✅ built and enabled against a real cluster, see k8s-backend-enable) | ✅ |
