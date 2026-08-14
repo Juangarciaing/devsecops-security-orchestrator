@@ -29,13 +29,22 @@ class GitHubCheckPublicationPort(ABC):
 
     @abstractmethod
     async def mark_delivered(
-        self, publication_id: uuid.UUID, owner: str, *, external_id: str, check_run_id: int
+        self,
+        publication_id: uuid.UUID,
+        owner: str,
+        *,
+        external_id: str,
+        check_run_id: int,
+        attempt_count: int,
     ) -> bool:
         """Owner-CAS: mark `publication_id` `DELIVERED`, persist the
         GitHub-side `external_id`/`check_run_id` a successful publish
         returned (design: "GitHub identity" — enables a future PATCH-by-id
-        instead of a repeated lookup-by-name), and clear its lease only
-        while `owner` still holds it; return `False` otherwise."""
+        instead of a repeated lookup-by-name) and the TOTAL attempts it
+        actually took (including this one — a publication that failed
+        twice then succeeded on the third attempt must record 3, not
+        whatever an earlier `reschedule` last set), and clear its lease
+        only while `owner` still holds it; return `False` otherwise."""
 
     @abstractmethod
     async def release(self, publication_id: uuid.UUID, owner: str) -> bool:

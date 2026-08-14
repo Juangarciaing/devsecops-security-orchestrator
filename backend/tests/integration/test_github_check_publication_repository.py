@@ -136,14 +136,22 @@ async def _claim_release_lifecycle() -> None:
             # Owner-CAS: only the true owner can complete/release its claim.
             assert (
                 await repo.mark_delivered(
-                    pending_id, owner="b", external_id="wrong-owner", check_run_id=1
+                    pending_id,
+                    owner="b",
+                    external_id="wrong-owner",
+                    check_run_id=1,
+                    attempt_count=1,
                 )
                 is False
             )
             assert await repo.release(expired_id, owner="b") is False
             assert (
                 await repo.mark_delivered(
-                    pending_id, owner="a", external_id="github-checks:test", check_run_id=42
+                    pending_id,
+                    owner="a",
+                    external_id="github-checks:test",
+                    check_run_id=42,
+                    attempt_count=2,
                 )
                 is True
             )
@@ -159,6 +167,9 @@ async def _claim_release_lifecycle() -> None:
             # PR5 fix: mark_delivered persists the GitHub-side identity.
             assert delivered_model.external_id == "github-checks:test"
             assert delivered_model.check_run_id == 42
+            # attempt_count fix: the TOTAL attempts it took, not whatever an
+            # earlier reschedule/mark_dead call happened to leave behind.
+            assert delivered_model.attempt_count == 2
             assert released_model is not None
             assert released_model.status == GitHubCheckPublicationStatus.PENDING
             assert released_model.lease_until is None

@@ -67,7 +67,13 @@ class SqlAlchemyGitHubCheckPublicationRepository(GitHubCheckPublicationPort):
         return [github_check_publication_to_entity(model) for model in claimed_models]
 
     async def mark_delivered(
-        self, publication_id: uuid.UUID, owner: str, *, external_id: str, check_run_id: int
+        self,
+        publication_id: uuid.UUID,
+        owner: str,
+        *,
+        external_id: str,
+        check_run_id: int,
+        attempt_count: int,
     ) -> bool:
         return await self._owner_cas_update(
             publication_id,
@@ -75,6 +81,7 @@ class SqlAlchemyGitHubCheckPublicationRepository(GitHubCheckPublicationPort):
             status=GitHubCheckPublicationStatus.DELIVERED,
             external_id=external_id,
             check_run_id=check_run_id,
+            attempt_count=attempt_count,
         )
 
     async def release(self, publication_id: uuid.UUID, owner: str) -> bool:
