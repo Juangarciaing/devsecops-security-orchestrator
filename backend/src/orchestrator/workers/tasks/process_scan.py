@@ -558,7 +558,9 @@ async def _create_github_check_publication_if_eligible(
             scan_run_id=scan_run_id,
             check_name=GITHUB_CHECK_NAME,
             outcome=github_check_outcome_for_status(status),
-            payload_summary=build_check_payload_summary(findings),
+            payload_summary=build_check_payload_summary(
+                findings, scan_error=status is ScanRunStatus.FAILED
+            ),
             created_at=created_at,
         )
     )

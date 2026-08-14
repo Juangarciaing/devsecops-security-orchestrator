@@ -129,6 +129,20 @@ def test_payload_never_leaks_secrets_raw_evidence_snippets_paths_titles_or_urls(
     assert "http" not in payload
 
 
+def test_scan_error_marker_distinguishes_a_failed_scan_from_a_clean_zero_finding_run() -> None:
+    """Without `scan_error=True`, a FAILED scan's payload (always built
+    from `findings=[]`, since a failed scan never produces real findings)
+    is byte-for-byte identical in shape to a genuinely clean 0-finding
+    COMPLETED run — only `outcome` would distinguish them, and only in
+    GitHub's own UI, not to any other consumer parsing this payload."""
+    clean_run_payload = json.loads(build_check_payload_summary([]))
+    failed_scan_payload = json.loads(build_check_payload_summary([], scan_error=True))
+
+    assert "scan_error" not in clean_run_payload
+    assert failed_scan_payload["scan_error"] is True
+    assert failed_scan_payload["total"] == 0
+
+
 def test_payload_is_bounded_to_the_fixed_spec_ceiling() -> None:
     payload = build_check_payload_summary(
         [_make_finding(FindingSeverity.HIGH) for _ in range(5000)]

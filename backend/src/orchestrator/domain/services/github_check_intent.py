@@ -61,13 +61,26 @@ def github_check_outcome_for_status(status: ScanRunStatus) -> GitHubCheckOutcome
     return GitHubCheckOutcome.FAILURE
 
 
-def build_check_payload_summary(findings: Sequence[Finding]) -> str:
+def build_check_payload_summary(findings: Sequence[Finding], *, scan_error: bool = False) -> str:
     """Bounded, redacted, aggregate summary (spec: ~4 KiB ceiling): a total
     count plus a per-severity breakdown, derived from `Finding.severity`
     alone. NEVER includes secrets, raw evidence, snippets, file paths,
-    titles/URLs, or arbitrary user-authored Markdown."""
+    titles/URLs, or arbitrary user-authored Markdown.
+
+    `scan_error=True` (a `FAILED` scan, which never has real findings —
+    callers always pass `findings=[]` alongside it) adds an explicit
+    `"scan_error": true` marker. Without it, a FAILED scan's payload would
+    be byte-for-byte identical in shape to a genuinely clean 0-finding
+    run (`{"total": 0, "by_severity": {...all zero}}`) — `outcome:
+    FAILURE` is visible in GitHub's own Check Run UI, but any OTHER
+    consumer parsing just this payload (a downstream integration, a
+    dashboard) would otherwise have no signal that no findings were ever
+    actually produced."""
     counts: dict[str, int] = {severity.value: 0 for severity in FindingSeverity}
     for finding in findings:
         counts[finding.severity.value] += 1
-    payload = json.dumps({"total": len(findings), "by_severity": counts}, sort_keys=True)
+    body: dict[str, object] = {"total": len(findings), "by_severity": counts}
+    if scan_error:
+        body["scan_error"] = True
+    payload = json.dumps(body, sort_keys=True)
     return payload[:MAX_PAYLOAD_SUMMARY_BYTES]
