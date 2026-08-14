@@ -82,11 +82,12 @@ def _terminal_reason(exc: Exception) -> str | None:
 
 
 def _delay_seconds(exc: Exception, attempt_count: int, rng: random.Random | None) -> float:
-    """`Retry-After` (or, for a 429 lacking it, `X-RateLimit-Reset`) wins
-    when present; otherwise full-jitter backoff whose window grows with
-    `attempt_count` but stays bounded to `[MIN_DELAY_SECONDS,
-    MAX_DELAY_SECONDS]` (design: "30s and 1h")."""
-    if isinstance(exc, httpx.HTTPStatusError):
+    """`Retry-After`/`X-RateLimit-Reset` wins ONLY for a 429 (design: "429
+    guidance... honor Retry-After, then rate-limit reset") — a 5xx/timeout/
+    escaped-401-403-404 never consults a rate-limit header, even if GitHub
+    happened to include one on that response, and always gets the ordinary
+    bounded full-jitter backoff instead."""
+    if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code == 429:
         header_delay = _header_delay_seconds(exc.response)
         if header_delay is not None:
             return min(MAX_DELAY_SECONDS, max(MIN_DELAY_SECONDS, header_delay))

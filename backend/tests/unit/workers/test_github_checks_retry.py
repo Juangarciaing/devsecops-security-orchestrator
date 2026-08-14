@@ -49,6 +49,22 @@ def test_429_falls_back_to_rate_limit_reset_header_when_no_retry_after() -> None
     assert 80.0 <= decision.delay_seconds <= 100.0
 
 
+def test_non_429_status_never_honors_rate_limit_headers() -> None:
+    """A transient 500 (or an escaped 401/403/404) commonly carries an
+    `X-RateLimit-Reset` header too — only a 429 may ever use it; anything
+    else must fall through to ordinary bounded full-jitter backoff, never a
+    delay of up to an hour for what should be a short retry."""
+    import time
+
+    exc = _status_error(500, headers={"X-RateLimit-Reset": str(time.time() + 3000)})
+
+    decision = classify_publish_failure(exc, attempt_count=1, rng=random.Random(0))
+
+    assert decision.should_retry is True
+    assert decision.delay_seconds is not None
+    assert MIN_DELAY_SECONDS <= decision.delay_seconds <= MIN_DELAY_SECONDS * 2
+
+
 @pytest.mark.parametrize("attempt_count", list(range(1, MAX_ATTEMPTS)))
 def test_5xx_and_timeout_retry_within_jitter_bounds(attempt_count: int) -> None:
     """`MAX_ATTEMPTS` itself is exhaustion, not a retryable attempt — see
