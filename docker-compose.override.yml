@@ -19,13 +19,15 @@ services:
       - ./backend/src:/app/src
     environment:
       ENVIRONMENT: development
+    # --host 0.0.0.0, not the fixed 172.30.0.10 observability-network
+    # address — see the base compose file's matching comment.
     command:
       [
         "uvicorn",
         "orchestrator.api.main:create_app",
         "--factory",
         "--host",
-        "172.30.0.10",
+        "0.0.0.0",
         "--port",
         "8000",
         "--reload",
