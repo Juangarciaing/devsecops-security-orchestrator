@@ -1,7 +1,8 @@
 """`GitHubChecksHttpClient` — mapping resolution + Check Run publish (PR5c).
 Composes an `InstallationTokenSource` (PR5b's `GitHubAppTokenProvider` fits
-structurally). One 401 OR one 403/404 retry, never both/looped (PR6's job);
-dup reconciliation is also PR6's.
+structurally). One 401 OR one 403/404 retry, never both/looped (retry/
+backoff beyond that single shot is PR6's job). Duplicate Check Runs sharing
+the same `external_id` are reconciled to the canonical (lowest-id) run.
 """
 
 from __future__ import annotations
@@ -87,8 +88,17 @@ class GitHubChecksHttpClient(GitHubChecksPort):
         existing `external_id` match, causing `_publish_once` to `POST` a
         duplicate Check Run instead of `PATCH`ing the real one (design:
         "retries MUST update the existing run, never create a second
-        one"). First match wins (dup reconciliation across the returned
-        set is PR6's)."""
+        one").
+
+        Collects EVERY matching run across every page before choosing —
+        not just the first one encountered — because an ambiguous prior
+        `POST` (a worker crashed after GitHub accepted the create but
+        before `check_run_id` got persisted) can leave more than one Check
+        Run sharing the same `external_id`. Reconciles to the canonical
+        run: the lowest id, i.e. whichever was created first (GitHub's
+        list order is not guaranteed to be creation order, so this cannot
+        just be "first API response match")."""
+        matching_ids: list[int] = []
         page = 1
         while True:
             lookup = await self._http.get(
@@ -102,12 +112,13 @@ class GitHubChecksHttpClient(GitHubChecksPort):
             )
             lookup.raise_for_status()
             check_runs = lookup.json().get("check_runs", [])
-            for run in check_runs:
-                if run.get("external_id") == external_id:
-                    return int(run["id"])
+            matching_ids.extend(
+                int(run["id"]) for run in check_runs if run.get("external_id") == external_id
+            )
             if len(check_runs) < _CHECK_RUNS_PAGE_SIZE:
-                return None
+                break
             page += 1
+        return min(matching_ids) if matching_ids else None
 
     async def _publish_once(
         self,
@@ -121,8 +132,8 @@ class GitHubChecksHttpClient(GitHubChecksPort):
         outcome: GitHubCheckOutcome,
         summary: str,
     ) -> PublishedCheck:
-        """Lookup-before-create when no `check_run_id` is given yet; first
-        match wins (dup reconciliation is PR6's)."""
+        """Lookup-before-create when no `check_run_id` is given yet; the
+        canonical (lowest-id) match wins when more than one exists."""
         token = await self._tokens.get_installation_token(installation_id)
         resolved_id = check_run_id
         if resolved_id is None:
