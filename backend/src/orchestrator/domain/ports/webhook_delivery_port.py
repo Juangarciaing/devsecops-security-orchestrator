@@ -27,3 +27,13 @@ class WebhookDeliveryPort(ABC):
     @abstractmethod
     async def record(self, delivery: WebhookDelivery) -> None:
         """Persist `delivery` as a new append-only audit row."""
+
+    @abstractmethod
+    async def list_recent(self, limit: int, offset: int) -> list[WebhookDelivery]:
+        """Return up to `limit` `WebhookDelivery` rows, skipping `offset`,
+        ordered newest-first (design D9: `received_at DESC, id DESC` — the
+        append-only table has no other unique time ordering).
+
+        Powers the admin-gated `GET /api/v1/webhooks/deliveries` read path
+        (design D8: `limit`/`offset` query params, defaults 20/0, `le=100`).
+        """
