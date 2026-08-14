@@ -535,6 +535,18 @@ async def _create_github_check_publication_if_eligible(
     provider = None
     if repository_id is not None:
         repository = await SqlAlchemyCodeRepositoryRepository(session).get_by_id(repository_id)
+        if repository is None:
+            # A resolvable repository_id that no longer resolves is a
+            # genuinely unexpected state (unlike a ScanTarget/DAST run,
+            # which legitimately has no repository_id at all) — log it so
+            # it's distinguishable from the ordinary non-GitHub-repo
+            # exclusion below, even though the eligibility outcome is the
+            # same either way (no intent created, scan truth unaffected).
+            logger.warning(
+                "github_check_eligibility repository_id=%s lookup_miss scan_run_id=%s",
+                repository_id,
+                scan_run_id,
+            )
         provider = repository.provider if repository is not None else None
     if not is_eligible_for_github_check_publication(
         provider=provider, commit_sha=commit_sha, status=status
