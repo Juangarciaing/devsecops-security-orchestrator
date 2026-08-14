@@ -301,6 +301,8 @@ def github_check_publication_to_entity(
         status=model.status,
         lease_until=model.lease_until,
         leased_by=model.leased_by,
+        external_id=model.external_id,
+        check_run_id=model.check_run_id,
     )
 
 
@@ -318,6 +320,8 @@ def github_check_publication_to_model(
         status=entity.status,
         lease_until=entity.lease_until,
         leased_by=entity.leased_by,
+        external_id=entity.external_id,
+        check_run_id=entity.check_run_id,
     )
 
 

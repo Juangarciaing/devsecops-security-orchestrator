@@ -23,3 +23,5 @@ class GitHubCheckPublication:
     status: GitHubCheckPublicationStatus = GitHubCheckPublicationStatus.PENDING
     lease_until: datetime | None = None
     leased_by: str | None = None
+    external_id: str | None = None
+    check_run_id: int | None = None
