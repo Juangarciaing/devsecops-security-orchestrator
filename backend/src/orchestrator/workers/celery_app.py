@@ -56,20 +56,41 @@ _settings = get_settings()
 # `celery -A ... worker`, and the API's lazy import in `api/v1/routers/scans.py`).
 ensure_scan_execution_backend_available(_settings)
 
+# github-checks-publisher PR4 (design: "Dispatch and lease") — the Beat
+# interval sweeping the outbox for due rows; an explicit, named constant
+# rather than a magic number in `beat_schedule` below.
+GITHUB_CHECKS_SWEEP_INTERVAL_SECONDS = 60
+
 celery_app = Celery(
     "orchestrator",
     broker=_settings.celery_broker_url or _settings.redis_url,
     backend=_settings.celery_result_backend or _settings.redis_url,
-    include=["orchestrator.workers.tasks.process_scan"],
+    include=[
+        "orchestrator.workers.tasks.process_scan",
+        "orchestrator.workers.tasks.github_checks",
+    ],
 )
 
 celery_app.conf.task_queues = (
     Queue("scan"),
     Queue("webhook"),
+    Queue("github_checks"),
 )
 celery_app.conf.task_default_queue = "scan"
 celery_app.conf.task_routes = {
     "orchestrator.workers.tasks.process_scan.process_scan_task": {"queue": "scan"},
+    "orchestrator.workers.tasks.github_checks.sweep_github_check_publications_task": {
+        "queue": "github_checks"
+    },
+}
+# PR4's disabled-by-default sweep (`Settings.github_checks_delivery_enabled`)
+# is scheduled unconditionally here — the task itself, not Beat, is the
+# zero-I/O gate: it returns before ever calling `claim_due` while disabled.
+celery_app.conf.beat_schedule = {
+    "sweep-github-check-publications": {
+        "task": "orchestrator.workers.tasks.github_checks.sweep_github_check_publications_task",
+        "schedule": GITHUB_CHECKS_SWEEP_INTERVAL_SECONDS,
+    },
 }
 
 
