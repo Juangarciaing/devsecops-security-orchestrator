@@ -121,30 +121,53 @@ async def _deliver_one(
     """Attempt delivery of one claimed row: mark it `DELIVERED`, `reschedule`
     it for a later sweep, or `mark_dead` it, per `classify_publish_failure`.
     `external_id` is always derived fresh via `github_check_external_id`
-    (deterministic in `scan_run_id` alone) and `check_run_id` is always
-    `None` — a prior successful-but-unrecorded create is found again by
-    `publish()`'s own lookup-before-create, never a duplicate Check Run."""
+    (deterministic in `scan_run_id` alone); `check_run_id` reuses the
+    persisted value if this row was ever delivered before (currently never,
+    given the claim lifecycle, but `publish()`'s own paginated
+    lookup-before-create is still the safety net for a prior
+    successful-but-unrecorded create either way)."""
     publication_port = SqlAlchemyGitHubCheckPublicationRepository(session)
-    scan_run = await SqlAlchemyScanRunRepository(session).get_by_id(publication.scan_run_id)
-    assert scan_run is not None  # invariant: publication.scan_run_id FK is ON DELETE CASCADE
-    # invariant: eligibility requires a GITHUB provider + a non-empty commit_sha
-    assert scan_run.repository_id is not None and scan_run.commit_sha is not None
-    repository = await SqlAlchemyCodeRepositoryRepository(session).get_by_id(
-        scan_run.repository_id
-    )
-    assert repository is not None  # invariant: never deleted out from under a live scan run
-
     attempt_count = publication.attempt_count + 1
+
+    scan_run = await SqlAlchemyScanRunRepository(session).get_by_id(publication.scan_run_id)
+    repository = (
+        await SqlAlchemyCodeRepositoryRepository(session).get_by_id(scan_run.repository_id)
+        if scan_run is not None and scan_run.repository_id is not None
+        else None
+    )
+    if scan_run is None or scan_run.commit_sha is None or repository is None:
+        # A corrupted/unexpected invariant (eligibility already required a
+        # GITHUB provider + resolved commit_sha; the FK is ON DELETE
+        # CASCADE) is dead-lettered like any other terminal failure —
+        # NEVER an uncaught crash. An uncaught exception here would escape
+        # `_run_sweep`'s loop before `attempt_count` was ever persisted, so
+        # `classify_publish_failure`'s MAX_ATTEMPTS cap would never apply
+        # and the same row would crash every lease cycle forever.
+        await publication_port.mark_dead(
+            publication.id,
+            owner,
+            attempt_count=attempt_count,
+            dead_letter_reason="missing_scan_run_or_repository",
+        )
+        logger.warning(
+            "github_check_publication %s dead-lettered reason=missing_scan_run_or_repository "
+            "scan_run_id=%s",
+            publication.id,
+            publication.scan_run_id,
+        )
+        record_github_check_publication_outcome("dead")
+        return
+
     started = monotonic()
     try:
-        await client.publish(
+        published = await client.publish(
             repository_id=repository.id,
             owner=repository.owner,
             repo=repository.name,
             head_sha=scan_run.commit_sha,
             check_name=publication.check_name,
             external_id=github_check_external_id(publication.scan_run_id),
-            check_run_id=None,
+            check_run_id=publication.check_run_id,
             outcome=publication.outcome,
             summary=publication.payload_summary,
         )
@@ -182,7 +205,12 @@ async def _deliver_one(
         record_github_check_publication_outcome("dead")
         return
 
-    await publication_port.mark_delivered(publication.id, owner)
+    await publication_port.mark_delivered(
+        publication.id,
+        owner,
+        external_id=published.external_id,
+        check_run_id=published.check_run_id,
+    )
     logger.info(
         "github_check_publication %s delivered scan_run_id=%s",
         publication.id,
