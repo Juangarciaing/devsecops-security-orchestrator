@@ -219,6 +219,27 @@ def test_publish_paginates_the_check_runs_lookup_to_find_a_match_on_a_later_page
     assert "GET /repos/acme/widgets/commits/" + "a" * 40 + "/check-runs?2" in calls
 
 
+def test_publish_reconciles_multiple_matching_check_runs_to_the_canonical_lowest_id() -> None:
+    """An ambiguous prior POST (a worker crashed after GitHub accepted the
+    create but before check_run_id was persisted) can leave more than one
+    Check Run sharing the same external_id. The canonical run is the
+    LOWEST id (created first) — never just whichever the API happened to
+    list first, since GitHub's list order is not creation order."""
+    duplicates = [
+        {"id": 777, "external_id": "github-checks:fake-scan-run"},
+        {"id": 321, "external_id": "github-checks:fake-scan-run"},  # lower id, listed second
+        {"id": 555, "external_id": "other-run"},
+    ]
+    handler, calls = _publish_router(check_runs_listing=duplicates)
+    client, repository_id, _ = _client(handler, installation_id=42)
+
+    result = asyncio.run(client.publish(**_publish_kwargs(repository_id=repository_id)))
+
+    assert result.check_run_id == 321
+    assert "PATCH /repos/acme/widgets/check-runs/321" in calls
+    assert "POST /repos/acme/widgets/check-runs" not in calls
+
+
 def test_publish_refreshes_the_installation_mapping_once_after_a_404_and_retries() -> None:
     """A stale `installation_id` 404s; the mapping is refreshed ONCE."""
     handler, calls = _publish_router(check_run_response_id=444, stale_mapping_status=404)
