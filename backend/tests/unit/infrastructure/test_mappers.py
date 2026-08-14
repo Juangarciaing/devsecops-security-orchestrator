@@ -13,6 +13,7 @@ from orchestrator.domain.entities.api_key import ApiKey
 from orchestrator.domain.entities.code_repository import CodeRepository
 from orchestrator.domain.entities.credential_access_log import CredentialAccessLog
 from orchestrator.domain.entities.finding import Finding
+from orchestrator.domain.entities.github_check_publication import GitHubCheckPublication
 from orchestrator.domain.entities.scan_run import ScanRun
 from orchestrator.domain.entities.scan_target import ScanTarget
 from orchestrator.domain.entities.scan_task import ScanTask
@@ -23,6 +24,8 @@ from orchestrator.domain.value_objects.enums import (
     CredentialKind,
     FindingSeverity,
     FindingStatus,
+    GitHubCheckOutcome,
+    GitHubCheckPublicationStatus,
     RepositoryProvider,
     ScannerType,
     ScanRunStatus,
@@ -39,6 +42,8 @@ from orchestrator.infrastructure.db.mappers import (
     credential_access_log_to_model,
     finding_to_entity,
     finding_to_model,
+    github_check_publication_to_entity,
+    github_check_publication_to_model,
     scan_run_to_entity,
     scan_run_to_model,
     scan_target_to_entity,
@@ -174,8 +179,14 @@ def test_scan_run_round_trip_with_no_triggered_by_user_id() -> None:
 def test_scan_run_round_trip_with_target_subject() -> None:
     target_id = uuid.uuid4()
     entity = ScanRun(
-        id=uuid.uuid4(), repository_id=None, scan_target_id=target_id,
-        status=ScanRunStatus.PENDING, trigger="manual", commit_sha=None, ref=None, created_at=_NOW,
+        id=uuid.uuid4(),
+        repository_id=None,
+        scan_target_id=target_id,
+        status=ScanRunStatus.PENDING,
+        trigger="manual",
+        commit_sha=None,
+        ref=None,
+        created_at=_NOW,
     )
     assert scan_run_to_entity(scan_run_to_model(entity)) == entity
 
@@ -251,9 +262,16 @@ def test_finding_round_trip_with_null_repository_and_scan_run_tracking() -> None
 def test_finding_round_trip_with_target_subject() -> None:
     target_id = uuid.uuid4()
     entity = Finding(
-        id=uuid.uuid4(), scan_task_id=uuid.uuid4(), severity=FindingSeverity.HIGH,
-        rule_id="rule", title="target", fingerprint="target-fp", created_at=_NOW, updated_at=_NOW,
-        repository_id=None, scan_target_id=target_id,
+        id=uuid.uuid4(),
+        scan_task_id=uuid.uuid4(),
+        severity=FindingSeverity.HIGH,
+        rule_id="rule",
+        title="target",
+        fingerprint="target-fp",
+        created_at=_NOW,
+        updated_at=_NOW,
+        repository_id=None,
+        scan_target_id=target_id,
     )
     assert finding_to_entity(finding_to_model(entity)) == entity
 
@@ -370,3 +388,62 @@ def test_credential_access_log_round_trip_manual_actor() -> None:
 
     assert round_tripped == entity
     assert round_tripped.scan_task_id is None
+
+
+def test_github_check_publication_round_trip() -> None:
+    entity = GitHubCheckPublication(
+        id=uuid.uuid4(),
+        scan_run_id=uuid.uuid4(),
+        check_name="security/orchestrator",
+        outcome=GitHubCheckOutcome.SUCCESS,
+        payload_summary="0 findings",
+        created_at=_NOW,
+    )
+
+    model = github_check_publication_to_model(entity)
+    round_tripped = github_check_publication_to_entity(model)
+
+    assert round_tripped == entity
+    assert round_tripped.status == GitHubCheckPublicationStatus.PENDING
+
+
+def test_github_check_publication_round_trip_preserves_claimed_lease_and_owner() -> None:
+    """Triangulation: non-default lease/owner fields (PR2's claim columns)
+    must survive the round-trip too, not just their `PENDING`/`None` defaults."""
+    entity = GitHubCheckPublication(
+        id=uuid.uuid4(),
+        scan_run_id=uuid.uuid4(),
+        check_name="security/orchestrator",
+        outcome=GitHubCheckOutcome.FAILURE,
+        payload_summary="2 findings",
+        created_at=_NOW,
+        status=GitHubCheckPublicationStatus.CLAIMED,
+        lease_until=_NOW,
+        leased_by="worker-a",
+    )
+
+    round_tripped = github_check_publication_to_entity(github_check_publication_to_model(entity))
+
+    assert round_tripped == entity
+
+
+def test_github_check_publication_round_trip_preserves_attempt_count_and_dead_letter_reason() -> (
+    None
+):
+    """Triangulation: PR6's dead-letter columns must survive the round-trip
+    too, not just their `0`/`None` defaults."""
+    entity = GitHubCheckPublication(
+        id=uuid.uuid4(),
+        scan_run_id=uuid.uuid4(),
+        check_name="security/orchestrator",
+        outcome=GitHubCheckOutcome.FAILURE,
+        payload_summary="2 findings",
+        created_at=_NOW,
+        status=GitHubCheckPublicationStatus.DEAD,
+        attempt_count=12,
+        dead_letter_reason="attempts_exhausted",
+    )
+
+    round_tripped = github_check_publication_to_entity(github_check_publication_to_model(entity))
+
+    assert round_tripped == entity

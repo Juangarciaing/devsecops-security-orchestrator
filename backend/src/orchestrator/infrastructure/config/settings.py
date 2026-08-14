@@ -171,6 +171,35 @@ class Settings(BaseSettings):
     # identical to today's polling-only behavior until explicitly enabled.
     realtime_enabled: bool = False
 
+    # github-checks-publisher PR4 (design "Dispatch and lease", PR4->PR5
+    # boundary): deny-by-default, mirroring `dast_enabled`'s fail-closed
+    # precedent exactly. While `False` (the default), the sweep task
+    # returns before it ever calls `claim_due` — no row is claimed, no
+    # auth/network I/O happens, since PR5's GitHub App auth and delivery
+    # HTTP call do not exist yet. PR5 flips this same flag's semantics to
+    # also enable the real delivery call once that auth exists.
+    github_checks_delivery_enabled: bool = False
+
+    # github-checks-publisher PR5 (design: "App credentials") — required only
+    # once `github_checks_delivery_enabled` opts in (checked below), mirroring
+    # `_require_complete_kubernetes_config_when_selected`'s fail-fast
+    # precedent exactly. `github_app_private_key_file` is a PATH, never the
+    # PEM content itself — the worker re-reads it fresh on every JWT mint
+    # (see `checks_client.py`); Beat never reads it at all.
+    github_app_id: str | None = None
+    github_app_private_key_file: str | None = None
+
+    @model_validator(mode="after")
+    def _require_github_app_credentials_when_delivery_enabled(self) -> Settings:
+        if self.github_checks_delivery_enabled and (
+            not self.github_app_id or not self.github_app_private_key_file
+        ):
+            raise ValueError(
+                "github_checks_delivery_enabled=True requires both github_app_id "
+                "and github_app_private_key_file to be set"
+            )
+        return self
+
     @model_validator(mode="after")
     def _require_complete_kubernetes_config_when_selected(self) -> Settings:
         if self.scan_execution_backend == "kubernetes" and (

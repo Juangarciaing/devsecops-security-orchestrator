@@ -111,3 +111,20 @@ class CredentialAccessOutcome(StrEnum):
     USED = "used"
     DECRYPT_FAILED = "decrypt_failed"
     KEY_UNAVAILABLE = "key_unavailable"
+
+
+class GitHubCheckOutcome(StrEnum):
+    """Terminal Check Run conclusion for one aggregate scan."""
+
+    SUCCESS = "success"
+    FAILURE = "failure"
+
+
+class GitHubCheckPublicationStatus(StrEnum):
+    """Lifecycle state of one outbox row; claim/dispatch lands in PR2."""
+
+    PENDING = "pending"
+    CLAIMED = "claimed"
+    DELIVERED = "delivered"
+    DEAD = "dead"
+    DISABLED = "disabled"

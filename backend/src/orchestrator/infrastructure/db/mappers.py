@@ -11,6 +11,10 @@ from orchestrator.domain.entities.api_key import ApiKey
 from orchestrator.domain.entities.code_repository import CodeRepository
 from orchestrator.domain.entities.credential_access_log import CredentialAccessLog
 from orchestrator.domain.entities.finding import Finding
+from orchestrator.domain.entities.github_check_publication import GitHubCheckPublication
+from orchestrator.domain.entities.github_repository_installation import (
+    GitHubRepositoryInstallation,
+)
 from orchestrator.domain.entities.scan_run import ScanRun
 from orchestrator.domain.entities.scan_target import ScanTarget
 from orchestrator.domain.entities.scan_task import ScanTask
@@ -20,6 +24,12 @@ from orchestrator.infrastructure.db.models.api_key import ApiKeyModel
 from orchestrator.infrastructure.db.models.code_repository import CodeRepositoryModel
 from orchestrator.infrastructure.db.models.credential_access_log import CredentialAccessLogModel
 from orchestrator.infrastructure.db.models.finding import FindingModel
+from orchestrator.infrastructure.db.models.github_check_publication import (
+    GitHubCheckPublicationModel,
+)
+from orchestrator.infrastructure.db.models.github_repository_installation import (
+    GitHubRepositoryInstallationModel,
+)
 from orchestrator.infrastructure.db.models.scan_run import ScanRunModel
 from orchestrator.infrastructure.db.models.scan_target import ScanTargetModel
 from orchestrator.infrastructure.db.models.scan_task import ScanTaskModel
@@ -274,6 +284,58 @@ def webhook_delivery_to_model(entity: WebhookDelivery) -> WebhookDeliveryModel:
         repository_full_name=entity.repository_full_name,
         ref=entity.ref,
         commit_sha=entity.commit_sha,
+    )
+
+
+def github_check_publication_to_entity(
+    model: GitHubCheckPublicationModel,
+) -> GitHubCheckPublication:
+    """Convert intent + lifecycle/lease columns into a `GitHubCheckPublication` entity."""
+    return GitHubCheckPublication(
+        id=model.id,
+        scan_run_id=model.scan_run_id,
+        check_name=model.check_name,
+        outcome=model.outcome,
+        payload_summary=model.payload_summary,
+        created_at=model.created_at,
+        status=model.status,
+        lease_until=model.lease_until,
+        leased_by=model.leased_by,
+        external_id=model.external_id,
+        check_run_id=model.check_run_id,
+        attempt_count=model.attempt_count,
+        dead_letter_reason=model.dead_letter_reason,
+    )
+
+
+def github_check_publication_to_model(
+    entity: GitHubCheckPublication,
+) -> GitHubCheckPublicationModel:
+    """Convert a `GitHubCheckPublication` entity into a `GitHubCheckPublicationModel`."""
+    return GitHubCheckPublicationModel(
+        id=entity.id,
+        scan_run_id=entity.scan_run_id,
+        check_name=entity.check_name,
+        outcome=entity.outcome,
+        payload_summary=entity.payload_summary,
+        created_at=entity.created_at,
+        status=entity.status,
+        lease_until=entity.lease_until,
+        leased_by=entity.leased_by,
+        external_id=entity.external_id,
+        check_run_id=entity.check_run_id,
+        attempt_count=entity.attempt_count,
+        dead_letter_reason=entity.dead_letter_reason,
+    )
+
+
+def github_repository_installation_to_entity(
+    model: GitHubRepositoryInstallationModel,
+) -> GitHubRepositoryInstallation:
+    """Convert a `GitHubRepositoryInstallationModel` into the domain entity
+    (deferred from PR1/PR2 to PR5)."""
+    return GitHubRepositoryInstallation(
+        repository_id=model.repository_id, installation_id=model.installation_id
     )
 
 

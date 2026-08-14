@@ -85,9 +85,16 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from orchestrator.application.use_cases.get_scan_target import ScanTargetNotFoundError
 from orchestrator.domain.entities.credential_access_log import CredentialAccessLog
 from orchestrator.domain.entities.finding import Finding
+from orchestrator.domain.entities.github_check_publication import GitHubCheckPublication
 from orchestrator.domain.ports.credential_store_port import (
     CredentialUnsealError,
     SealedCredential,
+)
+from orchestrator.domain.services.github_check_intent import (
+    GITHUB_CHECK_NAME,
+    build_check_payload_summary,
+    github_check_outcome_for_status,
+    is_eligible_for_github_check_publication,
 )
 from orchestrator.domain.value_objects.enums import (
     CredentialAccessOutcome,
@@ -111,6 +118,9 @@ from orchestrator.infrastructure.db.repositories.credential_access_log_repositor
 )
 from orchestrator.infrastructure.db.repositories.finding_repository import (
     SqlAlchemyFindingRepository,
+)
+from orchestrator.infrastructure.db.repositories.github_check_publication_repository import (
+    SqlAlchemyGitHubCheckPublicationRepository,
 )
 from orchestrator.infrastructure.db.repositories.scan_run_repository import (
     ScanRunNotFoundError,
@@ -506,6 +516,42 @@ def _run_target_scan(
     return result.findings
 
 
+async def _create_github_check_publication_if_eligible(
+    session: AsyncSession,
+    repository_id: uuid.UUID | None,
+    scan_run_id: uuid.UUID,
+    status: ScanRunStatus,
+    commit_sha: str | None,
+    findings: list[Finding],
+    created_at: datetime,
+) -> None:
+    """Create the terminal `GitHubCheckPublication` intent in the SAME
+    (uncommitted) transaction as the caller's `ScanRun` terminal write, iff
+    eligible (design: "Atomic Eligible Intent"). Shared by `_complete_scan`
+    (COMPLETED) and `_mark_failed` (FAILED) — a failed SCAN still creates an
+    intent; delivery is PR4/5's job. `repository_id=None` (a `ScanTarget`
+    run, or a lookup miss) never resolves a `provider`, so it is rejected.
+    """
+    provider = None
+    if repository_id is not None:
+        repository = await SqlAlchemyCodeRepositoryRepository(session).get_by_id(repository_id)
+        provider = repository.provider if repository is not None else None
+    if not is_eligible_for_github_check_publication(
+        provider=provider, commit_sha=commit_sha, status=status
+    ):
+        return
+    await SqlAlchemyGitHubCheckPublicationRepository(session).create(
+        GitHubCheckPublication(
+            id=uuid.uuid4(),
+            scan_run_id=scan_run_id,
+            check_name=GITHUB_CHECK_NAME,
+            outcome=github_check_outcome_for_status(status),
+            payload_summary=build_check_payload_summary(findings),
+            created_at=created_at,
+        )
+    )
+
+
 async def _complete_scan(
     session: AsyncSession,
     scan_task_id: uuid.UUID,
@@ -551,6 +597,15 @@ async def _complete_scan(
     )
     await scan_run_repo.update_status(
         scan_run_id, ScanRunStatus.COMPLETED, completed_at=completed_at
+    )
+    await _create_github_check_publication_if_eligible(
+        session,
+        repository_id,
+        scan_run_id,
+        ScanRunStatus.COMPLETED,
+        head_sha,
+        findings,
+        completed_at,
     )
     await session.commit()
     return True, logical_scan_duration_seconds(task.started_at, completed_at)
@@ -626,6 +681,17 @@ async def _mark_failed(
         scan_task_id, ScanTaskStatus.FAILED, completed_at=now, error_message=error_message
     )
     await scan_run_repo.update_status(task.scan_run_id, ScanRunStatus.FAILED, completed_at=now)
+    run = await scan_run_repo.get_by_id(task.scan_run_id)
+    if run is not None:
+        await _create_github_check_publication_if_eligible(
+            session,
+            run.repository_id,
+            task.scan_run_id,
+            ScanRunStatus.FAILED,
+            run.commit_sha,
+            [],
+            now,
+        )
     await session.commit()
     return (
         True,
@@ -825,9 +891,7 @@ def process_scan_task(
             lambda session: _mark_failed(session, task_id, error_message)
         )
         transitioned, scanner_type, scan_duration = mark_failed_result[:3]
-        mark_failed_scan_run_id = (
-            mark_failed_result[3] if len(mark_failed_result) >= 4 else None
-        )
+        mark_failed_scan_run_id = mark_failed_result[3] if len(mark_failed_result) >= 4 else None
         if transitioned:
             record_scan_terminal(scanner_type, "failed", _failure_category(exc), scan_duration)
             if mark_failed_scan_run_id is not None:
