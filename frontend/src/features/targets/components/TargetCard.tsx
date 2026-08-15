@@ -12,7 +12,7 @@ export function TargetCard({ target }: { target: ScanTarget }) {
         <Badge variant="outline">{target.is_active ? 'active' : 'inactive'}</Badge>
       </CardHeader>
       <CardContent className="flex items-center justify-between gap-4">
-        <span className="text-sm text-muted-foreground">
+        <span className="text-meta text-muted-foreground">
           {target.target_url}
         </span>
         <div className="flex items-center gap-2">

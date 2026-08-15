@@ -1,6 +1,6 @@
 import { QueryClientProvider } from '@tanstack/react-query'
 import { render, screen } from '@testing-library/react'
-import { http, HttpResponse } from 'msw'
+import { delay, http, HttpResponse } from 'msw'
 import { MemoryRouter } from 'react-router'
 import { describe, expect, it } from 'vitest'
 import { AuthProvider } from '@/app/auth/AuthProvider'
@@ -34,6 +34,32 @@ function renderPage() {
 }
 
 describe('TargetsPage', () => {
+  it('shows a card-grid skeleton while targets are loading', async () => {
+    server.use(
+      http.get('*/api/v1/targets', async () => {
+        await delay('infinite')
+        return HttpResponse.json([])
+      }),
+    )
+    const { container } = renderPage()
+
+    expect(
+      container.querySelectorAll('[data-slot="skeleton"]').length,
+    ).toBeGreaterThan(0)
+  })
+
+  it('shows an error state with a retry action when targets fail to load', async () => {
+    server.use(
+      http.get('*/api/v1/targets', () => new HttpResponse(null, { status: 500 })),
+    )
+    renderPage()
+
+    expect(await screen.findByRole('alert')).toBeInTheDocument()
+    expect(
+      screen.getByRole('button', { name: /retry/i }),
+    ).toBeInTheDocument()
+  })
+
   it('shows an empty state with a register action when there are no targets', async () => {
     server.use(http.get('*/api/v1/targets', () => HttpResponse.json([])))
     renderPage()

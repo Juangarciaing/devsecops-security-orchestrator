@@ -1,4 +1,6 @@
 import { useState } from 'react'
+import { CardGridSkeleton } from '@/shared/components/CardGridSkeleton'
+import { ErrorState } from '@/shared/components/ErrorState'
 import { Button } from '@/shared/ui/button'
 import { RegisterTargetDialog } from '../components/RegisterTargetDialog'
 import { TargetList } from '../components/TargetList'
@@ -13,18 +15,17 @@ export function TargetsPage() {
   return (
     <div className="flex flex-col gap-4">
       <div className="flex items-center justify-between">
-        <h2 className="text-xl font-semibold">Scan targets</h2>
+        <h2 className="text-heading">Scan targets</h2>
         <RegisterTargetDialog />
       </div>
 
-      {targetsQuery.isPending ? (
-        <p className="text-muted-foreground">Loading scan targets…</p>
-      ) : null}
+      {targetsQuery.isPending ? <CardGridSkeleton /> : null}
 
       {targetsQuery.isError ? (
-        <p role="alert" className="text-sm text-destructive">
-          Could not load scan targets.
-        </p>
+        <ErrorState
+          description="Could not load scan targets."
+          onRetry={() => targetsQuery.refetch()}
+        />
       ) : null}
 
       {targetsQuery.isSuccess ? (
