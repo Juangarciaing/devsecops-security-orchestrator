@@ -5,6 +5,7 @@ import { RepositoriesPage } from '@/features/repositories/pages/RepositoriesPage
 import { RepositoryDetailPage } from '@/features/repositories/pages/RepositoryDetailPage'
 import { ScanDetailPage } from '@/features/scans/pages/ScanDetailPage'
 import { TargetsPage } from '@/features/targets/pages/TargetsPage'
+import { WebhookDeliveriesPage } from '@/features/webhooks/pages/WebhookDeliveriesPage'
 import { AdminRoute } from './AdminRoute'
 import { AppLayout } from './AppLayout'
 import { PalettePreviewPage } from './PalettePreviewPage'
@@ -15,7 +16,7 @@ function NotFound() {
 }
 
 // Wired ahead of its feature UI — replaced by features/admin (PR6),
-// features/apikeys (PR7), features/webhooks (PR5).
+// features/apikeys (PR7).
 function Placeholder({ text }: { text: string }) {
   return <div className="text-muted-foreground">{text}</div>
 }
@@ -58,7 +59,7 @@ export const routes: RouteObject[] = [
         path: 'admin/webhooks',
         element: (
           <AdminRoute>
-            <Placeholder text="Admin: webhook deliveries audit." />
+            <WebhookDeliveriesPage />
           </AdminRoute>
         ),
       },

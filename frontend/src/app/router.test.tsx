@@ -91,6 +91,9 @@ describe('router', () => {
   ] as const)('lets an admin reach %s', async (path, expectedText) => {
     setToken('a-valid-token')
     mockCurrentUser('admin')
+    server.use(
+      http.get('*/api/v1/webhooks/deliveries', () => HttpResponse.json([])),
+    )
 
     renderAtPath(path)
 
