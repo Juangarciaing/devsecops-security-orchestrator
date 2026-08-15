@@ -11,9 +11,7 @@ export function AppLayout() {
       <AppSidebar role={auth.role} />
       <div className="flex flex-1 flex-col">
         <header className="flex items-center justify-between border-b px-6 py-4">
-          <h1 className="text-lg font-semibold tracking-tight">
-            DevSecOps Security Orchestrator
-          </h1>
+          <h1 className="text-heading">DevSecOps Security Orchestrator</h1>
           {auth.user ? (
             <UserMenu user={auth.user} onLogout={auth.logout} />
           ) : null}
