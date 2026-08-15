@@ -1,3 +1,4 @@
+import { EmptyState } from '@/shared/components/EmptyState'
 import type { CodeRepository } from '../types'
 import { RepositoryCard } from './RepositoryCard'
 
@@ -8,9 +9,10 @@ export function RepositoryList({
 }) {
   if (repositories.length === 0) {
     return (
-      <p className="text-sm text-muted-foreground">
-        No repositories registered yet. Register one to get started.
-      </p>
+      <EmptyState
+        title="No repositories registered yet"
+        description="Register one to get started."
+      />
     )
   }
 

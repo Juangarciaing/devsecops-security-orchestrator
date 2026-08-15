@@ -86,6 +86,16 @@ async function fetchScans(): Promise<ScanRun[]> {
   return data
 }
 
+// Recent scans across every repository, unfiltered (Req: First-Run
+// Onboarding) — used to detect whether any scan has ever completed, without
+// scoping to one repository the way `useRepositoryScans` does.
+export function useScans() {
+  return useQuery({
+    queryKey: ['scans', 'all'],
+    queryFn: fetchScans,
+  })
+}
+
 // `GET /api/v1/scans` has no `repository_id` filter server-side, so we fetch
 // the (limited) recent list and filter client-side. Fine at MVP scale; see
 // apply-progress deviations for the tracked gap if this needs a backend

@@ -1,3 +1,4 @@
+import { EmptyState } from '@/shared/components/EmptyState'
 import {
   Table,
   TableBody,
@@ -10,7 +11,12 @@ import { FindingRow } from './FindingRow'
 
 export function FindingsTable({ findings }: { findings: Finding[] }) {
   if (findings.length === 0) {
-    return <p className="text-sm text-muted-foreground">No findings to show.</p>
+    return (
+      <EmptyState
+        title="No findings to show"
+        description="Findings will appear here once a scan completes."
+      />
+    )
   }
 
   return (

@@ -1,11 +1,28 @@
 import { QueryClientProvider } from '@tanstack/react-query'
 import { render, screen, waitFor } from '@testing-library/react'
+import { http, HttpResponse } from 'msw'
 import { createMemoryRouter, RouterProvider } from 'react-router'
 import { afterEach, describe, expect, it } from 'vitest'
 import { AuthProvider } from '@/app/auth/AuthProvider'
+import { server } from '@/test/msw/server'
 import { createTestQueryClient } from '@/test/testQueryClient'
-import { clearToken } from '@/shared/api/token'
+import { clearToken, setToken } from '@/shared/api/token'
 import { routes } from './router'
+
+function mockCurrentUser(role: 'admin' | 'member') {
+  server.use(
+    http.get('*/api/v1/auth/me', () =>
+      HttpResponse.json({
+        id: 'u1',
+        email: `${role}@example.com`,
+        role,
+        is_active: true,
+        created_at: '2026-01-01T00:00:00Z',
+        updated_at: '2026-01-01T00:00:00Z',
+      }),
+    ),
+  )
+}
 
 function renderAtPath(initialPath: string) {
   const queryClient = createTestQueryClient()
@@ -52,5 +69,62 @@ describe('router', () => {
     expect(
       await screen.findByRole('button', { name: /log in/i }),
     ).toBeInTheDocument()
+  })
+
+  it.each(['/admin/users', '/admin/webhooks'])(
+    'shows an access-denied panel (not a redirect) for a member visiting %s',
+    async (path) => {
+      setToken('a-valid-token')
+      mockCurrentUser('member')
+
+      renderAtPath(path)
+
+      expect(await screen.findByRole('alert')).toHaveTextContent(
+        /access denied/i,
+      )
+    },
+  )
+
+  it.each([
+    [
+      '/admin/users',
+      /^users$/i,
+      () => server.use(http.get('*/api/v1/users', () => HttpResponse.json([]))),
+    ],
+    [
+      '/admin/webhooks',
+      /webhook deliveries audit/i,
+      () =>
+        server.use(
+          http.get('*/api/v1/webhooks/deliveries', () =>
+            HttpResponse.json([]),
+          ),
+        ),
+    ],
+  ] as const)('lets an admin reach %s', async (path, expectedText, setup) => {
+    setToken('a-valid-token')
+    mockCurrentUser('admin')
+    setup()
+
+    renderAtPath(path)
+
+    expect(await screen.findByText(expectedText)).toBeInTheDocument()
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+  })
+
+  it('lets any authed role (member) reach /settings/api-keys', async () => {
+    setToken('a-valid-token')
+    mockCurrentUser('member')
+    server.use(http.get('*/api/v1/auth/api-keys', () => HttpResponse.json([])))
+
+    renderAtPath('/settings/api-keys')
+
+    expect(
+      await screen.findByRole('heading', { name: /api keys/i }),
+    ).toBeInTheDocument()
+    expect(
+      screen.getByRole('button', { name: /issue new key/i }),
+    ).toBeInTheDocument()
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
   })
 })

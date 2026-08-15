@@ -9,6 +9,7 @@ import { TriggerScanButton } from '@/features/scans/components/TriggerScanButton
 import { useRepositoryScans } from '@/features/scans/queries'
 import { TrendsChart } from '@/features/trends/components/TrendsChart'
 import { useRepoTrends } from '@/features/trends/queries'
+import { CredentialBadge } from '../components/CredentialBadge'
 import { DeleteRepositoryButton } from '../components/DeleteRepositoryButton'
 import { useRepository } from '../queries'
 
@@ -44,6 +45,10 @@ export function RepositoryDetailPage() {
           </CardTitle>
           <div className="flex items-center gap-2">
             <Badge variant="outline">{repository.provider}</Badge>
+            <CredentialBadge
+              hasCredential={repository.has_credential}
+              credentialKind={repository.credential_kind}
+            />
             <PolicyGateBadge repositoryId={repository.id} />
           </div>
         </CardHeader>

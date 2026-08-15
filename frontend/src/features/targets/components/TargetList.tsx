@@ -1,12 +1,14 @@
+import { EmptyState } from '@/shared/components/EmptyState'
 import type { ScanTarget } from '../types'
 import { TargetCard } from './TargetCard'
 
 export function TargetList({ targets }: { targets: ScanTarget[] }) {
   if (targets.length === 0) {
     return (
-      <p className="text-sm text-muted-foreground">
-        No scan targets registered yet. Register one to get started.
-      </p>
+      <EmptyState
+        title="No scan targets registered yet"
+        description="Register one to get started."
+      />
     )
   }
 
