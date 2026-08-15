@@ -98,4 +98,30 @@ describe('FindingsTable', () => {
     expect(screen.getByText(/"match"/)).toBeInTheDocument()
     expect(screen.getByText(/"commit"/)).toBeInTheDocument()
   })
+
+  // Req7: severity stripe + non-color cue only on OPEN CRITICAL rows.
+  // fullFinding is severity: 'critical', status: 'open'.
+  it('renders the severity stripe and a non-color cue on an open critical row', () => {
+    renderTable([fullFinding])
+
+    const cell = screen.getByText('Critical').closest('td')
+    expect(cell).toHaveAttribute('data-critical', 'true')
+    expect(screen.getByText('Open critical finding')).toHaveClass('sr-only')
+  })
+
+  it('omits the severity stripe and cue on an open high-severity row (critical-or-high rejected)', () => {
+    renderTable([{ ...fullFinding, id: 'f3', severity: 'high', status: 'open' }])
+
+    const cell = screen.getByText('High').closest('td')
+    expect(cell).not.toHaveAttribute('data-critical')
+    expect(screen.queryByText('Open critical finding')).not.toBeInTheDocument()
+  })
+
+  it('omits the severity stripe and cue on a resolved critical row', () => {
+    renderTable([{ ...fullFinding, id: 'f4', status: 'resolved' }])
+
+    const cell = screen.getByText('Critical').closest('td')
+    expect(cell).not.toHaveAttribute('data-critical')
+    expect(screen.queryByText('Open critical finding')).not.toBeInTheDocument()
+  })
 })
