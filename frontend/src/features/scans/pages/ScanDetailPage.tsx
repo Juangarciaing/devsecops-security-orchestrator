@@ -1,11 +1,23 @@
 import { useParams, Link } from 'react-router'
 import { Card, CardContent, CardHeader, CardTitle } from '@/shared/ui/card'
+import { Table, TableHead, TableHeader, TableRow } from '@/shared/ui/table'
+import { CardGridSkeleton } from '@/shared/components/CardGridSkeleton'
+import { ErrorState } from '@/shared/components/ErrorState'
+import { TableSkeleton } from '@/shared/components/TableSkeleton'
 import { FindingsTable } from '@/features/findings/components/FindingsTable'
 import { useScanFindings } from '@/features/findings/queries'
 import { ScanStatusBadge } from '../components/ScanStatusBadge'
 import { isTerminalScanStatus } from '../types'
 import { useScan } from '../queries'
 
+// Matches FindingsTable's own header (Severity, Rule ID, Title, Status,
+// Location, action column) so the skeleton's shape doesn't shift on load.
+const FINDINGS_COLUMN_COUNT = 6
+
+// D5: no severity stripe here — `ScanRunDetail` only ever carries
+// `findings_count: number`, not a severity breakdown, so an open-critical
+// signal is not derivable from this page's own query. (The header-card
+// stripe lives on RepositoryDetail instead, driven by `useRepoTrends`.)
 export function ScanDetailPage() {
   const { id } = useParams<{ id: string }>()
   const scanQuery = useScan(id ?? '')
@@ -16,14 +28,15 @@ export function ScanDetailPage() {
   )
 
   if (scanQuery.isPending) {
-    return <p className="text-muted-foreground">Loading scan…</p>
+    return <CardGridSkeleton count={1} />
   }
 
   if (scanQuery.isError) {
     return (
-      <p role="alert" className="text-sm text-destructive">
-        Could not load this scan.
-      </p>
+      <ErrorState
+        description="Could not load this scan."
+        onRetry={() => scanQuery.refetch()}
+      />
     )
   }
 
@@ -38,7 +51,7 @@ export function ScanDetailPage() {
           <CardTitle>Scan {scan.id}</CardTitle>
           <ScanStatusBadge status={scan.status} />
         </CardHeader>
-        <CardContent className="flex flex-col gap-2 text-sm">
+        <CardContent className="flex flex-col gap-2 text-body">
           <p>
             <span className="text-muted-foreground">Repository: </span>
             <Link
@@ -78,14 +91,27 @@ export function ScanDetailPage() {
 
       {showFindings ? (
         <div className="flex flex-col gap-2">
-          <h3 className="text-lg font-semibold">Findings</h3>
+          <h3 className="text-subheading">Findings</h3>
           {scanFindingsQuery.isPending ? (
-            <p className="text-muted-foreground">Loading findings…</p>
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Severity</TableHead>
+                  <TableHead>Rule ID</TableHead>
+                  <TableHead>Title</TableHead>
+                  <TableHead>Status</TableHead>
+                  <TableHead>Location</TableHead>
+                  <TableHead />
+                </TableRow>
+              </TableHeader>
+              <TableSkeleton columns={FINDINGS_COLUMN_COUNT} />
+            </Table>
           ) : null}
           {scanFindingsQuery.isError ? (
-            <p role="alert" className="text-sm text-destructive">
-              Could not load findings.
-            </p>
+            <ErrorState
+              description="Could not load findings."
+              onRetry={() => scanFindingsQuery.refetch()}
+            />
           ) : null}
           {scanFindingsQuery.isSuccess ? (
             <FindingsTable findings={scanFindingsQuery.data} />

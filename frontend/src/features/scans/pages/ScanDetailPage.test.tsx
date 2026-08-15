@@ -1,6 +1,6 @@
 import { QueryClientProvider } from '@tanstack/react-query'
 import { act, render, screen } from '@testing-library/react'
-import { http, HttpResponse } from 'msw'
+import { delay, http, HttpResponse } from 'msw'
 import { MemoryRouter, Route, Routes } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { clearToken, setToken } from '@/shared/api/token'
@@ -310,6 +310,120 @@ describe('ScanDetailPage', () => {
 
       await screen.findByText('Running')
       expect(screen.queryByText(/no findings/i)).not.toBeInTheDocument()
+    })
+  })
+
+  describe('state coverage', () => {
+    const completedScan = {
+      ...baseScan,
+      status: 'completed',
+      task_status: 'completed',
+      completed_at: '2026-01-01T00:05:00Z',
+      findings_count: 1,
+    }
+    const criticalFinding = {
+      id: 'f1',
+      scan_task_id: 't1',
+      severity: 'critical',
+      status: 'open',
+      rule_id: 'generic-api-key',
+      title: 'Hardcoded API key',
+      fingerprint: 'abc123',
+      created_at: '2026-01-01T00:00:00Z',
+      updated_at: '2026-01-01T00:00:00Z',
+      description: null,
+      file_path: null,
+      line_number: null,
+      raw_evidence: null,
+      snippet: null,
+      repository_id: 'r1',
+      first_seen_scan_run_id: 's1',
+      last_seen_scan_run_id: 's1',
+    }
+
+    it('shows a loading skeleton while the scan is loading', async () => {
+      server.use(
+        http.get('*/api/v1/scans/s1', async () => {
+          await delay('infinite')
+          return HttpResponse.json({
+            ...baseScan,
+            status: 'running',
+            task_status: 'running',
+            findings_count: 0,
+          })
+        }),
+      )
+      const { container } = renderPage('s1')
+
+      expect(
+        container.querySelectorAll('[data-slot="skeleton"]').length,
+      ).toBeGreaterThan(0)
+    })
+
+    it('shows an error state with retry when the scan fails to load', async () => {
+      server.use(
+        http.get(
+          '*/api/v1/scans/s1',
+          () => new HttpResponse(null, { status: 500 }),
+        ),
+      )
+      renderPage('s1')
+
+      expect(await screen.findByRole('alert')).toBeInTheDocument()
+      expect(screen.getByText(/could not load this scan/i)).toBeInTheDocument()
+      expect(
+        screen.getByRole('button', { name: /retry/i }),
+      ).toBeInTheDocument()
+    })
+
+    it('shows a table skeleton while findings are loading for a completed scan', async () => {
+      server.use(
+        http.get('*/api/v1/scans/s1', () => HttpResponse.json(completedScan)),
+        http.get('*/api/v1/scans/s1/findings', async () => {
+          await delay('infinite')
+          return HttpResponse.json([])
+        }),
+      )
+      const { container } = renderPage('s1')
+
+      await screen.findByText('Completed')
+      expect(
+        container.querySelectorAll('[data-slot="skeleton"]').length,
+      ).toBeGreaterThan(0)
+    })
+
+    it('shows an error state with retry when findings fail to load for a completed scan', async () => {
+      server.use(
+        http.get('*/api/v1/scans/s1', () => HttpResponse.json(completedScan)),
+        http.get(
+          '*/api/v1/scans/s1/findings',
+          () => new HttpResponse(null, { status: 500 }),
+        ),
+      )
+      renderPage('s1')
+
+      expect(
+        await screen.findByText(/could not load findings/i),
+      ).toBeInTheDocument()
+    })
+
+    it('does not render a severity stripe anywhere on the scan-detail header (D5: ScanRun carries no severity data)', async () => {
+      server.use(
+        http.get('*/api/v1/scans/s1', () => HttpResponse.json(completedScan)),
+        http.get('*/api/v1/scans/s1/findings', () =>
+          HttpResponse.json([criticalFinding]),
+        ),
+      )
+      const { container } = renderPage('s1')
+
+      await screen.findByText('Hardcoded API key')
+      const headerCard = screen.getByText('Scan s1').closest('[data-slot="card"]')
+      expect(headerCard).not.toHaveAttribute('data-critical')
+      expect(
+        container.querySelector(
+          '[data-critical="true"]:not([data-slot="table-cell"])',
+        ),
+      ).not.toBeInTheDocument()
     })
   })
 })
