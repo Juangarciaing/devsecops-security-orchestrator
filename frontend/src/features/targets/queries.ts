@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { apiClient } from '@/shared/api/client'
-import type { ScanRun } from '@/features/scans/types'
+import type { ScanRun, ScannerType } from '@/features/scans/types'
 import type { RegisterScanTargetInput, ScanTarget } from './types'
 
 async function fetchScanTargets(): Promise<ScanTarget[]> {
@@ -61,6 +61,10 @@ export function useDeactivateScanTarget() {
 
 interface TriggerTargetScanArgs {
   targetId: string
+  // Forwarded on the request body for parity with the repository trigger
+  // contract. The backend route currently hardcodes DAST for target scans
+  // and does not read this field yet (PR8 deviation — see apply-progress).
+  scanner_type?: ScannerType
 }
 
 interface TriggerTargetScanResult {
@@ -73,9 +77,11 @@ interface TriggerTargetScanResult {
 
 async function triggerTargetScan({
   targetId,
+  scanner_type,
 }: TriggerTargetScanArgs): Promise<TriggerTargetScanResult> {
   const response = await apiClient.post<ScanRun>(
     `/api/v1/targets/${targetId}/scans`,
+    { scanner_type },
   )
   return { run: response.data, status: response.status }
 }
