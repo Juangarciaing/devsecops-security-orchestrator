@@ -1,11 +1,17 @@
 import { useState } from 'react'
+import { ErrorState } from '@/shared/components/ErrorState'
+import { TableSkeleton } from '@/shared/components/TableSkeleton'
 import { Button } from '@/shared/ui/button'
+import { Table, TableHead, TableHeader, TableRow } from '@/shared/ui/table'
 import { useFindings } from '../queries'
 import type { FindingFilters as FindingFiltersValue } from '../types'
 import { FindingFilters } from '../components/FindingFilters'
 import { FindingsTable } from '../components/FindingsTable'
 
 const PAGE_SIZE = 20
+// Matches FindingsTable's own header (Severity, Rule ID, Title, Status,
+// Location, action column) so the skeleton's shape doesn't shift on load.
+const TABLE_COLUMN_COUNT = 6
 
 export function FindingsPage() {
   const [filters, setFilters] = useState<FindingFiltersValue>({})
@@ -30,18 +36,31 @@ export function FindingsPage() {
 
   return (
     <div className="flex flex-col gap-4">
-      <h2 className="text-xl font-semibold">Findings</h2>
+      <h2 className="text-heading">Findings</h2>
 
       <FindingFilters filters={filters} onChange={handleFiltersChange} />
 
       {findingsQuery.isPending ? (
-        <p className="text-muted-foreground">Loading findings…</p>
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead>Severity</TableHead>
+              <TableHead>Rule ID</TableHead>
+              <TableHead>Title</TableHead>
+              <TableHead>Status</TableHead>
+              <TableHead>Location</TableHead>
+              <TableHead />
+            </TableRow>
+          </TableHeader>
+          <TableSkeleton columns={TABLE_COLUMN_COUNT} />
+        </Table>
       ) : null}
 
       {findingsQuery.isError ? (
-        <p role="alert" className="text-sm text-destructive">
-          Could not load findings.
-        </p>
+        <ErrorState
+          description="Could not load findings."
+          onRetry={() => findingsQuery.refetch()}
+        />
       ) : null}
 
       {findingsQuery.isSuccess ? (
