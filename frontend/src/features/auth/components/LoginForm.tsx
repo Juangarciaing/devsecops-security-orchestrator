@@ -41,7 +41,9 @@ export function LoginForm() {
   return (
     <form onSubmit={onSubmit} noValidate className="flex flex-col gap-4">
       <div className="flex flex-col gap-2">
-        <Label htmlFor="email">Email</Label>
+        <Label htmlFor="email" className="text-label">
+          Email
+        </Label>
         <Input
           id="email"
           type="email"
@@ -49,13 +51,15 @@ export function LoginForm() {
           {...register('email')}
         />
         {errors.email ? (
-          <p role="alert" className="text-sm text-destructive">
+          <p role="alert" className="text-meta text-destructive">
             {errors.email.message}
           </p>
         ) : null}
       </div>
       <div className="flex flex-col gap-2">
-        <Label htmlFor="password">Password</Label>
+        <Label htmlFor="password" className="text-label">
+          Password
+        </Label>
         <Input
           id="password"
           type="password"
@@ -63,13 +67,13 @@ export function LoginForm() {
           {...register('password')}
         />
         {errors.password ? (
-          <p role="alert" className="text-sm text-destructive">
+          <p role="alert" className="text-meta text-destructive">
             {errors.password.message}
           </p>
         ) : null}
       </div>
       {loginMutation.isError ? (
-        <p role="alert" className="text-sm text-destructive">
+        <p role="alert" className="text-meta text-destructive">
           {parseProblemMessage(loginMutation.error)}
         </p>
       ) : null}
