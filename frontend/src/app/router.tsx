@@ -1,4 +1,6 @@
 import { createBrowserRouter, type RouteObject } from 'react-router'
+import { AdminUsersPage } from '@/features/admin/pages/AdminUsersPage'
+import { ApiKeysPage } from '@/features/apikeys/pages/ApiKeysPage'
 import { LoginPage } from '@/features/auth/pages/LoginPage'
 import { FindingsPage } from '@/features/findings/pages/FindingsPage'
 import { RepositoriesPage } from '@/features/repositories/pages/RepositoriesPage'
@@ -13,12 +15,6 @@ import { ProtectedRoute } from './ProtectedRoute'
 
 function NotFound() {
   return <div className="text-muted-foreground">Not found.</div>
-}
-
-// Wired ahead of its feature UI — replaced by features/admin (PR6),
-// features/apikeys (PR7).
-function Placeholder({ text }: { text: string }) {
-  return <div className="text-muted-foreground">{text}</div>
 }
 
 // Dev-only design-token preview (task 1.6) — never linked from nav, and
@@ -51,7 +47,7 @@ export const routes: RouteObject[] = [
         path: 'admin/users',
         element: (
           <AdminRoute>
-            <Placeholder text="Admin: manage users." />
+            <AdminUsersPage />
           </AdminRoute>
         ),
       },
@@ -65,7 +61,7 @@ export const routes: RouteObject[] = [
       },
       {
         path: 'settings/api-keys',
-        element: <Placeholder text="Manage your API keys." />,
+        element: <ApiKeysPage />,
       },
       { path: '*', element: <NotFound /> },
     ],

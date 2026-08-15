@@ -86,14 +86,25 @@ describe('router', () => {
   )
 
   it.each([
-    ['/admin/users', /manage users/i],
-    ['/admin/webhooks', /webhook deliveries audit/i],
-  ] as const)('lets an admin reach %s', async (path, expectedText) => {
+    [
+      '/admin/users',
+      /^users$/i,
+      () => server.use(http.get('*/api/v1/users', () => HttpResponse.json([]))),
+    ],
+    [
+      '/admin/webhooks',
+      /webhook deliveries audit/i,
+      () =>
+        server.use(
+          http.get('*/api/v1/webhooks/deliveries', () =>
+            HttpResponse.json([]),
+          ),
+        ),
+    ],
+  ] as const)('lets an admin reach %s', async (path, expectedText, setup) => {
     setToken('a-valid-token')
     mockCurrentUser('admin')
-    server.use(
-      http.get('*/api/v1/webhooks/deliveries', () => HttpResponse.json([])),
-    )
+    setup()
 
     renderAtPath(path)
 
@@ -104,10 +115,16 @@ describe('router', () => {
   it('lets any authed role (member) reach /settings/api-keys', async () => {
     setToken('a-valid-token')
     mockCurrentUser('member')
+    server.use(http.get('*/api/v1/auth/api-keys', () => HttpResponse.json([])))
 
     renderAtPath('/settings/api-keys')
 
-    expect(await screen.findByText(/manage your api keys/i)).toBeInTheDocument()
+    expect(
+      await screen.findByRole('heading', { name: /api keys/i }),
+    ).toBeInTheDocument()
+    expect(
+      screen.getByRole('button', { name: /issue new key/i }),
+    ).toBeInTheDocument()
     expect(screen.queryByRole('alert')).not.toBeInTheDocument()
   })
 })

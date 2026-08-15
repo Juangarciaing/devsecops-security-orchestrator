@@ -1,4 +1,7 @@
 import { useState } from 'react'
+import { useFindings } from '@/features/findings/queries'
+import { useScans } from '@/features/scans/queries'
+import { OnboardingChecklist } from '@/shared/components/OnboardingChecklist'
 import { Button } from '@/shared/ui/button'
 import { RegisterRepositoryDialog } from '../components/RegisterRepositoryDialog'
 import { RepositoryList } from '../components/RepositoryList'
@@ -8,6 +11,8 @@ const PAGE_SIZE = 10
 
 export function RepositoriesPage() {
   const repositoriesQuery = useRepositories()
+  const scansQuery = useScans()
+  const findingsQuery = useFindings({ limit: 1 })
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE)
 
   return (
@@ -29,6 +34,14 @@ export function RepositoriesPage() {
 
       {repositoriesQuery.isSuccess ? (
         <>
+          <OnboardingChecklist
+            hasRepository={repositoriesQuery.data.length > 0}
+            hasCompletedScan={
+              scansQuery.data?.some((scan) => scan.status === 'completed') ??
+              false
+            }
+            hasFinding={(findingsQuery.data?.length ?? 0) > 0}
+          />
           <RepositoryList
             repositories={repositoriesQuery.data.slice(0, visibleCount)}
           />

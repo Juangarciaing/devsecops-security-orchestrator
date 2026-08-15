@@ -3,6 +3,7 @@ import { Badge } from '@/shared/ui/badge'
 import { Card, CardContent, CardHeader, CardTitle } from '@/shared/ui/card'
 import { TriggerScanButton } from '@/features/scans/components/TriggerScanButton'
 import type { CodeRepository } from '../types'
+import { CredentialBadge } from './CredentialBadge'
 import { DeleteRepositoryButton } from './DeleteRepositoryButton'
 
 export function RepositoryCard({ repository }: { repository: CodeRepository }) {
@@ -17,7 +18,13 @@ export function RepositoryCard({ repository }: { repository: CodeRepository }) {
             {repository.owner}/{repository.name}
           </Link>
         </CardTitle>
-        <Badge variant="outline">{repository.provider}</Badge>
+        <div className="flex items-center gap-2">
+          <Badge variant="outline">{repository.provider}</Badge>
+          <CredentialBadge
+            hasCredential={repository.has_credential}
+            credentialKind={repository.credential_kind}
+          />
+        </div>
       </CardHeader>
       <CardContent className="flex items-center justify-between gap-4">
         <span className="text-sm text-muted-foreground">

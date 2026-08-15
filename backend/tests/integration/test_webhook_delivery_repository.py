@@ -121,3 +121,96 @@ async def _exists_returns_false_for_unknown_delivery_id() -> None:
 
 def test_exists_returns_false_for_unknown_delivery_id(migrated_schema: None) -> None:
     asyncio.run(_exists_returns_false_for_unknown_delivery_id())
+
+
+async def _list_recent_orders_newest_first_by_received_at_then_id() -> None:
+    """design D9: `ORDER BY received_at DESC, id DESC` — two rows sharing the
+    exact same `received_at` must still resolve deterministically by `id`."""
+    engine = create_async_engine(resolve_database_url())
+    sessionmaker = async_sessionmaker(engine, expire_on_commit=False)
+    try:
+        tie_time = datetime(2025, 6, 1, 12, 0, 0)
+        older = WebhookDelivery(
+            id=uuid.UUID("00000000-0000-0000-0000-000000000001"),
+            signature_valid=True,
+            outcome=WebhookOutcome.ACCEPTED,
+            received_at=datetime(2025, 1, 1),
+            delivery_id=f"delivery-order-old-{uuid.uuid4()}",
+        )
+        tie_low_id = WebhookDelivery(
+            id=uuid.UUID("00000000-0000-0000-0000-000000000010"),
+            signature_valid=True,
+            outcome=WebhookOutcome.ACCEPTED,
+            received_at=tie_time,
+            delivery_id=f"delivery-order-tie-low-{uuid.uuid4()}",
+        )
+        tie_high_id = WebhookDelivery(
+            id=uuid.UUID("00000000-0000-0000-0000-000000000020"),
+            signature_valid=True,
+            outcome=WebhookOutcome.ACCEPTED,
+            received_at=tie_time,
+            delivery_id=f"delivery-order-tie-high-{uuid.uuid4()}",
+        )
+
+        async with sessionmaker() as session:
+            repository = SqlAlchemyWebhookDeliveryRepository(session)
+            for delivery in (older, tie_low_id, tie_high_id):
+                await repository.record(delivery)
+            await session.commit()
+
+        async with sessionmaker() as session:
+            repository = SqlAlchemyWebhookDeliveryRepository(session)
+            result = await repository.list_recent(limit=100, offset=0)
+
+        result_ids = [row.id for row in result]
+        # Both tie-broken rows sort before the older row, and within the tie,
+        # the higher id sorts first — proves `id DESC` is a real tiebreaker,
+        # not incidental insertion order.
+        assert result_ids.index(tie_high_id.id) < result_ids.index(tie_low_id.id)
+        assert result_ids.index(tie_low_id.id) < result_ids.index(older.id)
+    finally:
+        await engine.dispose()
+
+
+def test_list_recent_orders_newest_first_by_received_at_then_id(migrated_schema: None) -> None:
+    asyncio.run(_list_recent_orders_newest_first_by_received_at_then_id())
+
+
+async def _list_recent_paginates_without_row_reappearing_on_next_page() -> None:
+    engine = create_async_engine(resolve_database_url())
+    sessionmaker = async_sessionmaker(engine, expire_on_commit=False)
+    try:
+        deliveries = [
+            WebhookDelivery(
+                id=uuid.uuid4(),
+                signature_valid=True,
+                outcome=WebhookOutcome.ACCEPTED,
+                received_at=datetime(2025, 3, 1, 0, 0, i),
+                delivery_id=f"delivery-page-{i}-{uuid.uuid4()}",
+            )
+            for i in range(5)
+        ]
+
+        async with sessionmaker() as session:
+            repository = SqlAlchemyWebhookDeliveryRepository(session)
+            for delivery in deliveries:
+                await repository.record(delivery)
+            await session.commit()
+
+        async with sessionmaker() as session:
+            repository = SqlAlchemyWebhookDeliveryRepository(session)
+            page_one = await repository.list_recent(limit=3, offset=0)
+            page_two = await repository.list_recent(limit=3, offset=3)
+
+        page_one_ids = {row.id for row in page_one}
+        page_two_ids = {row.id for row in page_two}
+
+        assert len(page_one) == 3
+        # No row from page 1 reappears on page 2.
+        assert page_one_ids.isdisjoint(page_two_ids)
+    finally:
+        await engine.dispose()
+
+
+def test_list_recent_pagination_no_row_reappears_on_next_page(migrated_schema: None) -> None:
+    asyncio.run(_list_recent_paginates_without_row_reappearing_on_next_page())

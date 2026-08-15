@@ -149,6 +149,9 @@ class _FakeWebhookDeliveryRepository(WebhookDeliveryPort):
         if delivery.delivery_id is not None:
             self._delivery_ids.add(delivery.delivery_id)
 
+    async def list_recent(self, limit: int, offset: int) -> list[WebhookDelivery]:
+        return []  # pragma: no cover — unused in these tests, only present to satisfy the ABC
+
 
 def _make_repository(**overrides: object) -> CodeRepository:
     defaults: dict[str, object] = {
