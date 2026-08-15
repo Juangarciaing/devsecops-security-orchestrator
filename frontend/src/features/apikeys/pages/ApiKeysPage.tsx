@@ -8,6 +8,7 @@ import {
   TableRow,
 } from '@/shared/ui/table'
 import { IssueApiKeyDialog } from '../components/IssueApiKeyDialog'
+import { RevokeApiKeyButton } from '../components/RevokeApiKeyButton'
 import { useApiKeys } from '../queries'
 
 export function ApiKeysPage() {
@@ -42,6 +43,7 @@ export function ApiKeysPage() {
               <TableHead>Status</TableHead>
               <TableHead>Created</TableHead>
               <TableHead>Last used</TableHead>
+              <TableHead />
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -58,6 +60,9 @@ export function ApiKeysPage() {
                   {key.last_used_at
                     ? new Date(key.last_used_at).toLocaleDateString()
                     : 'Never'}
+                </TableCell>
+                <TableCell>
+                  {key.is_active ? <RevokeApiKeyButton keyId={key.id} /> : null}
                 </TableCell>
               </TableRow>
             ))}

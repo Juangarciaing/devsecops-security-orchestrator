@@ -5,7 +5,7 @@ import type { ReactNode } from 'react'
 import { describe, expect, it } from 'vitest'
 import { server } from '@/test/msw/server'
 import { createTestQueryClient } from '@/test/testQueryClient'
-import { useApiKeys, useIssueApiKey } from './queries'
+import { useApiKeys, useIssueApiKey, useRevokeApiKey } from './queries'
 
 function wrapper({ children }: { children: ReactNode }) {
   const queryClient = createTestQueryClient()
@@ -53,5 +53,22 @@ describe('useIssueApiKey', () => {
       api_key: ownKey,
       raw_key: 'sk_ab12cd34ef56',
     })
+  })
+})
+
+describe('useRevokeApiKey', () => {
+  it('revokes a key and invalidates the list query', async () => {
+    const revokedKey = { ...ownKey, is_active: false, revoked_at: '2026-01-02T00:00:00Z' }
+    server.use(
+      http.post('*/api/v1/auth/api-keys/k1/revoke', () =>
+        HttpResponse.json(revokedKey),
+      ),
+    )
+    const { result } = renderHook(() => useRevokeApiKey(), { wrapper })
+
+    result.current.mutate('k1')
+
+    await waitFor(() => expect(result.current.isSuccess).toBe(true))
+    expect(result.current.data).toEqual(revokedKey)
   })
 })

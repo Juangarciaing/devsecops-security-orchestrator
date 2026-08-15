@@ -34,3 +34,22 @@ export function useIssueApiKey() {
     },
   })
 }
+
+async function revokeApiKey(keyId: string): Promise<ApiKey> {
+  // Backend returns 200 ApiKeyRead (not 204) with is_active=false/revoked_at
+  // set — see design D8, verified against auth.py:79-96.
+  const { data } = await apiClient.post<ApiKey>(
+    `/api/v1/auth/api-keys/${keyId}/revoke`,
+  )
+  return data
+}
+
+export function useRevokeApiKey() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: revokeApiKey,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: API_KEYS_QUERY_KEY })
+    },
+  })
+}
