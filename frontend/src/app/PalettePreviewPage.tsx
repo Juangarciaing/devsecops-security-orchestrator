@@ -88,15 +88,15 @@ const SIDEBAR_SWATCHES: Swatch[] = [
 function SwatchGrid({ title, swatches }: { title: string; swatches: Swatch[] }) {
   return (
     <section className="space-y-3">
-      <h2 className="text-lg font-semibold">{title}</h2>
+      <h2 className="text-heading">{title}</h2>
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
         {swatches.map((swatch) => (
           <div
             key={swatch.name}
             className={`flex h-24 flex-col justify-between rounded-lg p-3 ${swatch.className}`}
           >
-            <span className="font-mono text-xs">{swatch.name}</span>
-            <span className="text-xs opacity-80">{swatch.usedBy}</span>
+            <span className="font-mono text-meta">{swatch.name}</span>
+            <span className="text-meta opacity-80">{swatch.usedBy}</span>
           </div>
         ))}
       </div>
@@ -127,11 +127,11 @@ const TYPE_SCALE_STEPS: TypeScaleStep[] = [
 function TypographySection() {
   return (
     <section className="space-y-3">
-      <h2 className="text-lg font-semibold">Typography</h2>
+      <h2 className="text-heading">Typography</h2>
       <div className="space-y-2 rounded-lg border border-border bg-card p-4">
         {TYPE_SCALE_STEPS.map((step) => (
           <div key={step.name} className="flex flex-wrap items-baseline gap-4">
-            <span className="w-36 shrink-0 font-mono text-xs text-muted-foreground">
+            <span className="w-36 shrink-0 font-mono text-meta text-muted-foreground">
               {step.name}
             </span>
             <p className={step.className}>{step.sample}</p>
@@ -153,14 +153,14 @@ const ELEVATION_BOXES: ElevationBox[] = [
 function ElevationSection() {
   return (
     <section className="space-y-3">
-      <h2 className="text-lg font-semibold">Elevation</h2>
+      <h2 className="text-heading">Elevation</h2>
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
         {ELEVATION_BOXES.map((box) => (
           <div
             key={box.name}
             className={`flex h-24 flex-col justify-between rounded-lg p-3 ${box.bgClassName} ${box.shadowClassName}`}
           >
-            <span className="font-mono text-xs">{box.name}</span>
+            <span className="font-mono text-meta">{box.name}</span>
           </div>
         ))}
       </div>
@@ -171,17 +171,17 @@ function ElevationSection() {
 function MotionSection() {
   return (
     <section className="space-y-3">
-      <h2 className="text-lg font-semibold">Motion</h2>
+      <h2 className="text-heading">Motion</h2>
       <div className="flex flex-wrap items-center gap-6 rounded-lg border border-border bg-card p-4">
         <div className="flex flex-col items-center gap-2">
           <div className="animate-row-in h-16 w-16 rounded-lg bg-primary" />
-          <span className="font-mono text-xs text-muted-foreground">
+          <span className="font-mono text-meta text-muted-foreground">
             animate-row-in (plays on mount)
           </span>
         </div>
         <div className="flex flex-col items-center gap-2">
           <div className="animate-status-pulse h-16 w-16 rounded-full bg-status-running" />
-          <span className="font-mono text-xs text-muted-foreground">
+          <span className="font-mono text-meta text-muted-foreground">
             animate-status-pulse (loops)
           </span>
         </div>
@@ -197,7 +197,7 @@ function MotionSection() {
 function FontsSection() {
   return (
     <section className="space-y-3">
-      <h2 className="text-lg font-semibold">Fonts</h2>
+      <h2 className="text-heading">Fonts</h2>
       <div className="space-y-2 rounded-lg border border-border bg-card p-4">
         <p className="font-sans text-body font-normal">
           font-sans 400 — The quick brown fox jumps over the lazy dog
@@ -223,8 +223,8 @@ export function PalettePreviewPage() {
   return (
     <div className="min-h-screen space-y-8 bg-background p-8 text-foreground">
       <div>
-        <h1 className="text-2xl font-bold">New design token preview</h1>
-        <p className="text-muted-foreground">
+        <h1 className="text-display">New design token preview</h1>
+        <p className="text-body text-muted-foreground">
           Dev-only route — verify every swatch label reads with AA contrast
           before approving PR1.
         </p>

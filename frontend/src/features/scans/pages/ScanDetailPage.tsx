@@ -2,11 +2,13 @@ import { useParams, Link } from 'react-router'
 import { Card, CardContent, CardHeader, CardTitle } from '@/shared/ui/card'
 import { Table, TableHead, TableHeader, TableRow } from '@/shared/ui/table'
 import { CardGridSkeleton } from '@/shared/components/CardGridSkeleton'
+import { CriticalCue, SeverityStripe } from '@/shared/components/SeverityStripe'
 import { ErrorState } from '@/shared/components/ErrorState'
 import { TableSkeleton } from '@/shared/components/TableSkeleton'
 import { FindingsTable } from '@/features/findings/components/FindingsTable'
 import { useScanFindings } from '@/features/findings/queries'
 import { ScanStatusBadge } from '../components/ScanStatusBadge'
+import { hasOpenCriticalFindings } from '../severity'
 import { isTerminalScanStatus } from '../types'
 import { useScan } from '../queries'
 
@@ -14,10 +16,6 @@ import { useScan } from '../queries'
 // Location, action column) so the skeleton's shape doesn't shift on load.
 const FINDINGS_COLUMN_COUNT = 6
 
-// D5: no severity stripe here — `ScanRunDetail` only ever carries
-// `findings_count: number`, not a severity breakdown, so an open-critical
-// signal is not derivable from this page's own query. (The header-card
-// stripe lives on RepositoryDetail instead, driven by `useRepoTrends`.)
 export function ScanDetailPage() {
   const { id } = useParams<{ id: string }>()
   const scanQuery = useScan(id ?? '')
@@ -43,51 +41,60 @@ export function ScanDetailPage() {
   const scan = scanQuery.data
 
   const showFindings = isTerminalScanStatus(scan.status)
+  // Req7/D5 (revised): `false` while findings are pending/errored/not yet
+  // fetched (non-terminal scan) — `scanFindingsQuery.data` is `undefined`
+  // in all of those cases, so `?? []` short-circuits to inactive.
+  const critical = hasOpenCriticalFindings(scanFindingsQuery.data ?? [])
 
   return (
     <div className="flex flex-col gap-4">
-      <Card className="max-w-2xl">
-        <CardHeader className="flex flex-row items-center justify-between">
-          <CardTitle>Scan {scan.id}</CardTitle>
-          <ScanStatusBadge status={scan.status} />
-        </CardHeader>
-        <CardContent className="flex flex-col gap-2 text-body">
-          <p>
-            <span className="text-muted-foreground">Repository: </span>
-            <Link
-              to={`/repositories/${scan.repository_id}`}
-              className="font-medium text-primary underline-offset-4 hover:underline"
-            >
-              {scan.repository_id}
-            </Link>
-          </p>
-          <p>
-            <span className="text-muted-foreground">Ref: </span>
-            {scan.ref}
-          </p>
-          <p>
-            <span className="text-muted-foreground">Trigger: </span>
-            {scan.trigger}
-          </p>
-          <p>
-            <span className="text-muted-foreground">Created: </span>
-            {new Date(scan.created_at).toLocaleString()}
-          </p>
-          {scan.status === 'failed' ? (
-            <p role="alert" className="text-destructive">
-              Scan failed. Findings may be incomplete.
-            </p>
-          ) : null}
-          {scan.status === 'completed' || scan.status === 'failed' ? (
+      <SeverityStripe active={critical}>
+        <Card className="max-w-2xl">
+          <CardHeader className="flex flex-row items-center justify-between">
+            <CardTitle>Scan {scan.id}</CardTitle>
+            <div className="flex items-center gap-2">
+              <CriticalCue active={critical} />
+              <ScanStatusBadge status={scan.status} />
+            </div>
+          </CardHeader>
+          <CardContent className="flex flex-col gap-2 text-body">
             <p>
-              <span className="text-muted-foreground">Findings: </span>
-              {scan.findings_count}
+              <span className="text-muted-foreground">Repository: </span>
+              <Link
+                to={`/repositories/${scan.repository_id}`}
+                className="font-medium text-primary underline-offset-4 hover:underline"
+              >
+                {scan.repository_id}
+              </Link>
             </p>
-          ) : (
-            <p className="text-muted-foreground">Scan in progress…</p>
-          )}
-        </CardContent>
-      </Card>
+            <p>
+              <span className="text-muted-foreground">Ref: </span>
+              {scan.ref}
+            </p>
+            <p>
+              <span className="text-muted-foreground">Trigger: </span>
+              {scan.trigger}
+            </p>
+            <p>
+              <span className="text-muted-foreground">Created: </span>
+              {new Date(scan.created_at).toLocaleString()}
+            </p>
+            {scan.status === 'failed' ? (
+              <p role="alert" className="text-destructive">
+                Scan failed. Findings may be incomplete.
+              </p>
+            ) : null}
+            {scan.status === 'completed' || scan.status === 'failed' ? (
+              <p>
+                <span className="text-muted-foreground">Findings: </span>
+                {scan.findings_count}
+              </p>
+            ) : (
+              <p className="text-muted-foreground">Scan in progress…</p>
+            )}
+          </CardContent>
+        </Card>
+      </SeverityStripe>
 
       {showFindings ? (
         <div className="flex flex-col gap-2">
