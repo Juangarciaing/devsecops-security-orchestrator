@@ -1,3 +1,5 @@
+import { ErrorState } from '@/shared/components/ErrorState'
+import { TableSkeleton } from '@/shared/components/TableSkeleton'
 import { Badge } from '@/shared/ui/badge'
 import {
   Table,
@@ -10,26 +12,40 @@ import {
 import { CreateUserDialog } from '../components/CreateUserDialog'
 import { useUsers } from '../queries'
 
+// Matches this table's own header (Email, Role, Status) so the skeleton's
+// shape doesn't shift on load.
+const TABLE_COLUMN_COUNT = 3
+
 export function AdminUsersPage() {
   const usersQuery = useUsers()
 
   return (
     <div className="flex flex-col gap-4">
       <div className="flex items-center justify-between">
-        <h2 className="text-xl font-semibold">Users</h2>
+        <h2 className="text-heading">Users</h2>
         <CreateUserDialog />
       </div>
 
       {usersQuery.isPending ? (
-        <p className="text-muted-foreground">Loading users…</p>
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead>Email</TableHead>
+              <TableHead>Role</TableHead>
+              <TableHead>Status</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableSkeleton columns={TABLE_COLUMN_COUNT} />
+        </Table>
       ) : null}
       {usersQuery.isError ? (
-        <p role="alert" className="text-sm text-destructive">
-          Could not load users.
-        </p>
+        <ErrorState
+          description="Could not load users."
+          onRetry={() => usersQuery.refetch()}
+        />
       ) : null}
       {usersQuery.isSuccess && usersQuery.data.length === 0 ? (
-        <p className="text-sm text-muted-foreground">No users yet.</p>
+        <p className="text-body text-muted-foreground">No users yet.</p>
       ) : null}
 
       {usersQuery.isSuccess && usersQuery.data.length > 0 ? (

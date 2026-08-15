@@ -1,3 +1,5 @@
+import { ErrorState } from '@/shared/components/ErrorState'
+import { TableSkeleton } from '@/shared/components/TableSkeleton'
 import { Badge } from '@/shared/ui/badge'
 import {
   Table,
@@ -11,26 +13,44 @@ import { IssueApiKeyDialog } from '../components/IssueApiKeyDialog'
 import { RevokeApiKeyButton } from '../components/RevokeApiKeyButton'
 import { useApiKeys } from '../queries'
 
+// Matches this table's own header (Key, Status, Created, Last used, action
+// column) so the skeleton's shape doesn't shift on load.
+const TABLE_COLUMN_COUNT = 5
+
 export function ApiKeysPage() {
   const apiKeysQuery = useApiKeys()
 
   return (
     <div className="flex flex-col gap-4">
       <div className="flex items-center justify-between">
-        <h2 className="text-xl font-semibold">API keys</h2>
+        <h2 className="text-heading">API keys</h2>
         <IssueApiKeyDialog />
       </div>
 
       {apiKeysQuery.isPending ? (
-        <p className="text-muted-foreground">Loading API keys…</p>
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead>Key</TableHead>
+              <TableHead>Status</TableHead>
+              <TableHead>Created</TableHead>
+              <TableHead>Last used</TableHead>
+              <TableHead />
+            </TableRow>
+          </TableHeader>
+          <TableSkeleton columns={TABLE_COLUMN_COUNT} />
+        </Table>
       ) : null}
+
       {apiKeysQuery.isError ? (
-        <p role="alert" className="text-sm text-destructive">
-          Could not load your API keys.
-        </p>
+        <ErrorState
+          description="Could not load your API keys."
+          onRetry={() => apiKeysQuery.refetch()}
+        />
       ) : null}
+
       {apiKeysQuery.isSuccess && apiKeysQuery.data.length === 0 ? (
-        <p className="text-sm text-muted-foreground">
+        <p className="text-body text-muted-foreground">
           No API keys yet. Issue one to authenticate scripts and CI jobs.
         </p>
       ) : null}
@@ -49,7 +69,9 @@ export function ApiKeysPage() {
           <TableBody>
             {apiKeysQuery.data.map((key) => (
               <TableRow key={key.id}>
-                <TableCell className="font-mono">{key.key_prefix}…</TableCell>
+                <TableCell className="font-mono text-code">
+                  {key.key_prefix}…
+                </TableCell>
                 <TableCell>
                   <Badge variant={key.is_active ? 'outline' : 'secondary'}>
                     {key.is_active ? 'Active' : 'Revoked'}

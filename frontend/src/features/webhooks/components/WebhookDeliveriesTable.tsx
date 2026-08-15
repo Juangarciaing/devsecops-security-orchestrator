@@ -49,7 +49,7 @@ export function WebhookDeliveriesTable({
               {delivery.signature_valid ? 'Valid' : 'Invalid'}
             </TableCell>
             <TableCell>{delivery.repository_full_name ?? EMPTY}</TableCell>
-            <TableCell className="font-mono text-xs">
+            <TableCell className="font-mono text-code">
               {delivery.ref ?? EMPTY} / {delivery.commit_sha ?? EMPTY}
             </TableCell>
             <TableCell>{delivery.source_ip ?? EMPTY}</TableCell>

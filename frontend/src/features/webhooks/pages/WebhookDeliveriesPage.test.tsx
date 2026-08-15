@@ -1,7 +1,7 @@
 import { QueryClientProvider } from '@tanstack/react-query'
 import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { http, HttpResponse } from 'msw'
+import { delay, http, HttpResponse } from 'msw'
 import { describe, expect, it } from 'vitest'
 import { server } from '@/test/msw/server'
 import { createTestQueryClient } from '@/test/testQueryClient'
@@ -33,6 +33,35 @@ function renderPage() {
 }
 
 describe('WebhookDeliveriesPage', () => {
+  it('shows a table skeleton while deliveries are loading', async () => {
+    server.use(
+      http.get('*/api/v1/webhooks/deliveries', async () => {
+        await delay('infinite')
+        return HttpResponse.json([])
+      }),
+    )
+    const { container } = renderPage()
+
+    expect(
+      container.querySelectorAll('[data-slot="skeleton"]').length,
+    ).toBeGreaterThan(0)
+  })
+
+  it('shows an error state with a retry action when deliveries fail to load', async () => {
+    server.use(
+      http.get(
+        '*/api/v1/webhooks/deliveries',
+        () => new HttpResponse(null, { status: 500 }),
+      ),
+    )
+    renderPage()
+
+    expect(await screen.findByRole('alert')).toBeInTheDocument()
+    expect(
+      screen.getByRole('button', { name: /retry/i }),
+    ).toBeInTheDocument()
+  })
+
   it('renders the fetched deliveries', async () => {
     server.use(
       http.get('*/api/v1/webhooks/deliveries', () =>
