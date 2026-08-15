@@ -1,5 +1,5 @@
 import { QueryClientProvider } from '@tanstack/react-query'
-import { act, render, screen } from '@testing-library/react'
+import { act, render, screen, within } from '@testing-library/react'
 import { delay, http, HttpResponse } from 'msw'
 import { MemoryRouter, Route, Routes } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -321,26 +321,6 @@ describe('ScanDetailPage', () => {
       completed_at: '2026-01-01T00:05:00Z',
       findings_count: 1,
     }
-    const criticalFinding = {
-      id: 'f1',
-      scan_task_id: 't1',
-      severity: 'critical',
-      status: 'open',
-      rule_id: 'generic-api-key',
-      title: 'Hardcoded API key',
-      fingerprint: 'abc123',
-      created_at: '2026-01-01T00:00:00Z',
-      updated_at: '2026-01-01T00:00:00Z',
-      description: null,
-      file_path: null,
-      line_number: null,
-      raw_evidence: null,
-      snippet: null,
-      repository_id: 'r1',
-      first_seen_scan_run_id: 's1',
-      last_seen_scan_run_id: 's1',
-    }
-
     it('shows a loading skeleton while the scan is loading', async () => {
       server.use(
         http.get('*/api/v1/scans/s1', async () => {
@@ -407,23 +387,122 @@ describe('ScanDetailPage', () => {
       ).toBeInTheDocument()
     })
 
-    it('does not render a severity stripe anywhere on the scan-detail header (D5: ScanRun carries no severity data)', async () => {
+  })
+
+  // Req7/D5 (revised): ScanDetailPage already queries `useScanFindings` with
+  // full severity data once a scan reaches a terminal state — the header
+  // stripe IS derivable from that list (no new endpoint needed). Reuses
+  // findings/severity.ts's `hasOpenCritical` predicate via `.some()`
+  // (features/scans/severity.ts), matching RepositoryDetailPage's own
+  // stripe/CriticalCue coverage shape.
+  describe('severity stripe', () => {
+    const completedScan = {
+      ...baseScan,
+      status: 'completed',
+      task_status: 'completed',
+      completed_at: '2026-01-01T00:05:00Z',
+      findings_count: 1,
+    }
+    const criticalFinding = {
+      id: 'f1',
+      scan_task_id: 't1',
+      severity: 'critical',
+      status: 'open',
+      rule_id: 'generic-api-key',
+      title: 'Hardcoded API key',
+      fingerprint: 'abc123',
+      created_at: '2026-01-01T00:00:00Z',
+      updated_at: '2026-01-01T00:00:00Z',
+      description: null,
+      file_path: null,
+      line_number: null,
+      raw_evidence: null,
+      snippet: null,
+      repository_id: 'r1',
+      first_seen_scan_run_id: 's1',
+      last_seen_scan_run_id: 's1',
+    }
+
+    // Scoped to the header card (`.closest('[data-slot="card"]')`) rather
+    // than a bare `container.querySelector`, because `FindingsTable`'s own
+    // `FindingRow` already applies a row-level SeverityStripe/CriticalCue to
+    // an open-critical row (PR4b) — an unscoped query would false-positive
+    // on that row-level stripe instead of proving the header-card stripe.
+    it('shows the severity stripe and non-color cue on the header card when the scan has an open critical finding', async () => {
       server.use(
         http.get('*/api/v1/scans/s1', () => HttpResponse.json(completedScan)),
         http.get('*/api/v1/scans/s1/findings', () =>
           HttpResponse.json([criticalFinding]),
         ),
       )
-      const { container } = renderPage('s1')
+      renderPage('s1')
+
+      await screen.findByText('Hardcoded API key')
+      const headerCard = screen.getByText('Scan s1').closest('[data-slot="card"]')
+      expect(headerCard).toHaveAttribute('data-critical', 'true')
+      expect(
+        within(headerCard as HTMLElement).getByText('Open critical finding'),
+      ).toHaveClass('sr-only')
+    })
+
+    it('omits the header-card severity stripe when the only critical finding is resolved', async () => {
+      server.use(
+        http.get('*/api/v1/scans/s1', () => HttpResponse.json(completedScan)),
+        http.get('*/api/v1/scans/s1/findings', () =>
+          HttpResponse.json([{ ...criticalFinding, status: 'resolved' }]),
+        ),
+      )
+      renderPage('s1')
 
       await screen.findByText('Hardcoded API key')
       const headerCard = screen.getByText('Scan s1').closest('[data-slot="card"]')
       expect(headerCard).not.toHaveAttribute('data-critical')
-      expect(
-        container.querySelector(
-          '[data-critical="true"]:not([data-slot="table-cell"])',
+    })
+
+    it('omits the header-card severity stripe when findings are open but only high severity', async () => {
+      server.use(
+        http.get('*/api/v1/scans/s1', () => HttpResponse.json(completedScan)),
+        http.get('*/api/v1/scans/s1/findings', () =>
+          HttpResponse.json([{ ...criticalFinding, severity: 'high' }]),
         ),
-      ).not.toBeInTheDocument()
+      )
+      renderPage('s1')
+
+      await screen.findByText('Hardcoded API key')
+      const headerCard = screen.getByText('Scan s1').closest('[data-slot="card"]')
+      expect(headerCard).not.toHaveAttribute('data-critical')
+    })
+
+    it('omits the header-card severity stripe while the scan is still running (findings not yet fetched)', async () => {
+      server.use(
+        http.get('*/api/v1/scans/s1', () =>
+          HttpResponse.json({
+            ...baseScan,
+            status: 'running',
+            task_status: 'running',
+            findings_count: 0,
+          }),
+        ),
+      )
+      renderPage('s1')
+
+      expect(await screen.findByText('Running')).toBeInTheDocument()
+      const headerCard = screen.getByText('Scan s1').closest('[data-slot="card"]')
+      expect(headerCard).not.toHaveAttribute('data-critical')
+    })
+
+    it('omits the header-card severity stripe for a terminal scan with zero findings', async () => {
+      server.use(
+        http.get('*/api/v1/scans/s1', () =>
+          HttpResponse.json({ ...completedScan, findings_count: 0 }),
+        ),
+        http.get('*/api/v1/scans/s1/findings', () => HttpResponse.json([])),
+      )
+      renderPage('s1')
+
+      await screen.findByText('Completed')
+      const headerCard = screen.getByText('Scan s1').closest('[data-slot="card"]')
+      expect(headerCard).not.toHaveAttribute('data-critical')
     })
   })
 })
