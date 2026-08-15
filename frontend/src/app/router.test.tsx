@@ -106,10 +106,16 @@ describe('router', () => {
   it('lets any authed role (member) reach /settings/api-keys', async () => {
     setToken('a-valid-token')
     mockCurrentUser('member')
+    server.use(http.get('*/api/v1/auth/api-keys', () => HttpResponse.json([])))
 
     renderAtPath('/settings/api-keys')
 
-    expect(await screen.findByText(/manage your api keys/i)).toBeInTheDocument()
+    expect(
+      await screen.findByRole('heading', { name: /api keys/i }),
+    ).toBeInTheDocument()
+    expect(
+      screen.getByRole('button', { name: /issue new key/i }),
+    ).toBeInTheDocument()
     expect(screen.queryByRole('alert')).not.toBeInTheDocument()
   })
 })

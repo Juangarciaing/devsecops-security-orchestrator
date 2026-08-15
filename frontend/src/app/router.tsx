@@ -1,5 +1,6 @@
 import { createBrowserRouter, type RouteObject } from 'react-router'
 import { AdminUsersPage } from '@/features/admin/pages/AdminUsersPage'
+import { ApiKeysPage } from '@/features/apikeys/pages/ApiKeysPage'
 import { LoginPage } from '@/features/auth/pages/LoginPage'
 import { FindingsPage } from '@/features/findings/pages/FindingsPage'
 import { RepositoriesPage } from '@/features/repositories/pages/RepositoriesPage'
@@ -16,7 +17,7 @@ function NotFound() {
 }
 
 // Wired ahead of its feature UI — replaced by features/admin (PR6),
-// features/apikeys (PR7), features/webhooks (PR5).
+// features/webhooks (PR5).
 function Placeholder({ text }: { text: string }) {
   return <div className="text-muted-foreground">{text}</div>
 }
@@ -65,7 +66,7 @@ export const routes: RouteObject[] = [
       },
       {
         path: 'settings/api-keys',
-        element: <Placeholder text="Manage your API keys." />,
+        element: <ApiKeysPage />,
       },
       { path: '*', element: <NotFound /> },
     ],
