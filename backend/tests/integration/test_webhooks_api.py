@@ -26,12 +26,20 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from orchestrator.api.main import create_app
 from orchestrator.api.v1.dependencies.db import get_db_session
 from orchestrator.domain.entities.code_repository import CodeRepository
-from orchestrator.domain.value_objects.enums import RepositoryProvider, WebhookOutcome
+from orchestrator.domain.entities.user import User
+from orchestrator.domain.entities.webhook_delivery import WebhookDelivery
+from orchestrator.domain.value_objects.enums import RepositoryProvider, UserRole, WebhookOutcome
 from orchestrator.infrastructure.db.engine import resolve_database_url
 from orchestrator.infrastructure.db.models.webhook_delivery import WebhookDeliveryModel
 from orchestrator.infrastructure.db.repositories.code_repository_repository import (
     SqlAlchemyCodeRepositoryRepository,
 )
+from orchestrator.infrastructure.db.repositories.user_repository import SqlAlchemyUserRepository
+from orchestrator.infrastructure.db.repositories.webhook_delivery_repository import (
+    SqlAlchemyWebhookDeliveryRepository,
+)
+from orchestrator.infrastructure.security.jwt import create_access_token
+from orchestrator.infrastructure.security.password_hasher import hash_password
 
 pytestmark = pytest.mark.integration
 
@@ -415,3 +423,141 @@ def test_valid_push_default_branch_returns_200_creates_scan_run_and_enqueues(
     asyncio.run(_run_with_client(scenario, spy, monkeypatch=monkeypatch))
     assert len(spy.calls) == 1
     uuid.UUID(spy.calls[0])  # a valid scan_task_id was passed
+
+
+# ---------------------------------------------------------------------------
+# GET /webhooks/deliveries — admin-gated read path (frontend-expansion PR4,
+# design D8/D9). Deliberately uses a plain `_run_with_client` (no webhook
+# secret env / signature machinery needed for a read-only, bearer-token route).
+# ---------------------------------------------------------------------------
+
+_DELIVERIES_URL = "/api/v1/webhooks/deliveries"
+
+
+async def _seed_user(
+    sessionmaker: async_sessionmaker[AsyncSession], email: str, role: UserRole
+) -> User:
+    async with sessionmaker() as session:
+        repository = SqlAlchemyUserRepository(session)
+        created = await repository.create(
+            User(
+                id=uuid.uuid4(),
+                email=email,
+                hashed_password=hash_password("correct-horse"),
+                role=role,
+                is_active=True,
+                created_at=_NOW,
+                updated_at=_NOW,
+            )
+        )
+        await session.commit()
+        return created
+
+
+async def _seed_delivery(
+    sessionmaker: async_sessionmaker[AsyncSession], delivery_id: str
+) -> WebhookDelivery:
+    async with sessionmaker() as session:
+        repository = SqlAlchemyWebhookDeliveryRepository(session)
+        delivery = WebhookDelivery(
+            id=uuid.uuid4(),
+            signature_valid=True,
+            outcome=WebhookOutcome.ACCEPTED,
+            received_at=_NOW,
+            delivery_id=delivery_id,
+            event_type="push",
+            source_ip="203.0.113.9",
+            repository_full_name="acme/widgets",
+            ref="refs/heads/main",
+            commit_sha="c" * 40,
+        )
+        await repository.record(delivery)
+        await session.commit()
+        return delivery
+
+
+def _auth_header(user: User) -> dict[str, str]:
+    return {"Authorization": f"Bearer {create_access_token(user)}"}
+
+
+def test_list_deliveries_without_token_returns_401(migrated_schema: None) -> None:
+    async def scenario(
+        client: httpx.AsyncClient, _sessionmaker: async_sessionmaker[AsyncSession]
+    ) -> None:
+        response = await client.get(_DELIVERIES_URL)
+
+        assert response.status_code == 401
+
+    asyncio.run(_run_with_client(scenario))
+
+
+def test_list_deliveries_member_forbidden_returns_403(migrated_schema: None) -> None:
+    async def scenario(
+        client: httpx.AsyncClient, sessionmaker: async_sessionmaker[AsyncSession]
+    ) -> None:
+        member = await _seed_user(
+            sessionmaker, "member-list-deliveries@example.com", UserRole.MEMBER
+        )
+
+        response = await client.get(_DELIVERIES_URL, headers=_auth_header(member))
+
+        assert response.status_code == 403
+        assert response.headers["content-type"] == "application/problem+json"
+
+    asyncio.run(_run_with_client(scenario))
+
+
+def test_list_deliveries_admin_returns_200_with_source_ip(migrated_schema: None) -> None:
+    async def scenario(
+        client: httpx.AsyncClient, sessionmaker: async_sessionmaker[AsyncSession]
+    ) -> None:
+        admin = await _seed_user(sessionmaker, "admin-list-deliveries@example.com", UserRole.ADMIN)
+        await _seed_delivery(sessionmaker, f"delivery-admin-{uuid.uuid4()}")
+
+        response = await client.get(_DELIVERIES_URL, headers=_auth_header(admin))
+
+        assert response.status_code == 200
+        body = response.json()
+        assert len(body) >= 1
+        # `source_ip` present in the payload is exactly why this route is
+        # admin-gated (design: "WebhookDeliveryRead ... mirrors entity incl.
+        # source_ip — this is why the route is admin-gated").
+        assert "source_ip" in body[0]
+
+    asyncio.run(_run_with_client(scenario))
+
+
+def test_list_deliveries_limit_over_100_returns_422(migrated_schema: None) -> None:
+    async def scenario(
+        client: httpx.AsyncClient, sessionmaker: async_sessionmaker[AsyncSession]
+    ) -> None:
+        admin = await _seed_user(
+            sessionmaker, "admin-deliveries-422-limit@example.com", UserRole.ADMIN
+        )
+
+        response = await client.get(
+            _DELIVERIES_URL, params={"limit": 101}, headers=_auth_header(admin)
+        )
+
+        assert response.status_code == 422
+        assert response.headers["content-type"] == "application/problem+json"
+
+    asyncio.run(_run_with_client(scenario))
+
+
+def test_list_deliveries_negative_offset_returns_422(migrated_schema: None) -> None:
+    async def scenario(
+        client: httpx.AsyncClient, sessionmaker: async_sessionmaker[AsyncSession]
+    ) -> None:
+        admin = await _seed_user(
+            sessionmaker, "admin-deliveries-422-offset@example.com", UserRole.ADMIN
+        )
+
+        response = await client.get(
+            _DELIVERIES_URL, params={"offset": -1}, headers=_auth_header(admin)
+        )
+
+        assert response.status_code == 422
+        assert response.headers["content-type"] == "application/problem+json"
+
+    asyncio.run(_run_with_client(scenario))
