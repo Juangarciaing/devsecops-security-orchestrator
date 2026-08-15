@@ -427,6 +427,14 @@ def test_webhook_delivery_port_declares_exists_and_record() -> None:
     assert inspect.iscoroutinefunction(WebhookDeliveryPort.record)
 
 
+def test_webhook_delivery_port_declares_list_recent() -> None:
+    """frontend-expansion PR4 (design D8/D9): `WebhookDeliveryPort` gains
+    `list_recent(limit, offset)` — powers the admin-gated
+    `GET /api/v1/webhooks/deliveries` read path."""
+    assert "list_recent" in WebhookDeliveryPort.__abstractmethods__
+    assert inspect.iscoroutinefunction(WebhookDeliveryPort.list_recent)
+
+
 def test_webhook_delivery_port_full_implementation_can_be_instantiated_and_used() -> None:
     """Unit-level calling-contract coverage via a fake `WebhookDeliveryPort` —
     the real UNIQUE(delivery_id)-nullable persistence semantics are
@@ -438,6 +446,7 @@ def test_webhook_delivery_port_full_implementation_can_be_instantiated_and_used(
         def __init__(self) -> None:
             self.known_delivery_ids: set[str] = set()
             self.recorded: list[WebhookDelivery] = []
+            self.list_recent_calls: list[tuple[int, int]] = []
 
         async def exists(self, delivery_id: str) -> bool:
             return delivery_id in self.known_delivery_ids
@@ -446,6 +455,14 @@ def test_webhook_delivery_port_full_implementation_can_be_instantiated_and_used(
             self.recorded.append(delivery)
             if delivery.delivery_id is not None:
                 self.known_delivery_ids.add(delivery.delivery_id)
+
+        async def list_recent(self, limit: int, offset: int) -> list[WebhookDelivery]:
+            self.list_recent_calls.append((limit, offset))
+            # design D9: ORDER BY received_at DESC, id DESC.
+            ordered = sorted(
+                self.recorded, key=lambda d: (d.received_at, str(d.id)), reverse=True
+            )
+            return ordered[offset : offset + limit]
 
     async def _run() -> None:
         repo = _FakeWebhookDeliveryRepository()
@@ -466,6 +483,22 @@ def test_webhook_delivery_port_full_implementation_can_be_instantiated_and_used(
 
         present = await repo.exists("delivery-1")
         assert present is True
+
+        older = WebhookDelivery(
+            id=uuid.uuid4(),
+            signature_valid=True,
+            outcome=WebhookOutcome.DUPLICATE,
+            received_at=datetime(2020, 1, 1),
+            delivery_id="delivery-older",
+        )
+        await repo.record(older)
+
+        recent = await repo.list_recent(limit=1, offset=0)
+        assert recent == [delivery]
+        assert repo.list_recent_calls == [(1, 0)]
+
+        second_page = await repo.list_recent(limit=1, offset=1)
+        assert second_page == [older]
 
     asyncio.run(_run())
 

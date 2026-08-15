@@ -22,7 +22,7 @@ const repo: CodeRepository = {
   updated_at: '2026-01-01T00:00:00Z',
 }
 
-function renderCard() {
+function renderCard(repository: CodeRepository = repo) {
   const queryClient = createTestQueryClient()
   function Wrapper({ children }: { children: ReactNode }) {
     return (
@@ -33,7 +33,9 @@ function renderCard() {
       </MemoryRouter>
     )
   }
-  return render(<RepositoryCard repository={repo} />, { wrapper: Wrapper })
+  return render(<RepositoryCard repository={repository} />, {
+    wrapper: Wrapper,
+  })
 }
 
 describe('RepositoryCard', () => {
@@ -52,5 +54,31 @@ describe('RepositoryCard', () => {
     expect(
       screen.getByRole('button', { name: /trigger scan/i }),
     ).toBeInTheDocument()
+  })
+
+  it('shows a credential badge reflecting a configured credential', () => {
+    renderCard({
+      ...repo,
+      has_credential: true,
+      credential_kind: 'personal_access_token',
+    })
+
+    const badge = screen.getByText(/personal access token/i)
+    expect(badge).toBeInTheDocument()
+    expect(badge).toHaveAttribute('data-credential', 'present')
+    expect(
+      screen.queryByRole('button', { name: /clear credential/i }),
+    ).not.toBeInTheDocument()
+    expect(
+      screen.queryByRole('button', { name: /delete credential/i }),
+    ).not.toBeInTheDocument()
+  })
+
+  it('shows a "no credential" badge when the repository has none', () => {
+    renderCard()
+
+    const badge = screen.getByText(/no credential/i)
+    expect(badge).toBeInTheDocument()
+    expect(badge).toHaveAttribute('data-credential', 'absent')
   })
 })

@@ -1,4 +1,5 @@
 import { createBrowserRouter, type RouteObject } from 'react-router'
+import { AdminUsersPage } from '@/features/admin/pages/AdminUsersPage'
 import { ApiKeysPage } from '@/features/apikeys/pages/ApiKeysPage'
 import { LoginPage } from '@/features/auth/pages/LoginPage'
 import { FindingsPage } from '@/features/findings/pages/FindingsPage'
@@ -51,7 +52,7 @@ export const routes: RouteObject[] = [
         path: 'admin/users',
         element: (
           <AdminRoute>
-            <Placeholder text="Admin: manage users." />
+            <AdminUsersPage />
           </AdminRoute>
         ),
       },

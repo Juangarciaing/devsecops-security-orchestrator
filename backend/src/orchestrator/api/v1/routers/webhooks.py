@@ -1,9 +1,13 @@
-"""`POST /api/v1/webhooks/github` — GitHub push webhook intake.
+"""`/api/v1/webhooks` endpoints:
 
-Deliberately NO `get_current_user` guard: the HMAC-SHA256 signature
-(`X-Hub-Signature-256`, verified by `verify_webhook_signature`) IS the auth
-for this endpoint (design D2/D3). `ingest_webhook` is the single outcome
-authority (D3) — this router does nothing but map its returned
+- `POST /api/v1/webhooks/github` — GitHub push webhook intake.
+- `GET /api/v1/webhooks/deliveries` — admin-gated read path over the
+  append-only delivery audit log (frontend-expansion PR4, design D8/D9).
+
+`POST /github` deliberately has NO `get_current_user` guard: the HMAC-SHA256
+signature (`X-Hub-Signature-256`, verified by `verify_webhook_signature`) IS
+the auth for this endpoint (design D2/D3). `ingest_webhook` is the single
+outcome authority (D3) — this router does nothing but map its returned
 `WebhookOutcome` to an HTTP status and, on `REJECTED_SIGNATURE`, return
 (never raise) a 401.
 
@@ -13,19 +17,26 @@ D4: the 401 path returns a `JSONResponse` directly rather than raising
 request — raising here would trigger its exception-path rollback and
 discard the `signature_valid=false` audit row `ingest_webhook` already
 flushed for this same request.
+
+`GET /deliveries` requires `require_role(ADMIN)`, not just `get_current_user`
+(design D8): `WebhookDeliveryRead` mirrors the entity including `source_ip`,
+which is not appropriate for a `member` to read.
 """
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from orchestrator.api.v1.dependencies.auth import require_role
 from orchestrator.api.v1.dependencies.db import get_db_session
 from orchestrator.api.v1.dependencies.webhook import SignatureCheck, verify_webhook_signature
 from orchestrator.api.v1.errors.problem import ProblemDetail
+from orchestrator.application.dto.webhook_delivery import WebhookDeliveryRead
 from orchestrator.application.use_cases.ingest_webhook import ingest_webhook
-from orchestrator.domain.value_objects.enums import WebhookOutcome
+from orchestrator.domain.entities.user import User
+from orchestrator.domain.value_objects.enums import UserRole, WebhookOutcome
 from orchestrator.infrastructure.db.repositories.code_repository_repository import (
     SqlAlchemyCodeRepositoryRepository,
 )
@@ -92,3 +103,15 @@ async def github_webhook_endpoint(
         process_scan_task.delay(str(task_id))
 
     return JSONResponse(status_code=200, content={"outcome": outcome.value})
+
+
+@router.get("/deliveries", response_model=list[WebhookDeliveryRead])
+async def list_webhook_deliveries_endpoint(
+    limit: int = Query(default=20, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+    _admin: User = Depends(require_role(UserRole.ADMIN)),  # noqa: B008
+    session: AsyncSession = Depends(get_db_session),  # noqa: B008
+) -> list[WebhookDeliveryRead]:
+    webhook_delivery_port = SqlAlchemyWebhookDeliveryRepository(session)
+    deliveries = await webhook_delivery_port.list_recent(limit, offset)
+    return [WebhookDeliveryRead.from_entity(delivery) for delivery in deliveries]

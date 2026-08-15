@@ -86,11 +86,16 @@ describe('router', () => {
   )
 
   it.each([
-    ['/admin/users', /manage users/i],
-    ['/admin/webhooks', /webhook deliveries audit/i],
-  ] as const)('lets an admin reach %s', async (path, expectedText) => {
+    [
+      '/admin/users',
+      /^users$/i,
+      () => server.use(http.get('*/api/v1/users', () => HttpResponse.json([]))),
+    ],
+    ['/admin/webhooks', /webhook deliveries audit/i, () => {}],
+  ] as const)('lets an admin reach %s', async (path, expectedText, setup) => {
     setToken('a-valid-token')
     mockCurrentUser('admin')
+    setup()
 
     renderAtPath(path)
 
