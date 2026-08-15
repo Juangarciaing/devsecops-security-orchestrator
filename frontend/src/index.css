@@ -241,3 +241,43 @@
     }
   }
 }
+
+@layer components {
+  /* Elevation with intent (PR3, Req4) — keyed on the `data-slot` attribute
+     shadcn's CLI output already emits on Card/TableRow/Button (design D4),
+     so shared/ui/* stays verbatim/unedited. Raised shadow appears ONLY on
+     hover/focus, never at rest — the testable definition of "with intent".
+     Motion (PR3, Req5) reuses PR1's duration/easing tokens; the global
+     reduced-motion gate above already neutralizes these, so no per-rule
+     override is added here. */
+  [data-slot='card'],
+  [data-slot='table-row'],
+  [data-slot='button'] {
+    transition-property: box-shadow, background-color;
+    transition-duration: var(--duration-fast);
+    transition-timing-function: var(--easing-standard);
+  }
+
+  [data-slot='card']:hover,
+  [data-slot='card']:focus-within {
+    box-shadow: var(--shadow-e2);
+    background-color: var(--surface-raised);
+  }
+
+  [data-slot='table-row']:hover,
+  [data-slot='table-row']:focus-within {
+    box-shadow: var(--shadow-e1);
+  }
+
+  [data-slot='button']:hover,
+  [data-slot='button']:focus-visible {
+    box-shadow: var(--shadow-e1);
+  }
+
+  /* Staggered row entrance (PR3, Req5) — every table row animates in on
+     mount using the row-in keyframe; prefers-reduced-motion neutralizes it
+     globally above. */
+  [data-slot='table-row'] {
+    animation: var(--animate-row-in);
+  }
+}
