@@ -3,49 +3,67 @@
 
 @custom-variant dark (&:is(.dark *));
 
+/*
+ * Dark-first design system. Dark mode is the only rendered theme (see
+ * frontend/index.html's <html class="dark">, no runtime toggle) — :root
+ * holds the dark palette directly instead of a separate `.dark` override
+ * block. The `.dark` ancestor class is still required so shadcn-generated
+ * `dark:` utilities elsewhere in the app (e.g. shared/ui/badge.tsx) resolve.
+ */
 :root {
   --radius: 0.625rem;
-  --background: oklch(1 0 0);
-  --foreground: oklch(0.145 0 0);
-  --card: oklch(1 0 0);
-  --card-foreground: oklch(0.145 0 0);
-  --popover: oklch(1 0 0);
-  --popover-foreground: oklch(0.145 0 0);
-  --primary: oklch(0.205 0 0);
-  --primary-foreground: oklch(0.985 0 0);
-  --secondary: oklch(0.97 0 0);
-  --secondary-foreground: oklch(0.205 0 0);
-  --muted: oklch(0.97 0 0);
-  --muted-foreground: oklch(0.556 0 0);
-  --accent: oklch(0.97 0 0);
-  --accent-foreground: oklch(0.205 0 0);
-  --destructive: oklch(0.577 0.245 27.325);
-  --destructive-foreground: oklch(0.985 0 0);
-  --border: oklch(0.922 0 0);
-  --input: oklch(0.922 0 0);
-  --ring: oklch(0.708 0 0);
-}
 
-.dark {
-  --background: oklch(0.145 0 0);
-  --foreground: oklch(0.985 0 0);
-  --card: oklch(0.205 0 0);
-  --card-foreground: oklch(0.985 0 0);
-  --popover: oklch(0.205 0 0);
-  --popover-foreground: oklch(0.985 0 0);
-  --primary: oklch(0.922 0 0);
-  --primary-foreground: oklch(0.205 0 0);
-  --secondary: oklch(0.269 0 0);
-  --secondary-foreground: oklch(0.985 0 0);
-  --muted: oklch(0.269 0 0);
-  --muted-foreground: oklch(0.708 0 0);
-  --accent: oklch(0.269 0 0);
-  --accent-foreground: oklch(0.985 0 0);
-  --destructive: oklch(0.704 0.191 22.216);
-  --destructive-foreground: oklch(0.985 0 0);
+  --background: oklch(0.16 0.02 250);
+  --foreground: oklch(0.96 0.01 250);
+  --card: oklch(0.2 0.025 250);
+  --card-foreground: oklch(0.96 0.01 250);
+  --popover: oklch(0.2 0.025 250);
+  --popover-foreground: oklch(0.96 0.01 250);
+  --primary: oklch(0.72 0.1 195);
+  --primary-foreground: oklch(0.14 0.02 195);
+  --secondary: oklch(0.28 0.03 250);
+  --secondary-foreground: oklch(0.96 0.01 250);
+  --muted: oklch(0.24 0.02 250);
+  --muted-foreground: oklch(0.68 0.02 250);
+  --accent: oklch(0.3 0.03 250);
+  --accent-foreground: oklch(0.96 0.01 250);
+  --destructive: oklch(0.55 0.19 25);
+  --destructive-foreground: oklch(0.98 0.005 25);
   --border: oklch(1 0 0 / 10%);
   --input: oklch(1 0 0 / 15%);
-  --ring: oklch(0.556 0 0);
+  --ring: oklch(0.72 0.1 195 / 55%);
+
+  /* Severity tokens (SeverityBadge — filled, each hue paired with a
+     dedicated foreground for AA-legible label text). */
+  --severity-critical: oklch(0.55 0.19 25);
+  --severity-critical-foreground: oklch(0.98 0.005 25);
+  --severity-high: oklch(0.68 0.14 55);
+  --severity-high-foreground: oklch(0.16 0.03 55);
+  --severity-medium: oklch(0.78 0.13 95);
+  --severity-medium-foreground: oklch(0.16 0.03 95);
+  --severity-low: oklch(0.5 0.1 235);
+  --severity-low-foreground: oklch(0.98 0.005 235);
+  --severity-info: oklch(0.53 0.12 300);
+  --severity-info-foreground: oklch(0.98 0.005 300);
+
+  /* Status tokens (ScanStatusBadge — outline style: token drives
+     text/border color directly against --background/--card). */
+  --status-pending: oklch(0.75 0.03 250);
+  --status-running: oklch(0.68 0.1 195);
+  --status-completed: oklch(0.72 0.14 145);
+  --status-failed: oklch(0.66 0.18 25);
+  --status-cancelled: oklch(0.65 0.02 250);
+
+  /* Sidebar shell tokens (PR2 consumes these; defined here alongside the
+     rest of the palette). */
+  --sidebar: oklch(0.18 0.02 250);
+  --sidebar-foreground: oklch(0.96 0.01 250);
+  --sidebar-primary: oklch(0.72 0.1 195);
+  --sidebar-primary-foreground: oklch(0.14 0.02 195);
+  --sidebar-accent: oklch(0.26 0.025 250);
+  --sidebar-accent-foreground: oklch(0.96 0.01 250);
+  --sidebar-border: oklch(1 0 0 / 10%);
+  --sidebar-ring: oklch(0.72 0.1 195 / 55%);
 }
 
 @theme inline {
@@ -68,6 +86,33 @@
   --color-border: var(--border);
   --color-input: var(--input);
   --color-ring: var(--ring);
+
+  --color-severity-critical: var(--severity-critical);
+  --color-severity-critical-foreground: var(--severity-critical-foreground);
+  --color-severity-high: var(--severity-high);
+  --color-severity-high-foreground: var(--severity-high-foreground);
+  --color-severity-medium: var(--severity-medium);
+  --color-severity-medium-foreground: var(--severity-medium-foreground);
+  --color-severity-low: var(--severity-low);
+  --color-severity-low-foreground: var(--severity-low-foreground);
+  --color-severity-info: var(--severity-info);
+  --color-severity-info-foreground: var(--severity-info-foreground);
+
+  --color-status-pending: var(--status-pending);
+  --color-status-running: var(--status-running);
+  --color-status-completed: var(--status-completed);
+  --color-status-failed: var(--status-failed);
+  --color-status-cancelled: var(--status-cancelled);
+
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-ring: var(--sidebar-ring);
+
   --radius-sm: calc(var(--radius) - 4px);
   --radius-md: calc(var(--radius) - 2px);
   --radius-lg: var(--radius);
