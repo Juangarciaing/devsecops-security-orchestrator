@@ -7,6 +7,7 @@ import { RepositoriesPage } from '@/features/repositories/pages/RepositoriesPage
 import { RepositoryDetailPage } from '@/features/repositories/pages/RepositoryDetailPage'
 import { ScanDetailPage } from '@/features/scans/pages/ScanDetailPage'
 import { TargetsPage } from '@/features/targets/pages/TargetsPage'
+import { WebhookDeliveriesPage } from '@/features/webhooks/pages/WebhookDeliveriesPage'
 import { AdminRoute } from './AdminRoute'
 import { AppLayout } from './AppLayout'
 import { PalettePreviewPage } from './PalettePreviewPage'
@@ -14,12 +15,6 @@ import { ProtectedRoute } from './ProtectedRoute'
 
 function NotFound() {
   return <div className="text-muted-foreground">Not found.</div>
-}
-
-// Wired ahead of its feature UI — replaced by features/admin (PR6),
-// features/webhooks (PR5).
-function Placeholder({ text }: { text: string }) {
-  return <div className="text-muted-foreground">{text}</div>
 }
 
 // Dev-only design-token preview (task 1.6) — never linked from nav, and
@@ -60,7 +55,7 @@ export const routes: RouteObject[] = [
         path: 'admin/webhooks',
         element: (
           <AdminRoute>
-            <Placeholder text="Admin: webhook deliveries audit." />
+            <WebhookDeliveriesPage />
           </AdminRoute>
         ),
       },

@@ -91,7 +91,16 @@ describe('router', () => {
       /^users$/i,
       () => server.use(http.get('*/api/v1/users', () => HttpResponse.json([]))),
     ],
-    ['/admin/webhooks', /webhook deliveries audit/i, () => {}],
+    [
+      '/admin/webhooks',
+      /webhook deliveries audit/i,
+      () =>
+        server.use(
+          http.get('*/api/v1/webhooks/deliveries', () =>
+            HttpResponse.json([]),
+          ),
+        ),
+    ],
   ] as const)('lets an admin reach %s', async (path, expectedText, setup) => {
     setToken('a-valid-token')
     mockCurrentUser('admin')
