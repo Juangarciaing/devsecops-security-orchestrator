@@ -133,4 +133,67 @@ describe('TriggerTargetScanButton', () => {
     ).toBeInTheDocument()
     expect(mockNavigate).not.toHaveBeenCalled()
   })
+
+  it('forwards the selected scanner_type when the user picks one', async () => {
+    let capturedBody: unknown
+    server.use(
+      http.post('*/api/v1/targets/t1/scans', async ({ request }) => {
+        capturedBody = await request.json()
+        return HttpResponse.json(
+          {
+            id: 's3',
+            repository_id: null,
+            status: 'pending',
+            trigger: 'manual',
+            commit_sha: null,
+            ref: null,
+            scan_target_id: 't1',
+            created_at: '2026-01-01T00:00:00Z',
+            started_at: null,
+            completed_at: null,
+          },
+          { status: 202 },
+        )
+      }),
+    )
+    const user = userEvent.setup()
+    renderButton()
+
+    await user.selectOptions(screen.getByLabelText(/scanner type/i), 'dast')
+    await user.click(screen.getByRole('button', { name: /trigger scan/i }))
+
+    await waitFor(() => expect(mockNavigate).toHaveBeenCalledWith('/scans/s3'))
+    expect(capturedBody).toMatchObject({ scanner_type: 'dast' })
+  })
+
+  it('omits scanner_type when none is selected (backward compatible)', async () => {
+    let capturedBody: unknown
+    server.use(
+      http.post('*/api/v1/targets/t1/scans', async ({ request }) => {
+        capturedBody = await request.json()
+        return HttpResponse.json(
+          {
+            id: 's4',
+            repository_id: null,
+            status: 'pending',
+            trigger: 'manual',
+            commit_sha: null,
+            ref: null,
+            scan_target_id: 't1',
+            created_at: '2026-01-01T00:00:00Z',
+            started_at: null,
+            completed_at: null,
+          },
+          { status: 202 },
+        )
+      }),
+    )
+    const user = userEvent.setup()
+    renderButton()
+
+    await user.click(screen.getByRole('button', { name: /trigger scan/i }))
+
+    await waitFor(() => expect(mockNavigate).toHaveBeenCalledWith('/scans/s4'))
+    expect(capturedBody).not.toHaveProperty('scanner_type')
+  })
 })
