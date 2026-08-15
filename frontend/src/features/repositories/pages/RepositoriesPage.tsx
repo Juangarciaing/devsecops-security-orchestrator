@@ -1,6 +1,8 @@
 import { useState } from 'react'
 import { useFindings } from '@/features/findings/queries'
 import { useScans } from '@/features/scans/queries'
+import { CardGridSkeleton } from '@/shared/components/CardGridSkeleton'
+import { ErrorState } from '@/shared/components/ErrorState'
 import { OnboardingChecklist } from '@/shared/components/OnboardingChecklist'
 import { Button } from '@/shared/ui/button'
 import { RegisterRepositoryDialog } from '../components/RegisterRepositoryDialog'
@@ -18,18 +20,17 @@ export function RepositoriesPage() {
   return (
     <div className="flex flex-col gap-4">
       <div className="flex items-center justify-between">
-        <h2 className="text-xl font-semibold">Repositories</h2>
+        <h2 className="text-heading">Repositories</h2>
         <RegisterRepositoryDialog />
       </div>
 
-      {repositoriesQuery.isPending ? (
-        <p className="text-muted-foreground">Loading repositories…</p>
-      ) : null}
+      {repositoriesQuery.isPending ? <CardGridSkeleton /> : null}
 
       {repositoriesQuery.isError ? (
-        <p role="alert" className="text-sm text-destructive">
-          Could not load repositories.
-        </p>
+        <ErrorState
+          description="Could not load repositories."
+          onRetry={() => repositoriesQuery.refetch()}
+        />
       ) : null}
 
       {repositoriesQuery.isSuccess ? (

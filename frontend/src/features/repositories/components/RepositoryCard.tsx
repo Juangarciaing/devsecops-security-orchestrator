@@ -27,7 +27,7 @@ export function RepositoryCard({ repository }: { repository: CodeRepository }) {
         </div>
       </CardHeader>
       <CardContent className="flex items-center justify-between gap-4">
-        <span className="text-sm text-muted-foreground">
+        <span className="text-meta text-muted-foreground">
           Default branch: {repository.default_branch}
         </span>
         <div className="flex items-center gap-2">
