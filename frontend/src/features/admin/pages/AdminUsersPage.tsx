@@ -9,6 +9,7 @@ import {
   TableHeader,
   TableRow,
 } from '@/shared/ui/table'
+import { StatTile } from '@/features/repositories/components/StatTile'
 import { CreateUserDialog } from '../components/CreateUserDialog'
 import { useUsers } from '../queries'
 
@@ -46,6 +47,20 @@ export function AdminUsersPage() {
       ) : null}
       {usersQuery.isSuccess && usersQuery.data.length === 0 ? (
         <p className="text-body text-muted-foreground">No users yet.</p>
+      ) : null}
+
+      {usersQuery.isSuccess && usersQuery.data.length > 0 ? (
+        <div className="grid grid-cols-2 gap-4 md:grid-cols-3">
+          <StatTile label="Total users" value={usersQuery.data.length} />
+          <StatTile
+            label="Admins"
+            value={usersQuery.data.filter((user) => user.role === 'admin').length}
+          />
+          <StatTile
+            label="Active users"
+            value={usersQuery.data.filter((user) => user.is_active).length}
+          />
+        </div>
       ) : null}
 
       {usersQuery.isSuccess && usersQuery.data.length > 0 ? (

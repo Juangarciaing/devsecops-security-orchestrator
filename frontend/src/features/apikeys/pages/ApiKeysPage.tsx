@@ -9,6 +9,7 @@ import {
   TableHeader,
   TableRow,
 } from '@/shared/ui/table'
+import { StatTile } from '@/features/repositories/components/StatTile'
 import { IssueApiKeyDialog } from '../components/IssueApiKeyDialog'
 import { RevokeApiKeyButton } from '../components/RevokeApiKeyButton'
 import { useApiKeys } from '../queries'
@@ -53,6 +54,20 @@ export function ApiKeysPage() {
         <p className="text-body text-muted-foreground">
           No API keys yet. Issue one to authenticate scripts and CI jobs.
         </p>
+      ) : null}
+
+      {apiKeysQuery.isSuccess && apiKeysQuery.data.length > 0 ? (
+        <div className="grid grid-cols-2 gap-4 md:grid-cols-3">
+          <StatTile label="Total keys" value={apiKeysQuery.data.length} />
+          <StatTile
+            label="Active keys"
+            value={apiKeysQuery.data.filter((key) => key.is_active).length}
+          />
+          <StatTile
+            label="Revoked keys"
+            value={apiKeysQuery.data.filter((key) => !key.is_active).length}
+          />
+        </div>
       ) : null}
 
       {apiKeysQuery.isSuccess && apiKeysQuery.data.length > 0 ? (

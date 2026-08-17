@@ -1,5 +1,5 @@
 import { QueryClientProvider } from '@tanstack/react-query'
-import { render, screen, waitFor } from '@testing-library/react'
+import { render, screen, waitFor, within } from '@testing-library/react'
 import { delay, http, HttpResponse, type JsonBodyType } from 'msw'
 import { MemoryRouter, Route, Routes } from 'react-router'
 import { describe, expect, it } from 'vitest'
@@ -356,5 +356,53 @@ describe('RepositoryDetailPage', () => {
       container.querySelector('[data-critical="true"]'),
     ).not.toBeInTheDocument()
     expect(screen.queryByText('Open critical finding')).not.toBeInTheDocument()
+  })
+
+  it('derives the stat strip from scan history and trend data', async () => {
+    server.use(
+      ...repoHandlers({
+        scans: {
+          data: [
+            {
+              id: 's1',
+              repository_id: 'r1',
+              status: 'completed',
+              trigger: 'manual',
+              commit_sha: 'main',
+              ref: 'main',
+              created_at: '2026-01-01T00:00:00Z',
+              started_at: '2026-01-01T00:00:01Z',
+              completed_at: '2026-01-01T00:00:10Z',
+            },
+            {
+              id: 's2',
+              repository_id: 'r1',
+              status: 'running',
+              trigger: 'manual',
+              commit_sha: 'main',
+              ref: 'main',
+              created_at: '2026-01-02T00:00:00Z',
+              started_at: '2026-01-02T00:00:01Z',
+              completed_at: null,
+            },
+          ],
+        },
+        trends: { data: trendsOf({ critical: 2, high: 3 }) },
+      }),
+    )
+    renderPage('r1')
+
+    await screen.findByText('acme/widgets')
+
+    function tileValue(label: string) {
+      const tile = screen.getByText(label).closest('[data-slot="stat-tile"]')
+      return within(tile as HTMLElement).getByText(/^\d+$/).textContent
+    }
+
+    expect(tileValue('Total scans')).toBe('2')
+    expect(tileValue('Critical, open')).toBe('2')
+    expect(tileValue('High, open')).toBe('3')
+    const lastScanTile = screen.getByText('Last scan').closest('[data-slot="stat-tile"]')
+    expect(within(lastScanTile as HTMLElement).getByText(/running/i)).toBeInTheDocument()
   })
 })

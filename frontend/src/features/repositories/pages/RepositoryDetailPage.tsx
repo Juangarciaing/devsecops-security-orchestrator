@@ -17,6 +17,7 @@ import { TrendsChart } from '@/features/trends/components/TrendsChart'
 import { useRepoTrends } from '@/features/trends/queries'
 import { CredentialBadge } from '../components/CredentialBadge'
 import { DeleteRepositoryButton } from '../components/DeleteRepositoryButton'
+import { StatTile } from '../components/StatTile'
 import { useRepository } from '../queries'
 import { hasOpenCriticalFindings } from '../severity'
 
@@ -55,8 +56,37 @@ export function RepositoryDetailPage() {
   // (design deviation, accepted). `false` while trends is pending/errored.
   const critical = hasOpenCriticalFindings(trendsQuery.data)
 
+  const scans = scansQuery.data ?? []
+  const currentOpen = trendsQuery.data?.current_open ?? {}
+  const lastScan = scans.reduce<(typeof scans)[number] | undefined>(
+    (latest, scan) =>
+      !latest || scan.created_at > latest.created_at ? scan : latest,
+    undefined,
+  )
+
   return (
     <div className="flex flex-col gap-4">
+      <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
+        <StatTile label="Total scans" value={scans.length} />
+        <StatTile
+          label="Critical, open"
+          value={currentOpen.critical ?? 0}
+          tone={(currentOpen.critical ?? 0) > 0 ? 'warning' : 'default'}
+        />
+        <StatTile label="High, open" value={currentOpen.high ?? 0} />
+        <StatTile
+          label="Last scan"
+          value={
+            lastScan ? (
+              <span className="capitalize">{lastScan.status}</span>
+            ) : (
+              '—'
+            )
+          }
+          tone={lastScan?.status === 'running' ? 'active' : 'default'}
+        />
+      </div>
+
       <SeverityStripe active={critical}>
         <Card>
           <CardHeader className="flex flex-row items-center justify-between">

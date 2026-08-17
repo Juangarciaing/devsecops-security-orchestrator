@@ -1,4 +1,5 @@
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
+import { StatTile } from '@/features/repositories/components/StatTile'
 import { ErrorState } from '@/shared/components/ErrorState'
 import { TableSkeleton } from '@/shared/components/TableSkeleton'
 import { Button } from '@/shared/ui/button'
@@ -22,6 +23,9 @@ export function FindingsPage() {
     limit: PAGE_SIZE,
     offset,
   })
+  // Unfiltered, unpaginated — drives the stat strip only, mirroring
+  // RepositoriesPage's `useFindings({})` aggregation pattern.
+  const allFindingsQuery = useFindings({})
 
   const handleFiltersChange = (nextFilters: FindingFiltersValue) => {
     setFilters(nextFilters)
@@ -34,9 +38,48 @@ export function FindingsPage() {
   const findings = findingsQuery.data ?? []
   const hasNextPage = findings.length === PAGE_SIZE
 
+  const allFindings = useMemo(
+    () => allFindingsQuery.data ?? [],
+    [allFindingsQuery.data],
+  )
+  const criticalOpenCount = allFindings.filter(
+    (finding) => finding.severity === 'critical' && finding.status === 'open',
+  ).length
+  const highOpenCount = allFindings.filter(
+    (finding) => finding.severity === 'high' && finding.status === 'open',
+  ).length
+  const suppressedCount = allFindings.filter(
+    (finding) => finding.status === 'suppressed',
+  ).length
+
   return (
     <div className="flex flex-col gap-4">
-      <h2 className="text-heading">Findings</h2>
+      <div className="flex flex-col gap-1">
+        <h2 className="text-heading">Findings</h2>
+        {allFindingsQuery.isSuccess ? (
+          <span className="text-meta text-muted-foreground">
+            {allFindings.length}{' '}
+            {allFindings.length === 1 ? 'finding' : 'findings'}
+          </span>
+        ) : null}
+      </div>
+
+      {allFindingsQuery.isSuccess && allFindings.length > 0 ? (
+        <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
+          <StatTile label="Total findings" value={allFindings.length} />
+          <StatTile
+            label="Critical, open"
+            value={criticalOpenCount}
+            tone={criticalOpenCount > 0 ? 'warning' : 'default'}
+          />
+          <StatTile
+            label="High, open"
+            value={highOpenCount}
+            tone={highOpenCount > 0 ? 'warning' : 'default'}
+          />
+          <StatTile label="Suppressed findings" value={suppressedCount} />
+        </div>
+      ) : null}
 
       <FindingFilters filters={filters} onChange={handleFiltersChange} />
 

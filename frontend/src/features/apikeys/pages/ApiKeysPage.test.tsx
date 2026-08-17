@@ -68,4 +68,29 @@ describe('ApiKeysPage', () => {
 
     expect(await screen.findByText('sk_live_abcd…')).toBeInTheDocument()
   })
+
+  it('derives the stat strip from API keys', async () => {
+    server.use(
+      http.get('*/api/v1/auth/api-keys', () =>
+        HttpResponse.json([
+          makeApiKey('k1', { is_active: true }),
+          makeApiKey('k2', { is_active: true }),
+          makeApiKey('k3', { is_active: false }),
+        ]),
+      ),
+    )
+    renderPage()
+
+    expect(await screen.findByText('Total keys')).toBeInTheDocument()
+    const totalTile = screen.getByText('Total keys').closest('[data-slot="stat-tile"]')
+    expect(totalTile).toHaveTextContent('3')
+    const activeTile = screen
+      .getByText('Active keys')
+      .closest('[data-slot="stat-tile"]')
+    expect(activeTile).toHaveTextContent('2')
+    const revokedTile = screen
+      .getByText('Revoked keys')
+      .closest('[data-slot="stat-tile"]')
+    expect(revokedTile).toHaveTextContent('1')
+  })
 })

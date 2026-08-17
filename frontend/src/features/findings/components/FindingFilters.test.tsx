@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react'
+import { render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, expect, it, vi } from 'vitest'
 import type { FindingFilters as FindingFiltersValue } from '../types'
@@ -10,7 +10,10 @@ describe('FindingFilters', () => {
     const onChange = vi.fn()
     render(<FindingFilters filters={{}} onChange={onChange} />)
 
-    await user.selectOptions(screen.getByLabelText(/severity/i), 'high')
+    const severityGroup = screen.getByRole('group', {
+      name: /filter by severity/i,
+    })
+    await user.click(within(severityGroup).getByRole('button', { name: 'High' }))
 
     expect(onChange).toHaveBeenCalledWith(
       expect.objectContaining({ severity: 'high' }),
@@ -22,7 +25,12 @@ describe('FindingFilters', () => {
     const onChange = vi.fn()
     render(<FindingFilters filters={{}} onChange={onChange} />)
 
-    await user.selectOptions(screen.getByLabelText(/status/i), 'suppressed')
+    const statusGroup = screen.getByRole('group', {
+      name: /filter by status/i,
+    })
+    await user.click(
+      within(statusGroup).getByRole('button', { name: 'Suppressed' }),
+    )
 
     expect(onChange).toHaveBeenCalledWith(
       expect.objectContaining({ status: 'suppressed' }),
@@ -53,16 +61,33 @@ describe('FindingFilters', () => {
     )
   })
 
-  it('clears a filter back to "All" (undefined)', async () => {
+  it('clears the severity filter back to "All" (undefined)', async () => {
     const user = userEvent.setup()
     const onChange = vi.fn()
     const filters: FindingFiltersValue = { severity: 'high' }
     render(<FindingFilters filters={filters} onChange={onChange} />)
 
-    await user.selectOptions(screen.getByLabelText(/severity/i), '')
+    const severityGroup = screen.getByRole('group', {
+      name: /filter by severity/i,
+    })
+    await user.click(within(severityGroup).getByRole('button', { name: 'All' }))
 
     expect(onChange).toHaveBeenCalledWith(
       expect.objectContaining({ severity: undefined }),
     )
+  })
+
+  it('marks the active severity chip as pressed', () => {
+    render(<FindingFilters filters={{ severity: 'critical' }} onChange={() => {}} />)
+
+    const severityGroup = screen.getByRole('group', {
+      name: /filter by severity/i,
+    })
+    expect(
+      within(severityGroup).getByRole('button', { name: 'Critical' }),
+    ).toHaveAttribute('aria-pressed', 'true')
+    expect(
+      within(severityGroup).getByRole('button', { name: 'All' }),
+    ).toHaveAttribute('aria-pressed', 'false')
   })
 })

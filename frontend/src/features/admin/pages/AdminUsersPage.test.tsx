@@ -64,4 +64,29 @@ describe('AdminUsersPage', () => {
 
     expect(await screen.findByText('user-u1@example.com')).toBeInTheDocument()
   })
+
+  it('derives the stat strip from users', async () => {
+    server.use(
+      http.get('*/api/v1/users', () =>
+        HttpResponse.json([
+          makeUser('u1', { role: 'admin', is_active: true }),
+          makeUser('u2', { role: 'member', is_active: true }),
+          makeUser('u3', { role: 'member', is_active: false }),
+        ]),
+      ),
+    )
+    renderPage()
+
+    expect(await screen.findByText('Total users')).toBeInTheDocument()
+    expect(screen.getByText('Admins')).toBeInTheDocument()
+    expect(screen.getByText('Active users')).toBeInTheDocument()
+    const totalTile = screen.getByText('Total users').closest('[data-slot="stat-tile"]')
+    expect(totalTile).toHaveTextContent('3')
+    const adminsTile = screen.getByText('Admins').closest('[data-slot="stat-tile"]')
+    expect(adminsTile).toHaveTextContent('1')
+    const activeTile = screen
+      .getByText('Active users')
+      .closest('[data-slot="stat-tile"]')
+    expect(activeTile).toHaveTextContent('2')
+  })
 })

@@ -103,6 +103,7 @@ describe('golden path', () => {
         }),
       ),
       http.get('*/api/v1/repositories', () => HttpResponse.json([repository])),
+      http.get('*/api/v1/repositories/r1', () => HttpResponse.json(repository)),
       http.post('*/api/v1/repositories/r1/scans', () =>
         HttpResponse.json({ ...baseScan, status: 'pending' }, { status: 202 }),
       ),
@@ -130,11 +131,18 @@ describe('golden path', () => {
     await user.click(screen.getByRole('button', { name: /log in/i }))
 
     const repoLink = await screen.findByRole('link', {
-      name: /acme\/gitleaks-live-fixture/i,
+      name: 'acme/gitleaks-live-fixture',
     })
     expect(repoLink).toBeInTheDocument()
 
-    await user.click(screen.getByRole('button', { name: /trigger scan/i }))
+    // The repositories list (Repositories list-table redesign) links to the
+    // repository detail page rather than exposing a trigger-scan action
+    // inline — the detail page's header card already carries
+    // `TriggerScanButton`, so the golden path navigates there first.
+    await user.click(repoLink)
+    await user.click(
+      await screen.findByRole('button', { name: /trigger scan/i }),
+    )
 
     expect(await screen.findByText('Running')).toBeInTheDocument()
 

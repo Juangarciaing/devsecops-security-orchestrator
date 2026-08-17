@@ -7,8 +7,9 @@ import { ErrorState } from '@/shared/components/ErrorState'
 import { TableSkeleton } from '@/shared/components/TableSkeleton'
 import { FindingsTable } from '@/features/findings/components/FindingsTable'
 import { useScanFindings } from '@/features/findings/queries'
+import { StatTile } from '@/features/repositories/components/StatTile'
 import { ScanStatusBadge } from '../components/ScanStatusBadge'
-import { hasOpenCriticalFindings } from '../severity'
+import { hasOpenCriticalFindings, openSeverityCounts } from '../severity'
 import { isTerminalScanStatus } from '../types'
 import { useScan } from '../queries'
 
@@ -45,9 +46,25 @@ export function ScanDetailPage() {
   // fetched (non-terminal scan) — `scanFindingsQuery.data` is `undefined`
   // in all of those cases, so `?? []` short-circuits to inactive.
   const critical = hasOpenCriticalFindings(scanFindingsQuery.data ?? [])
+  const currentOpen = openSeverityCounts(scanFindingsQuery.data ?? [])
 
   return (
     <div className="flex flex-col gap-4">
+      <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
+        <StatTile label="Total findings" value={scan.findings_count} />
+        <StatTile
+          label="Critical, open"
+          value={currentOpen.critical ?? 0}
+          tone={(currentOpen.critical ?? 0) > 0 ? 'warning' : 'default'}
+        />
+        <StatTile label="High, open" value={currentOpen.high ?? 0} />
+        <StatTile
+          label="Status"
+          value={<span className="capitalize">{scan.status}</span>}
+          tone={scan.status === 'running' ? 'active' : 'default'}
+        />
+      </div>
+
       <SeverityStripe active={critical}>
         <Card className="max-w-2xl">
           <CardHeader className="flex flex-row items-center justify-between">

@@ -505,4 +505,93 @@ describe('ScanDetailPage', () => {
       expect(headerCard).not.toHaveAttribute('data-critical')
     })
   })
+
+  describe('stat strip', () => {
+    it('derives total findings and severity breakdown from the scan findings', async () => {
+      server.use(
+        http.get('*/api/v1/scans/s1', () =>
+          HttpResponse.json({
+            ...baseScan,
+            status: 'completed',
+            task_status: 'completed',
+            completed_at: '2026-01-01T00:05:00Z',
+            findings_count: 3,
+          }),
+        ),
+        http.get('*/api/v1/scans/s1/findings', () =>
+          HttpResponse.json([
+            {
+              id: 'f1',
+              scan_task_id: 't1',
+              severity: 'critical',
+              status: 'open',
+              rule_id: 'r1',
+              title: 't1',
+              fingerprint: 'a',
+              created_at: '2026-01-01T00:00:00Z',
+              updated_at: '2026-01-01T00:00:00Z',
+              description: null,
+              file_path: null,
+              line_number: null,
+              raw_evidence: null,
+              snippet: null,
+              repository_id: 'r1',
+              first_seen_scan_run_id: 's1',
+              last_seen_scan_run_id: 's1',
+            },
+            {
+              id: 'f2',
+              scan_task_id: 't1',
+              severity: 'high',
+              status: 'open',
+              rule_id: 'r2',
+              title: 't2',
+              fingerprint: 'b',
+              created_at: '2026-01-01T00:00:00Z',
+              updated_at: '2026-01-01T00:00:00Z',
+              description: null,
+              file_path: null,
+              line_number: null,
+              raw_evidence: null,
+              snippet: null,
+              repository_id: 'r1',
+              first_seen_scan_run_id: 's1',
+              last_seen_scan_run_id: 's1',
+            },
+            {
+              id: 'f3',
+              scan_task_id: 't1',
+              severity: 'high',
+              status: 'resolved',
+              rule_id: 'r3',
+              title: 't3',
+              fingerprint: 'c',
+              created_at: '2026-01-01T00:00:00Z',
+              updated_at: '2026-01-01T00:00:00Z',
+              description: null,
+              file_path: null,
+              line_number: null,
+              raw_evidence: null,
+              snippet: null,
+              repository_id: 'r1',
+              first_seen_scan_run_id: 's1',
+              last_seen_scan_run_id: 's1',
+            },
+          ]),
+        ),
+      )
+      renderPage('s1')
+
+      await screen.findByText('t1')
+
+      function tileValue(label: string) {
+        const tile = screen.getByText(label).closest('[data-slot="stat-tile"]')
+        return within(tile as HTMLElement).getByText(/^\d+$/).textContent
+      }
+
+      expect(tileValue('Total findings')).toBe('3')
+      expect(tileValue('Critical, open')).toBe('1')
+      expect(tileValue('High, open')).toBe('1')
+    })
+  })
 })
