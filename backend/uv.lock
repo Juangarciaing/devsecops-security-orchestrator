@@ -1244,6 +1244,7 @@ dependencies = [
     { name = "docker" },
     { name = "fastapi" },
     { name = "flower" },
+    { name = "httpx" },
     { name = "kubernetes" },
     { name = "opentelemetry-api" },
     { name = "opentelemetry-exporter-otlp-proto-grpc" },
@@ -1262,7 +1263,6 @@ dependencies = [
 [package.dev-dependencies]
 dev = [
     { name = "alembic" },
-    { name = "httpx" },
     { name = "mypy" },
     { name = "pytest" },
     { name = "pytest-cov" },
@@ -1279,6 +1279,7 @@ requires-dist = [
     { name = "docker", specifier = ">=7.1" },
     { name = "fastapi", specifier = ">=0.115" },
     { name = "flower", specifier = ">=2.0" },
+    { name = "httpx", specifier = ">=0.27" },
     { name = "kubernetes", specifier = ">=31,<35" },
     { name = "opentelemetry-api", specifier = ">=1.44" },
     { name = "opentelemetry-exporter-otlp-proto-grpc", specifier = ">=1.44" },
@@ -1297,7 +1298,6 @@ requires-dist = [
 [package.metadata.requires-dev]
 dev = [
     { name = "alembic", specifier = ">=1.18.5" },
-    { name = "httpx", specifier = ">=0.27" },
     { name = "mypy", specifier = ">=1.13" },
     { name = "pytest", specifier = ">=8.3" },
     { name = "pytest-cov", specifier = ">=6.0" },
