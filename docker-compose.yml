@@ -156,7 +156,12 @@ services:
       REDIS_URL: ${REDIS_URL}
       SECRET_KEY: ${SECRET_KEY}
       JWT_SECRET_KEY: ${JWT_SECRET_KEY}
-    command: ["celery", "-A", "orchestrator.workers.celery_app", "beat", "-l", "info"]
+    # `-s /tmp/celerybeat-schedule`: beat's default schedule path is the CWD
+    # (`/app`), which is root-owned in the image (only `.venv`/`src` are
+    # `--chown`'d to `appuser` — see docker/backend.Dockerfile). `/tmp` is
+    # writable by any UID, so this avoids widening `appuser`'s permissions
+    # on `/app` just to let beat persist its schedule state.
+    command: ["celery", "-A", "orchestrator.workers.celery_app", "beat", "-l", "info", "-s", "/tmp/celerybeat-schedule"]
     depends_on:
       redis:
         condition: service_healthy

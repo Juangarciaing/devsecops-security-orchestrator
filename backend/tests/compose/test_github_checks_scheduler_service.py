@@ -51,6 +51,8 @@ def test_scheduler_service_runs_a_single_celery_beat_replica() -> None:
         "beat",
         "-l",
         "info",
+        "-s",
+        "/tmp/celerybeat-schedule",
     ]
 
 

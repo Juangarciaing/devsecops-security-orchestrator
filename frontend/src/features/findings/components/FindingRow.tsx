@@ -1,6 +1,8 @@
 import { useState } from 'react'
+import { CriticalCue, SeverityStripe } from '@/shared/components/SeverityStripe'
 import { Button } from '@/shared/ui/button'
 import { TableCell, TableRow } from '@/shared/ui/table'
+import { hasOpenCritical } from '../severity'
 import type { Finding } from '../types'
 import { FindingStatusBadge } from './FindingStatusBadge'
 import { SeverityBadge } from './SeverityBadge'
@@ -10,6 +12,8 @@ const DETAIL_COLUMN_COUNT = 6
 
 export function FindingRow({ finding }: { finding: Finding }) {
   const [expanded, setExpanded] = useState(false)
+  // Req7: stripe + non-color cue only on an OPEN CRITICAL row.
+  const critical = hasOpenCritical(finding)
 
   // Redaction-safe (Req: Redaction-Safe Rendering): raw_evidence/snippet/
   // file_path/line_number are nulled server-side for the `member` role —
@@ -19,9 +23,14 @@ export function FindingRow({ finding }: { finding: Finding }) {
   return (
     <>
       <TableRow>
-        <TableCell>
-          <SeverityBadge severity={finding.severity} />
-        </TableCell>
+        <SeverityStripe active={critical}>
+          <TableCell>
+            <div className="flex items-center gap-1">
+              <SeverityBadge severity={finding.severity} />
+              <CriticalCue active={critical} />
+            </div>
+          </TableCell>
+        </SeverityStripe>
         <TableCell>{finding.rule_id}</TableCell>
         <TableCell>{finding.title}</TableCell>
         <TableCell>

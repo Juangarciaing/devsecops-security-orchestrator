@@ -14,7 +14,7 @@ export function LoginPage() {
     <main className="flex min-h-screen items-center justify-center bg-background px-6">
       <Card className="w-full max-w-sm">
         <CardHeader>
-          <CardTitle>Log in</CardTitle>
+          <CardTitle className="text-display">Log in</CardTitle>
         </CardHeader>
         <CardContent>
           <LoginForm />

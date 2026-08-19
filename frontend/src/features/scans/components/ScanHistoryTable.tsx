@@ -13,7 +13,7 @@ import { ScanStatusBadge } from './ScanStatusBadge'
 export function ScanHistoryTable({ scans }: { scans: ScanRun[] }) {
   if (scans.length === 0) {
     return (
-      <p className="text-sm text-muted-foreground">
+      <p className="text-meta text-muted-foreground">
         No scans have been run for this repository yet.
       </p>
     )
